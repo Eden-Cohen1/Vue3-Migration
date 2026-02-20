@@ -1,0 +1,86 @@
+"""
+Composable analysis — extract identifiers, return keys, and function names
+from Vue 3 composable source files.
+"""
+
+import re
+from typing import Optional
+
+from .js_parser import extract_brace_block
+
+
+def extract_all_identifiers(source: str) -> list[str]:
+    """Extract ALL identifiers defined anywhere in a composable file.
+
+    Covers: variable declarations, function declarations, destructuring,
+    and return statement keys.
+    """
+    ids: set[str] = set()
+
+    # const/let/var name = ...
+    ids.update(re.findall(r"\b(?:const|let|var)\s+(\w+)", source))
+
+    # function name(...)
+    ids.update(re.findall(r"\bfunction\s+(\w+)", source))
+
+    # Destructured: const { a, b: renamed, c = default } = ...
+    for match in re.finditer(r"\b(?:const|let|var)\s*\{([^}]+)\}", source):
+        for part in match.group(1).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if ":" in part:
+                ids.add(part.split(":")[1].strip().split("=")[0].strip())
+            else:
+                ids.add(part.split("=")[0].strip())
+
+    # Return keys: return { foo, bar, baz: val }
+    ret = re.search(r"\breturn\s*\{", source)
+    if ret:
+        block = extract_brace_block(source, ret.end() - 1)
+        ids.update(re.findall(r"\b(\w+)\s*[,}\n:]", block))
+
+    noise = {
+        "const", "let", "var", "function", "return", "if", "else", "new",
+        "true", "false", "null", "undefined", "async", "await", "from", "import",
+    }
+    return sorted(ids - noise)
+
+
+def extract_return_keys(source: str) -> list[str]:
+    """Extract ONLY the keys from the composable's return { ... } statement.
+
+    Members must be in the return statement to be accessible by the component.
+    """
+    ret = re.search(r"\breturn\s*\{", source)
+    if not ret:
+        return []
+
+    block = extract_brace_block(source, ret.end() - 1)
+    keys = re.findall(r"\b(\w+)\b", block)
+
+    noise = {
+        "const", "let", "var", "function", "return", "true", "false",
+        "null", "undefined", "new", "value",
+    }
+    return list(dict.fromkeys(k for k in keys if k not in noise))
+
+
+def extract_function_name(source: str) -> Optional[str]:
+    """Find the exported function name (e.g. useSelection) in a composable.
+
+    Checks for:
+      - export function useName(
+      - export default function useName(
+      - export const useName =
+      - export default const useName =
+    """
+    # export function useName(  /  export default function useName(
+    match = re.search(r"\bexport\s+(?:default\s+)?function\s+(\w+)", source)
+    if match:
+        return match.group(1)
+    # export const useName = (
+    match = re.search(r"\bexport\s+(?:default\s+)?const\s+(\w+)\s*=", source)
+    if match:
+        return match.group(1)
+    return None
