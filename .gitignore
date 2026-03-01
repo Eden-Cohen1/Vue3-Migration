@@ -40,3 +40,17 @@ Thumbs.db
 # Secrets / env
 .env
 .env.*
+
+# Claude Code
+.claude/
+
+# Tool output reports (generated at runtime)
+migration_*.md
+mixin_audit_*.md
+
+# npm
+node_modules/
+npm-debug.log*
+
+# uv lock file
+uv.lock

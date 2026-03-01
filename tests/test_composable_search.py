@@ -164,3 +164,14 @@ class TestMixinHasComposable:
     def test_bare_mixin_name_returns_false(self):
         stems = {'useselection'}
         assert mixin_has_composable('Mixin', stems) is False
+
+    def test_fuzzy_match_when_exact_missing(self):
+        # filterMixin -> exact candidate 'useFilter' not present, but
+        # 'useadvancedfilter' contains 'filter' -> should return True
+        stems = {'useadvancedfilter', 'useselection'}
+        assert mixin_has_composable('filterMixin', stems) is True
+
+    def test_fuzzy_does_not_match_non_use_prefix(self):
+        # 'filterhelper' does not start with 'use' -> should not match
+        stems = {'filterhelper'}
+        assert mixin_has_composable('filterMixin', stems) is False

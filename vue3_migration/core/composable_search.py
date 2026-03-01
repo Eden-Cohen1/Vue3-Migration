@@ -108,7 +108,13 @@ def collect_composable_stems(composable_dirs: list[Path]) -> set[str]:
 
 
 def mixin_has_composable(mixin_stem: str, composable_stems: set[str]) -> bool:
-    """Check if a matching composable likely exists for a mixin name."""
+    """Check if a matching composable likely exists for a mixin name.
+
+    Uses the same two-phase strategy as search_for_composable:
+    Phase 1 — exact candidate match (useFilter, useFilter).
+    Phase 2 — fuzzy: any composable stem starting with 'use' that contains
+               the core word as a substring (e.g. useAdvancedFilter for filterMixin).
+    """
     core = re.sub(r"[_-]?[Mm]ixin$", "", mixin_stem)
     if not core:
         return False
@@ -118,11 +124,18 @@ def mixin_has_composable(mixin_stem: str, composable_stems: set[str]) -> bool:
     if without_common != core:
         names_to_check.append(without_common)
 
+    # Phase 1: exact candidate match
     for name in names_to_check:
         candidate = "use" + name[0].upper() + name[1:]
         if candidate.lower() in composable_stems:
             return True
         if ("use" + name.capitalize()).lower() in composable_stems:
+            return True
+
+    # Phase 2: fuzzy — core word as substring of any use* composable
+    core_lower = core.lower()
+    for stem in composable_stems:
+        if stem.startswith("use") and core_lower in stem:
             return True
 
     return False

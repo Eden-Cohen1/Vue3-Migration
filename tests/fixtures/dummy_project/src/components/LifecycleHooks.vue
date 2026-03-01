@@ -6,6 +6,7 @@
     <ul>
       <li v-for="entry in logs" :key="entry.time">{{ entry.message }}</li>
     </ul>
+    <button @click="log('manual entry')">Add Log</button>
   </div>
 </template>
 

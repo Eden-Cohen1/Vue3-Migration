@@ -1,0 +1,27 @@
+# Development / test files — excluded from the published npm package
+tests/
+.venv/
+.pytest_cache/
+.claude/
+.git/
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Config / lock files not needed by consumers
+pyproject.toml
+uv.lock
+
+# Output reports
+migration_*.md
+mixin_audit_*.md
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
