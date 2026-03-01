@@ -307,7 +307,7 @@ def run(mixin_arg: str, composable_arg: Optional[str] = None, config: MigrationC
             else:
                 user_path = input("  Enter the correct composable path "
                                   "(or press Enter to skip): ").strip()
-                if user_path:
+                if user_path and user_path.lower() not in ("n", "no"):
                     composable_path_resolved = user_path
 
         elif len(matches) > 1:
@@ -325,13 +325,13 @@ def run(mixin_arg: str, composable_arg: Optional[str] = None, config: MigrationC
             if not composable_path_resolved:
                 user_path = input("  Enter composable path "
                                   "(or press Enter to skip): ").strip()
-                if user_path:
+                if user_path and user_path.lower() not in ("n", "no"):
                     composable_path_resolved = user_path
         else:
             print(f"  {yellow('No composable found automatically.')}")
             user_path = input("  Enter composable path "
                               "(or press Enter to skip): ").strip()
-            if user_path:
+            if user_path and user_path.lower() not in ("n", "no"):
                 composable_path_resolved = user_path
 
     if composable_path_resolved:

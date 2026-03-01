@@ -1,3 +1,17 @@
+[project]
+name = "vue3-migration"
+version = "1.0.0"
+description = "Vue 2 mixin to Vue 3 composable migration tool"
+requires-python = ">=3.9"
+
+[project.scripts]
+vue3-migration = "vue3_migration.cli:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
