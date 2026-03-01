@@ -45,20 +45,21 @@ def rewrite_this_refs(
     all_ref = sorted(ref_members, key=len, reverse=True)
     all_plain = sorted(plain_members, key=len, reverse=True)
     all_members = all_ref + all_plain
-    if not all_members:
-        return code
 
     pattern = re.compile(
         r"\bthis\.(" + "|".join(re.escape(m) for m in all_members) + r")\b"
     )
 
+    ref_set = set(ref_members)
+    plain_set = set(plain_members)
+
     def _replace(m: re.Match) -> str:
         name = m.group(1)
-        if name in ref_members:
+        if name in ref_set:
             return f"{name}.value"
-        if name in plain_members:
+        if name in plain_set:
             return name
-        return m.group(0)
+        return m.group(0)  # unreachable: regex only matches names from all_members
 
     # Walk code segments (between non-code spans) applying substitution only on code
     result_parts: list[str] = []
