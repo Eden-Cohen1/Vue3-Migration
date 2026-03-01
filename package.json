@@ -1,6 +1,6 @@
 {
   "name": "vue3-migration",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Vue 2 mixin to Vue 3 composable migration tool",
   "bin": {
     "vue3-migration": "./bin/cli.js"
