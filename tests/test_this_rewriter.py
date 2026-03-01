@@ -1,3 +1,4 @@
+"""Tests for vue3_migration.transform.this_rewriter."""
 from vue3_migration.transform.this_rewriter import rewrite_this_refs
 
 def test_data_member_gets_dot_value():
@@ -40,3 +41,30 @@ def test_multiple_members_same_line():
 def test_empty_lists_returns_unchanged():
     code = "this.x + this.y()"
     assert rewrite_this_refs(code, [], []) == code
+
+
+def test_this_in_block_comment_not_replaced():
+    result = rewrite_this_refs(
+        "/* this.count should be ignored */\nreturn this.count",
+        ref_members=["count"], plain_members=[]
+    )
+    assert "/* this.count should be ignored */" in result
+    assert result.count("count.value") == 1
+
+
+def test_this_in_regex_literal_not_replaced():
+    result = rewrite_this_refs(
+        r"const r = /this\.count/; return this.count",
+        ref_members=["count"], plain_members=[]
+    )
+    assert r"/this\.count/" in result
+    assert result.count("count.value") == 1
+
+
+def test_prefix_overlap_longer_name_wins():
+    result = rewrite_this_refs(
+        "this.countTotal + this.count",
+        ref_members=["count", "countTotal"],
+        plain_members=[]
+    )
+    assert result == "countTotal.value + count.value"
