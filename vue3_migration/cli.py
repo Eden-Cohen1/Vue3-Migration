@@ -224,9 +224,13 @@ def interactive_menu(config: MigrationConfig):
     print(f"     Given a mixin file, find every component that uses it,")
     print(f"     show which members each component relies on, and compare")
     print(f"     against a composable to see what's covered.\n")
+    print(f"  {bold('4.')} {green('Auto-migrate (full project)')}")
+    print(f"     Scan the entire project, auto-patch composables for blocked cases,")
+    print(f"     convert lifecycle hooks to Vue 3, show a dry-run diff, then")
+    print(f"     write all changes after a single confirmation.\n")
     print(f"  {bold('q.')} Quit\n")
 
-    choice = input(f"  Choose (1/2/3/q): ").strip()
+    choice = input(f"  Choose (1/2/3/4/q): ").strip()
     print()
 
     if choice == "1":
@@ -252,11 +256,133 @@ def interactive_menu(config: MigrationConfig):
         composable_path = input(f"  Composable path (optional, press Enter to skip): ").strip()
         mixin_workflow.run(mixin_path, composable_path or None, config)
 
+    elif choice == "4":
+        auto_migrate(config.project_root, config)
+
     elif choice.lower() == "q":
         return
 
     else:
         print(f"  {yellow('Invalid choice.')}")
+
+
+# =============================================================================
+# Auto-migrate
+# =============================================================================
+
+def auto_migrate_scoped(target_arg: str, scope: str, config: MigrationConfig) -> None:
+    """Run auto-migrate scoped to one component or one mixin file."""
+    from .workflows import auto_migrate_workflow
+    from .reporting.diff import print_diff_summary
+
+    project_root = config.project_root
+
+    if scope == "component":
+        target_path = Path(target_arg).resolve()
+        if not target_path.is_file():
+            target_path = (project_root / target_arg).resolve()
+        if not target_path.is_file():
+            print(f"  {yellow('Component not found:')} {target_arg}")
+            return
+        print(f"\n{bold('Auto-migrate component:')} {green(target_path.name)}")
+        plan = auto_migrate_workflow.run_scoped(project_root, config, component_path=target_path)
+    else:  # mixin
+        mixin_path = Path(target_arg).resolve()
+        if not mixin_path.is_file():
+            mixin_path = (project_root / target_arg).resolve()
+        if not mixin_path.is_file():
+            print(f"  {yellow('Mixin file not found:')} {target_arg}")
+            return
+        mixin_stem = mixin_path.stem
+        print(f"\n{bold('Auto-migrate mixin:')} {green(mixin_stem)}")
+        plan = auto_migrate_workflow.run_scoped(project_root, config, mixin_stem=mixin_stem)
+
+    if not plan.has_changes:
+        print(f"{green('Nothing to migrate.')} No READY entries found for this target.")
+        return
+
+    composable_count = sum(1 for c in plan.composable_changes if c.has_changes)
+    component_count = sum(1 for c in plan.component_changes if c.has_changes)
+    print(f"  Composables to patch: {yellow(str(composable_count))}")
+    print(f"  Components to update: {yellow(str(component_count))}\n")
+
+    print_diff_summary(plan.all_changes, project_root)
+
+    answer = input(f"\n{bold('Apply all changes?')} (y/n): ").strip().lower()
+    if answer != "y":
+        print("Aborted. No files were written.")
+        return
+
+    written: list[Path] = []
+    try:
+        for change in plan.composable_changes:
+            if change.has_changes:
+                change.file_path.write_text(change.new_content, encoding="utf-8")
+                written.append(change.file_path)
+                print(f"  {green('PATCHED')}  {change.file_path.name}")
+        for change in plan.component_changes:
+            if change.has_changes:
+                change.file_path.write_text(change.new_content, encoding="utf-8")
+                written.append(change.file_path)
+                print(f"  {green('MIGRATED')} {change.file_path.name}")
+    except (KeyboardInterrupt, OSError) as e:
+        print(f"\n  {yellow('WARNING')}: Migration interrupted after {len(written)} file(s) written.")
+        if written:
+            print(f"  Already written: {', '.join(f.name for f in written)}")
+        print(f"  Run: git diff to review. Run: git checkout . to undo.")
+        raise
+
+    print(f"\n{bold('Done.')} Review the diff and test your application.")
+
+
+def auto_migrate(project_root: Path, config: MigrationConfig) -> None:
+    """Run auto-migrate: scan, patch composables, inject setup(), show diff, confirm."""
+    from .workflows import auto_migrate_workflow
+    from .reporting.diff import print_diff_summary
+
+    print(f"\n{bold('Auto-migrate: full project migration')}")
+    print(f"  {dim('Scan → patch composables → inject setup() → dry-run diff → confirm')}\n")
+
+    plan = auto_migrate_workflow.run(project_root, config)
+
+    if not plan.has_changes:
+        print(f"{green('Nothing to migrate.')} All components are already migrated or have no matching composable.")
+        return
+
+    composable_count = sum(1 for c in plan.composable_changes if c.has_changes)
+    component_count = sum(1 for c in plan.component_changes if c.has_changes)
+    print(f"  Composables to patch: {yellow(str(composable_count))}")
+    print(f"  Components to update: {yellow(str(component_count))}\n")
+
+    print_diff_summary(plan.all_changes, project_root)
+
+    answer = input(f"\n{bold('Apply all changes?')} (y/n): ").strip().lower()
+    if answer != "y":
+        print("Aborted. No files were written.")
+        return
+
+    # R-8: wrap write loop with recovery message on interruption
+    written: list[Path] = []
+    try:
+        for change in plan.composable_changes:
+            if change.has_changes:
+                change.file_path.write_text(change.new_content, encoding="utf-8")
+                written.append(change.file_path)
+                print(f"  {green('PATCHED')}  {change.file_path.name}")
+
+        for change in plan.component_changes:
+            if change.has_changes:
+                change.file_path.write_text(change.new_content, encoding="utf-8")
+                written.append(change.file_path)
+                print(f"  {green('MIGRATED')} {change.file_path.name}")
+    except (KeyboardInterrupt, OSError) as e:
+        print(f"\n  {yellow('WARNING')}: Migration interrupted after {len(written)} file(s) written.")
+        if written:
+            print(f"  Already written: {', '.join(f.name for f in written)}")
+        print(f"  Run: git diff to review. Run: git checkout . to undo.")
+        raise
+
+    print(f"\n{bold('Done.')} Review the diff and test your application.")
 
 
 # =============================================================================
@@ -295,6 +421,21 @@ def main():
         composable_arg = sys.argv[3] if len(sys.argv) > 3 else None
         mixin_workflow.run(sys.argv[2], composable_arg, config)
 
+    elif command == "auto-migrate":
+        subcommand = sys.argv[2].lower() if len(sys.argv) > 2 else None
+        if subcommand == "component":
+            if len(sys.argv) < 4:
+                print(f"\n  Usage: python -m vue3_migration auto-migrate component <path.vue>\n")
+                return
+            auto_migrate_scoped(sys.argv[3], "component", config)
+        elif subcommand == "mixin":
+            if len(sys.argv) < 4:
+                print(f"\n  Usage: python -m vue3_migration auto-migrate mixin <mixin.js>\n")
+                return
+            auto_migrate_scoped(sys.argv[3], "mixin", config)
+        else:
+            auto_migrate(config.project_root, config)
+
     elif command in ("help", "--help", "-h"):
         print(f"""
   {bold('Vue Mixin Migration Tool')}
@@ -304,6 +445,7 @@ def main():
     python -m vue3_migration scan                      Scan project for migration status
     python -m vue3_migration component <path.vue>      Migrate one component
     python -m vue3_migration audit <mixin> [composable] Audit one mixin
+    python -m vue3_migration auto-migrate              Fully automated: patch composables, inject setup(), show diff
 
   {bold('Workflow:')}
     1. Run {green('scan')} to see which components still use mixins
@@ -316,6 +458,11 @@ def main():
     3. If you want to focus on a single mixin across the codebase,
        run {green('audit')} to see every component that depends on it
        and what members they use.
+
+    4. Run {green('auto-migrate')} for a fully automated project-wide migration.
+       Scans all components, auto-patches composables for blocked cases,
+       converts lifecycle hooks to Vue 3, shows a dry-run diff, and writes
+       all changes after a single 'y' confirmation.
 """)
 
     else:

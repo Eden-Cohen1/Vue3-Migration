@@ -242,7 +242,7 @@ def plan_injection(
 def apply_changes(file_change: FileChange) -> None:
     """Write planned changes to disk."""
     if file_change.has_changes:
-        file_change.file_path.write_text(file_change.new_content)
+        file_change.file_path.write_text(file_change.new_content, encoding="utf-8")
 
 
 def _get_injectable_members(entry: MixinEntry) -> list[str]:
@@ -357,90 +357,78 @@ def run(component_arg: str, config: MigrationConfig | None = None):
             override_note = f" {dim(f'({override_count} overridden by component)')}" if override_count else ""
             print(f"  - {green(e.mixin_stem)} -> {cyan(comp.fn_name)}() ({len(injectable)} members){override_note}")
 
-    # --- Manual unblock option ---
+    # --- Action prompt ---
     if blocked:
-        print(f"\n{bold('Unblock option')}: Some blocked mixins may have members that are intentionally")
-        print(f"  overridden by another mixin or dynamically defined. You can force-unblock them.")
-        unblock_answer = input(
-            f"\n  Would you like to unblock any of the {yellow(str(len(blocked)))} blocked mixin(s)? (y/n): "
-        ).strip().lower()
-
-        if unblock_answer == "y":
-            unblockable = [e for e in blocked if e.composable]
-            non_unblockable = [e for e in blocked if not e.composable]
-
-            if non_unblockable:
-                print(f"\n  {dim('Cannot unblock (no composable found):')}")
-                for e in non_unblockable:
-                    print(f"    - {dim(e.mixin_stem)}")
-
-            if unblockable:
-                print(f"\n  Select mixin(s) to unblock (comma-separated numbers, or 'a' for all):")
-                for i, e in enumerate(unblockable, 1):
-                    cls = e.classification
-                    missing_list = (cls.truly_missing + cls.truly_not_returned) if cls else []
-                    print(f"    {i}. {yellow(e.mixin_stem)} -> {cyan(e.composable.fn_name)}()")
-                    print(f"       Unresolved members: {red(', '.join(missing_list))}")
-                    print(f"       {dim('These members will NOT be destructured from the composable.')}")
-
-                choice = input(f"\n  Unblock (1-{len(unblockable)}, comma-sep, or 'a'): ").strip().lower()
-
-                indices_to_unblock: set[int] = set()
-                if choice == "a":
-                    indices_to_unblock = set(range(len(unblockable)))
-                else:
-                    for part in choice.split(","):
-                        part = part.strip()
-                        try:
-                            idx = int(part) - 1
-                            if 0 <= idx < len(unblockable):
-                                indices_to_unblock.add(idx)
-                        except ValueError:
-                            pass
-
-                for idx in sorted(indices_to_unblock):
-                    e = unblockable[idx]
-                    cls = e.classification
-                    if cls:
-                        all_unresolved = set(cls.truly_missing + cls.truly_not_returned)
-                        cls.injectable = [
-                            m for m in e.used_members
-                            if m not in all_unresolved
-                            and m not in cls.overridden
-                            and m not in cls.overridden_not_returned
-                        ]
-                    e.status = MigrationStatus.FORCE_UNBLOCKED
-                    blocked.remove(e)
-                    ready.append(e)
-                    print(f"  {green('Unblocked')}: {e.mixin_stem}")
-
-    if not ready:
-        print(f"\n{yellow('No mixins are ready for injection.')} Fix the issues in the report and re-run.")
-        return
-
-    # Ask user
-    if blocked:
-        answer = input(
-            f"\nWould you like to inject the {green(str(len(ready)))} ready composable(s) now? "
-            f"(the {yellow(str(len(blocked)))} blocked one(s) will remain as mixins) (y/n): "
-        ).strip().lower()
+        print(f"\n{bold('What would you like to do?')}")
+        print(f"  {bold('a')}. Auto-migrate — auto-patch composables for blocked mixins, then inject all")
+        if ready:
+            print(f"  {bold('r')}. Inject ready only — inject the {green(str(len(ready)))} ready mixin(s), leave {yellow(str(len(blocked)))} blocked")
+        print(f"  {bold('q')}. Skip\n")
+        choice = input("  > ").strip().lower()
     else:
-        answer = input("\nInject all composables? (y/n): ").strip().lower()
+        choice = input(f"\nInject all composables? (y/n): ").strip().lower()
+        if choice == "y":
+            choice = "r"  # treat as inject-ready (all are ready)
 
-    if answer != "y":
-        print("Skipped injection.")
-        return
+    if choice == "a":
+        from . import auto_migrate_workflow
+        from ..reporting.diff import print_diff_summary
 
-    # Plan and apply injection
-    print("\nInjecting...")
-    file_change = plan_injection(component_path, ready)
+        plan = auto_migrate_workflow.run_scoped(project_root, config, component_path=component_path)
+        if not plan.has_changes:
+            print(f"\n{green('Nothing to auto-migrate.')} No READY entries found after patching.")
+            return
 
-    if file_change.has_changes:
-        apply_changes(file_change)
-        print(f"\n{green('Changes applied')}:")
-        for change in file_change.changes:
-            print(f"  - {change}")
+        composable_count = sum(1 for c in plan.composable_changes if c.has_changes)
+        component_count = sum(1 for c in plan.component_changes if c.has_changes)
+        if composable_count:
+            print(f"\n  Composables to patch: {yellow(str(composable_count))}")
+        print(f"  Components to update: {yellow(str(component_count))}\n")
+
+        print_diff_summary(plan.all_changes, project_root)
+
+        confirm = input(f"\n{bold('Apply all changes?')} (y/n): ").strip().lower()
+        if confirm != "y":
+            print("Aborted. No files were written.")
+            return
+
+        written: list[Path] = []
+        try:
+            for change in plan.composable_changes:
+                if change.has_changes:
+                    change.file_path.write_text(change.new_content, encoding="utf-8")
+                    written.append(change.file_path)
+                    print(f"  {green('PATCHED')}  {change.file_path.name}")
+            for change in plan.component_changes:
+                if change.has_changes:
+                    change.file_path.write_text(change.new_content, encoding="utf-8")
+                    written.append(change.file_path)
+                    print(f"  {green('MIGRATED')} {change.file_path.name}")
+        except (KeyboardInterrupt, OSError):
+            print(f"\n  {yellow('WARNING')}: Interrupted after {len(written)} file(s) written.")
+            if written:
+                print(f"  Already written: {', '.join(f.name for f in written)}")
+            print(f"  Run: git diff to review. Run: git checkout . to undo.")
+            raise
+
+    elif choice == "r":
+        if not ready:
+            print(f"\n{yellow('No mixins are ready for injection.')} Fix the issues in the report and re-run.")
+            return
+
+        print("\nInjecting...")
+        file_change = plan_injection(component_path, ready)
+
+        if file_change.has_changes:
+            apply_changes(file_change)
+            print(f"\n{green('Changes applied')}:")
+            for change in file_change.changes:
+                print(f"  - {change}")
+        else:
+            print("\nNo changes needed.")
+
     else:
-        print("\nNo changes needed.")
+        print("Skipped.")
+        return
 
     print(f"\n{bold('Done.')} Review the changes and test your application.")
