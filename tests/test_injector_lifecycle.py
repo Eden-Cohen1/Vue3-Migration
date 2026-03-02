@@ -1,5 +1,7 @@
 # tests/test_injector_lifecycle.py
 """Tests for the lifecycle_calls and inline_setup_lines extensions to inject_setup."""
+from textwrap import dedent
+
 from vue3_migration.transform.injector import inject_setup
 
 COMPONENT = "<script>\nexport default {\n  name: 'Foo',\n}\n</script>"
@@ -52,3 +54,25 @@ def test_only_inline_lines_no_composable_calls():
     )
     assert "initData()" in result
     assert "setup()" in result
+
+
+def test_inject_setup_adds_composable_import():
+    """All composables called in setup() must have import statements."""
+    source = dedent("""\
+        <script>
+        import selectionMixin from '@/mixins/selectionMixin'
+        import paginationMixin from '@/mixins/paginationMixin'
+
+        export default {
+          name: 'Test',
+          mixins: [selectionMixin, paginationMixin],
+        }
+        </script>
+    """)
+    composable_calls = [
+        ("useSelection", "@/composables/useSelection", ["selectedItems"]),
+        ("usePagination", "@/composables/usePagination", ["currentPage"]),
+    ]
+    result = inject_setup(source, composable_calls)
+    assert "import { useSelection } from '@/composables/useSelection'" in result
+    assert "import { usePagination } from '@/composables/usePagination'" in result

@@ -59,7 +59,7 @@ def remove_mixin_from_array(content: str, local_name: str) -> str:
 
 def inject_setup(
     content: str,
-    composable_calls: list[tuple[str, list[str]]],
+    composable_calls: list[tuple],
     indent: str = "  ",
     lifecycle_calls: list[str] | None = None,
     inline_setup_lines: list[str] | None = None,
@@ -68,7 +68,9 @@ def inject_setup(
 
     Args:
         content: The component source text.
-        composable_calls: List of (fn_name, [member1, member2, ...]) tuples.
+        composable_calls: List of tuples — either (fn_name, [members]) or
+            (fn_name, import_path, [members]).  When import_path is provided,
+            an import statement is added automatically.
         indent: Indentation string (default 2 spaces).
         lifecycle_calls: Lines to append at the END of setup() body (e.g.
             ``onMounted(() => {...})`` wrapped hooks).
@@ -79,9 +81,22 @@ def inject_setup(
         Modified source text with setup() containing inline setup lines,
         composable calls, and lifecycle wrapper calls in that order.
     """
+    # Normalise 2-tuples and 3-tuples into a uniform structure
+    parsed_calls: list[tuple[str, str | None, list[str]]] = []
+    for call in composable_calls:
+        if len(call) == 3:
+            parsed_calls.append((call[0], call[1], call[2]))
+        else:
+            parsed_calls.append((call[0], None, call[1]))
+
+    # Add composable imports for any call that provides an import_path
+    for fn_name, import_path, _members in parsed_calls:
+        if import_path is not None:
+            content = add_composable_import(content, fn_name, import_path)
+
     all_returned_members = []
     call_lines = []
-    for fn_name, members in composable_calls:
+    for fn_name, _import_path, members in parsed_calls:
         call_lines.append(f"{indent}{indent}const {{ {', '.join(members)} }} = {fn_name}()")
         all_returned_members.extend(members)
 
