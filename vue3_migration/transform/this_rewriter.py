@@ -3,6 +3,76 @@ import re
 from ..core.js_parser import skip_non_code
 
 
+def _collect_template_literal_spans(
+    code: str, start: int, spans: list[tuple[int, int]]
+) -> int:
+    """Parse a template literal starting at ``start`` (the opening backtick).
+
+    Literal text portions are added to *spans* as non-code.
+    ``${…}`` interpolation bodies are left as code so that ``this.*``
+    references inside them get rewritten.
+    Returns the index after the closing backtick.
+    """
+    pos = start + 1  # skip opening backtick
+    text_start = start  # beginning of current non-code (literal text) region
+
+    while pos < len(code):
+        ch = code[pos]
+        if ch == "\\":
+            pos += 2
+            continue
+        if code[pos: pos + 2] == "${":
+            # Mark everything from text_start through ${ as non-code
+            spans.append((text_start, pos + 2))
+            pos += 2
+            # Process the expression as code until matching }
+            depth = 1
+            while pos < len(code) and depth > 0:
+                new_pos, skipped = skip_non_code(code, pos)
+                if skipped:
+                    # Strings/comments inside the interpolation are still non-code
+                    spans.append((pos, new_pos))
+                    pos = new_pos
+                    continue
+                if code[pos] == "{":
+                    depth += 1
+                elif code[pos] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        # The closing } starts a new non-code literal text region
+                        text_start = pos
+                        pos += 1
+                        break
+                pos += 1
+        elif ch == "`":
+            # Closing backtick — mark remaining text as non-code
+            spans.append((text_start, pos + 1))
+            return pos + 1
+        else:
+            pos += 1
+
+    # Unterminated template literal
+    spans.append((text_start, pos))
+    return pos
+
+
+def _collect_non_code_spans(code: str) -> list[tuple[int, int]]:
+    """Collect non-code spans with template-literal interpolation awareness."""
+    spans: list[tuple[int, int]] = []
+    pos = 0
+    while pos < len(code):
+        if code[pos] == "`":
+            pos = _collect_template_literal_spans(code, pos, spans)
+        else:
+            new_pos, skipped = skip_non_code(code, pos)
+            if skipped:
+                spans.append((pos, new_pos))
+                pos = new_pos
+            else:
+                pos += 1
+    return spans
+
+
 def rewrite_this_refs(
     code: str,
     ref_members: list[str],
@@ -14,9 +84,9 @@ def rewrite_this_refs(
     - this.plainMember -> plainMember        (methods)
     - this.unknown     -> this.unknown       (best-effort: left unchanged)
 
-    Skips replacements inside strings, template literals, comments, and regexes.
-    Template literal ${ } interpolations are treated as opaque strings by
-    skip_non_code and will NOT have this-refs rewritten (known limitation).
+    Skips replacements inside strings, comments, regex literals, and
+    template literal text.  ``${…}`` interpolation bodies inside template
+    literals ARE treated as code and will have this-refs rewritten.
 
     Args:
         code: JavaScript source fragment to rewrite.
@@ -30,15 +100,7 @@ def rewrite_this_refs(
         return code
 
     # Collect non-code spans [start, end) so we can skip them during substitution
-    non_code_spans: list[tuple[int, int]] = []
-    pos = 0
-    while pos < len(code):
-        new_pos, skipped = skip_non_code(code, pos)
-        if skipped:
-            non_code_spans.append((pos, new_pos))
-            pos = new_pos
-        else:
-            pos += 1
+    non_code_spans = _collect_non_code_spans(code)
 
     # Build combined regex for all known members
     # Longer names first to avoid partial matches (e.g. 'countTotal' before 'count')

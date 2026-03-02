@@ -68,3 +68,37 @@ def test_prefix_overlap_longer_name_wins():
         plain_members=[]
     )
     assert result == "countTotal.value + count.value"
+
+
+def test_rewrite_this_in_template_literal_interpolation():
+    """this.x inside ${...} in a template literal must be rewritten."""
+    code = "const msg = `Selected: ${this.selectedItems.length} items`"
+    result = rewrite_this_refs(code, ref_members=["selectedItems"], plain_members=[])
+    assert "this.selectedItems" not in result
+    assert "selectedItems.value" in result
+
+
+def test_no_rewrite_in_template_literal_text():
+    """Literal text portions of template literals must NOT be rewritten."""
+    code = "const msg = `this.count is just text ${this.count} end`"
+    result = rewrite_this_refs(code, ref_members=["count"], plain_members=[])
+    assert "`this.count is just text ${count.value} end`" in result
+
+
+def test_nested_template_literal_interpolations():
+    """Multiple interpolations in one template literal."""
+    code = "`${this.a} and ${this.b}`"
+    result = rewrite_this_refs(code, ref_members=["a", "b"], plain_members=[])
+    assert "this.a" not in result
+    assert "this.b" not in result
+    assert "a.value" in result
+    assert "b.value" in result
+
+
+def test_method_call_in_template_literal():
+    """Plain member (method) inside template literal interpolation."""
+    code = "const msg = `Result: ${this.formatValue(this.total)}`"
+    result = rewrite_this_refs(code, ref_members=["total"], plain_members=["formatValue"])
+    assert "formatValue(total.value)" in result
+    assert "this.formatValue" not in result
+    assert "this.total" not in result
