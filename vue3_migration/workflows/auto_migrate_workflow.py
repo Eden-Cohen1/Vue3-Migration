@@ -328,3 +328,36 @@ def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
         component_changes=component_changes,
         composable_changes=composable_changes,
     )
+
+
+def run_scoped(
+    project_root: Path,
+    config: MigrationConfig,
+    component_path: "Path | None" = None,
+    mixin_stem: "str | None" = None,
+) -> MigrationPlan:
+    """Run auto-migrate scoped to one component or one mixin stem.
+
+    Exactly one of component_path or mixin_stem must be provided.
+    No file I/O. Returns a MigrationPlan the CLI can show as a diff and write.
+    """
+    if component_path is None and mixin_stem is None:
+        raise ValueError("Provide either component_path or mixin_stem")
+
+    all_entries = collect_all_mixin_entries(project_root, config)
+
+    if component_path is not None:
+        entries = [(path, es) for path, es in all_entries if path == component_path]
+    else:
+        entries = [
+            (path, [e for e in es if e.mixin_stem == mixin_stem])
+            for path, es in all_entries
+            if any(e.mixin_stem == mixin_stem for e in es)
+        ]
+
+    composable_changes = plan_composable_patches(entries)
+    component_changes = plan_component_injections(entries, composable_changes, config)
+    return MigrationPlan(
+        component_changes=component_changes,
+        composable_changes=composable_changes,
+    )
