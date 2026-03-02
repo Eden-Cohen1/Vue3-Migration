@@ -55,10 +55,15 @@ def test_lifecycle_hooks_component_has_on_mounted(project):
     assert "onMounted" in lh.new_content
 
 
-def test_no_composable_component_unchanged(project):
+def test_no_composable_component_gets_generated_composable(project):
+    """auto-migrate generates useAuth.js and injects it into NoComposable.vue."""
     plan = _run(project)
-    no_comp = [c for c in plan.component_changes if "NoComposable" in str(c.file_path)]
-    assert all(not c.has_changes for c in no_comp)
+    auth = next((c for c in plan.composable_changes if "useAuth" in str(c.file_path)), None)
+    assert auth is not None and auth.has_changes
+    assert "export function useAuth" in auth.new_content
+    no_comp = next((c for c in plan.component_changes if "NoComposable" in str(c.file_path)), None)
+    assert no_comp is not None and no_comp.has_changes
+    assert "useAuth" in no_comp.new_content
 
 
 def test_write_all_changes_removes_mixins(project):

@@ -58,11 +58,21 @@ def test_fully_covered_component_injected(project):
     assert "useSelection" in fc.new_content
     assert "setup()" in fc.new_content
 
-def test_no_composable_component_not_injected(project):
+def test_no_composable_component_gets_generated_composable(project):
+    """NoComposable.vue uses authMixin — a new useAuth.js should be generated."""
     with patch("builtins.print"):
         plan = run(project, _make_config(project))
-    no_comp = [c for c in plan.component_changes if "NoComposable" in str(c.file_path)]
-    assert all(not c.has_changes for c in no_comp)
+    # A new composable should be generated
+    auth_composable = next(
+        (c for c in plan.composable_changes if "useAuth" in str(c.file_path)), None
+    )
+    assert auth_composable is not None and auth_composable.has_changes
+    assert auth_composable.original_content == ""  # new file
+    assert "export function useAuth" in auth_composable.new_content
+    # NoComposable.vue should now be injected with useAuth
+    no_comp = next((c for c in plan.component_changes if "NoComposable" in str(c.file_path)), None)
+    assert no_comp is not None and no_comp.has_changes
+    assert "useAuth" in no_comp.new_content
 
 def test_lifecycle_hooks_converted(project):
     with patch("builtins.print"):
