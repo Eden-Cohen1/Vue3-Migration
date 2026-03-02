@@ -76,8 +76,8 @@ def inject_setup(
             ``created``/``beforeCreate`` hook bodies inlined directly).
 
     Returns:
-        Modified source text with setup() containing all composable calls,
-        inline setup lines, and lifecycle wrapper calls in that order.
+        Modified source text with setup() containing inline setup lines,
+        composable calls, and lifecycle wrapper calls in that order.
     """
     all_returned_members = []
     call_lines = []
@@ -87,11 +87,11 @@ def inject_setup(
 
     # Prepend inline lines (created/beforeCreate bodies inlined in setup)
     if inline_setup_lines:
-        call_lines = list(inline_setup_lines) + call_lines
+        call_lines = inline_setup_lines + call_lines
 
     # Append lifecycle wrapper calls (onMounted, onBeforeUnmount, etc.)
     if lifecycle_calls:
-        call_lines = call_lines + list(lifecycle_calls)
+        call_lines = call_lines + lifecycle_calls
 
     # --- Existing setup(): prepend calls, merge into return ---
     setup_match = re.search(r"\bsetup\s*\([^)]*\)\s*\{", content)
@@ -125,7 +125,8 @@ def inject_setup(
     lines = [f"{indent}setup() {{"]
     lines.extend(call_lines)
     lines.append("")
-    lines.append(f"{indent}{indent}return {{ {', '.join(all_returned_members)} }}")
+    if all_returned_members:
+        lines.append(f"{indent}{indent}return {{ {', '.join(all_returned_members)} }}")
     lines.append(f"{indent}}},")
     setup_block = "\n".join(lines) + "\n"
 
