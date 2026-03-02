@@ -242,7 +242,7 @@ def plan_injection(
 def apply_changes(file_change: FileChange) -> None:
     """Write planned changes to disk."""
     if file_change.has_changes:
-        file_change.file_path.write_text(file_change.new_content)
+        file_change.file_path.write_text(file_change.new_content, encoding="utf-8")
 
 
 def _get_injectable_members(entry: MixinEntry) -> list[str]:
