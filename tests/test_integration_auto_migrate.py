@@ -56,14 +56,14 @@ def test_lifecycle_hooks_component_has_on_mounted(project):
 
 
 def test_no_composable_component_gets_generated_composable(project):
-    """auto-migrate generates useAuth.js and injects it into NoComposable.vue."""
+    """auto-migrate generates useNotification.js and injects it into NoComposable.vue."""
     plan = _run(project)
-    auth = next((c for c in plan.composable_changes if "useAuth" in str(c.file_path)), None)
-    assert auth is not None and auth.has_changes
-    assert "export function useAuth" in auth.new_content
+    notif = next((c for c in plan.composable_changes if "useNotification" in str(c.file_path)), None)
+    assert notif is not None and notif.has_changes
+    assert "export function useNotification" in notif.new_content
     no_comp = next((c for c in plan.component_changes if "NoComposable" in str(c.file_path)), None)
     assert no_comp is not None and no_comp.has_changes
-    assert "useAuth" in no_comp.new_content
+    assert "useNotification" in no_comp.new_content
 
 
 def test_write_all_changes_removes_mixins(project):

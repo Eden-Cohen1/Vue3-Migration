@@ -85,9 +85,9 @@ class TestSearchForComposableExact:
         result = search_for_composable('itemsMixin', [COMPOSABLES_DIR])
         assert any('useItems' in p.name for p in result)
 
-    def test_no_match_for_auth_mixin(self):
-        # authMixin -> candidates ['useAuth'], no useAuth.js exists -> []
-        result = search_for_composable('authMixin', [COMPOSABLES_DIR])
+    def test_no_match_for_notification_mixin(self):
+        # notificationMixin -> candidates ['useNotification'], no useNotification.js exists -> []
+        result = search_for_composable('notificationMixin', [COMPOSABLES_DIR])
         assert result == []
 
     def test_empty_dirs_list(self):

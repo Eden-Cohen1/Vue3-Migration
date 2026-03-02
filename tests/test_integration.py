@@ -121,42 +121,31 @@ class TestWithOverrides:
 
 
 # ===========================================================================
-# Edge case 3a — PartiallyBlocked.vue + paginationMixin -> BLOCKED_MISSING_MEMBERS
-# hasPrevPage and prevPage are completely absent from usePagination.
+# Edge case 3a — PartiallyBlocked.vue + paginationMixin -> BLOCKED_NOT_RETURNED
+# resetPagination is defined in usePagination but NOT in the return statement.
 # ===========================================================================
 
 class TestPartiallyBlockedPagination:
-    def test_status_is_blocked_missing(self):
+    def test_status_is_blocked_not_returned(self):
         entry = _run("PartiallyBlocked.vue", "paginationMixin")
-        assert entry.status == MigrationStatus.BLOCKED_MISSING_MEMBERS
+        assert entry.status == MigrationStatus.BLOCKED_NOT_RETURNED
 
     def test_composable_found(self):
         entry = _run("PartiallyBlocked.vue", "paginationMixin")
         assert entry.composable is not None
         assert entry.composable.fn_name == "usePagination"
 
-    def test_hasprevpage_is_truly_missing(self):
+    def test_reset_pagination_is_truly_not_returned(self):
         entry = _run("PartiallyBlocked.vue", "paginationMixin")
-        assert "hasPrevPage" in entry.classification.truly_missing
-
-    def test_prevpage_is_truly_missing(self):
-        entry = _run("PartiallyBlocked.vue", "paginationMixin")
-        assert "prevPage" in entry.classification.truly_missing
+        assert "resetPagination" in entry.classification.truly_not_returned
 
     def test_reset_pagination_in_all_identifiers(self):
-        # resetPagination IS defined in the composable (just not returned)
         entry = _run("PartiallyBlocked.vue", "paginationMixin")
         assert "resetPagination" in entry.composable.all_identifiers
 
     def test_reset_pagination_not_in_return_keys(self):
         entry = _run("PartiallyBlocked.vue", "paginationMixin")
         assert "resetPagination" not in entry.composable.return_keys
-
-    def test_reset_pagination_not_a_blocker_here(self):
-        # resetPagination is not USED by this component, so it's not in truly_not_returned
-        entry = _run("PartiallyBlocked.vue", "paginationMixin")
-        assert "resetPagination" not in entry.used_members
-        assert "resetPagination" not in entry.classification.truly_not_returned
 
 
 # ===========================================================================
@@ -175,37 +164,33 @@ class TestPartiallyBlockedSelection:
 
 
 # ===========================================================================
-# Edge case 4 — NoComposable.vue + authMixin -> BLOCKED_NO_COMPOSABLE
-# No composable exists; user answers "n" when asked.
+# Edge case 4 — NoComposable.vue + notificationMixin -> BLOCKED_NO_COMPOSABLE
+# No composable exists for notificationMixin; user answers "n" when asked.
 # ===========================================================================
 
 class TestNoComposable:
     def test_status_is_blocked_no_composable(self):
-        entry = _run("NoComposable.vue", "authMixin", mock_input="n")
+        entry = _run("NoComposable.vue", "notificationMixin", mock_input="n")
         assert entry.status == MigrationStatus.BLOCKED_NO_COMPOSABLE
 
     def test_composable_is_none(self):
-        entry = _run("NoComposable.vue", "authMixin", mock_input="n")
+        entry = _run("NoComposable.vue", "notificationMixin", mock_input="n")
         assert entry.composable is None
 
     def test_classification_is_none(self):
-        entry = _run("NoComposable.vue", "authMixin", mock_input="n")
+        entry = _run("NoComposable.vue", "notificationMixin", mock_input="n")
         assert entry.classification is None
 
     def test_mixin_members_still_extracted(self):
-        entry = _run("NoComposable.vue", "authMixin", mock_input="n")
-        assert "isAuthenticated" in entry.members.data
-        assert "currentUser" in entry.members.data
-        assert "logout" in entry.members.methods
-
-    def test_lifecycle_hooks_still_extracted(self):
-        entry = _run("NoComposable.vue", "authMixin", mock_input="n")
-        assert "created" in entry.lifecycle_hooks
+        entry = _run("NoComposable.vue", "notificationMixin", mock_input="n")
+        assert "notifications" in entry.members.data
+        assert "unreadCount" in entry.members.data
+        assert "clearNotifications" in entry.members.methods
 
     def test_used_members_still_detected(self):
-        entry = _run("NoComposable.vue", "authMixin", mock_input="n")
-        assert "isAuthenticated" in entry.used_members
-        assert "logout" in entry.used_members
+        entry = _run("NoComposable.vue", "notificationMixin", mock_input="n")
+        assert "hasNotifications" in entry.used_members
+        assert "clearNotifications" in entry.used_members
 
 
 # ===========================================================================
