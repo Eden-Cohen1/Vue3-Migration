@@ -1,11 +1,11 @@
 <template>
   <!-- Edge case: two mixins, different statuses
-       - selectionMixin -> READY
-       - paginationMixin -> BLOCKED (hasPrevPage and prevPage missing from composable) -->
+       - selectionMixin  -> READY
+       - paginationMixin -> BLOCKED_NOT_RETURNED (resetPagination defined but not returned) -->
   <div>
     <p>Page {{ currentPage }} of {{ totalPages }}</p>
-    <button @click="prevPage" :disabled="!hasPrevPage">Prev</button>
     <button @click="nextPage" :disabled="!hasNextPage">Next</button>
+    <button @click="resetPagination">Reset</button>
     <p>{{ selectionCount }} selected</p>
   </div>
 </template>
