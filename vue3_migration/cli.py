@@ -301,13 +301,13 @@ def auto_migrate(project_root: Path, config: MigrationConfig) -> None:
     try:
         for change in plan.composable_changes:
             if change.has_changes:
-                change.file_path.write_text(change.new_content)
+                change.file_path.write_text(change.new_content, encoding="utf-8")
                 written.append(change.file_path)
                 print(f"  {green('PATCHED')}  {change.file_path.name}")
 
         for change in plan.component_changes:
             if change.has_changes:
-                change.file_path.write_text(change.new_content)
+                change.file_path.write_text(change.new_content, encoding="utf-8")
                 written.append(change.file_path)
                 print(f"  {green('MIGRATED')} {change.file_path.name}")
     except (KeyboardInterrupt, OSError) as e:

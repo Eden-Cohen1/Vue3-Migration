@@ -186,9 +186,9 @@ def plan_composable_patches(
         )
         change_descs = []
         if rec["not_returned"]:
-            change_descs.append(f"Added to return: {', '.join(rec['not_returned'])}")
+            change_descs.append(f"Added to return: {', '.join(sorted(rec['not_returned']))}")
         if rec["missing"]:
-            change_descs.append(f"Added declarations: {', '.join(rec['missing'])}")
+            change_descs.append(f"Added declarations: {', '.join(sorted(rec['missing']))}")
         changes.append(FileChange(
             file_path=comp_path,
             original_content=original,
