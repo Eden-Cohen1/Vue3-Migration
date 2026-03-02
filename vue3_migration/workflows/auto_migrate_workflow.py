@@ -30,7 +30,7 @@ from ..transform.injector import (
     remove_import_line, remove_mixin_from_array,
 )
 from ..transform.lifecycle_converter import (
-    convert_lifecycle_hooks, get_required_imports,
+    convert_lifecycle_hooks, find_lifecycle_referenced_members, get_required_imports,
 )
 
 
@@ -348,12 +348,25 @@ def plan_component_injections(
         all_lifecycle_calls: list[str] = []
 
         for entry in ready_entries:
-            injectable = entry.classification.injectable if entry.classification else entry.used_members
+            injectable = list(entry.classification.injectable if entry.classification else entry.used_members)
+            mixin_content = None
+
+            # Augment injectable with members referenced in lifecycle hook bodies
+            if entry.lifecycle_hooks and entry.composable:
+                mixin_content = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+                lifecycle_members = find_lifecycle_referenced_members(
+                    mixin_content, entry.lifecycle_hooks, entry.members.all_names
+                )
+                for m in lifecycle_members:
+                    if m not in injectable:
+                        injectable.append(m)
+
             if injectable and entry.composable:
                 composable_calls.append((entry.composable.fn_name, injectable))
 
             if entry.lifecycle_hooks:
-                mixin_content = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+                if mixin_content is None:
+                    mixin_content = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
                 ref_m = entry.members.data + entry.members.computed + entry.members.watch
                 plain_m = entry.members.methods
                 inline, wrapped = convert_lifecycle_hooks(
