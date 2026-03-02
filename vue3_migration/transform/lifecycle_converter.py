@@ -1,7 +1,10 @@
 """Convert Vue 2 lifecycle hooks to Vue 3 composition API form."""
 import re
+import textwrap
 from ..core.js_parser import skip_non_code, extract_brace_block
 from .this_rewriter import rewrite_this_refs
+
+_MAX_SIGNATURE_SCAN = 400  # max chars to scan from hook name to opening brace
 
 HOOK_MAP: dict[str, str | None] = {
     "beforeCreate": None,   # inline in setup (no wrapper needed)
@@ -77,7 +80,7 @@ def extract_hook_body(mixin_source: str, hook_name: str) -> str | None:
             continue
         pos = match.end()
         brace_pos = None
-        limit = pos + 400  # enough for any realistic hook signature
+        limit = pos + _MAX_SIGNATURE_SCAN
         while pos < min(len(mixin_source), limit):
             new_pos, skipped = skip_non_code(mixin_source, pos)
             if skipped:
@@ -135,17 +138,18 @@ def convert_lifecycle_hooks(
         if body is None or not body.strip():
             continue  # skip missing or empty hooks
         rewritten = rewrite_this_refs(body.strip(), ref_members, plain_members)
-        body_lines = [
-            f"{inner}{line}" if line.strip() else ""
-            for line in rewritten.splitlines()
-        ]
         vue3_fn = HOOK_MAP[hook]
         if vue3_fn is None:
+            dedented = textwrap.dedent(rewritten)
             inline_lines.extend(
-                f"{indent}{line.strip()}" for line in rewritten.splitlines()
+                f"{indent}{line.rstrip()}" for line in dedented.splitlines()
                 if line.strip()
             )
         else:
+            body_lines = [
+                f"{inner}{line}" if line.strip() else ""
+                for line in rewritten.splitlines()
+            ]
             wrapped_lines.append(f"{indent}{vue3_fn}(() => {{")
             wrapped_lines.extend(body_lines)
             wrapped_lines.append(f"{indent}}})")
