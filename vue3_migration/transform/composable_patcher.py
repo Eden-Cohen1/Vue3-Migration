@@ -1,7 +1,7 @@
 """Patch existing composables to fix BLOCKED_NOT_RETURNED and BLOCKED_MISSING_MEMBERS."""
 import re
 from ..core.composable_analyzer import extract_all_identifiers
-from ..core.js_parser import extract_brace_block, skip_non_code
+from ..core.js_parser import extract_brace_block
 from ..models import MixinMembers
 from .this_rewriter import rewrite_this_refs
 from .lifecycle_converter import extract_hook_body
