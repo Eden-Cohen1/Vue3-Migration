@@ -20,6 +20,10 @@ from ..models import (
     ComposableCoverage, FileChange, MigrationConfig, MigrationStatus,
     MixinEntry, MixinMembers,
 )
+from ..transform.composable_generator import (
+    generate_composable_from_mixin,
+    mixin_stem_to_composable_name,
+)
 from ..transform.composable_patcher import patch_composable
 from ..transform.injector import (
     add_composable_import, inject_setup,
@@ -198,6 +202,52 @@ def plan_composable_patches(
     return changes
 
 
+def plan_new_composables(
+    entries_by_component: list[tuple[Path, list[MixinEntry]]],
+    project_root: Path,
+) -> list[FileChange]:
+    """Generate new composable files for BLOCKED_NO_COMPOSABLE entries.
+
+    For each unique mixin that has no composable at all, scaffolds a new
+    composable file in the project's first composables directory.
+    Returns FileChange objects with original_content="" (new files).
+    """
+    composable_dirs = find_composable_dirs(project_root)
+    if not composable_dirs:
+        return []
+    target_dir = composable_dirs[0]
+
+    seen_stems: set[str] = set()
+    changes = []
+
+    for _comp_path, entries in entries_by_component:
+        for entry in entries:
+            if entry.status != MigrationStatus.BLOCKED_NO_COMPOSABLE:
+                continue
+            if entry.mixin_stem in seen_stems:
+                continue
+            seen_stems.add(entry.mixin_stem)
+
+            mixin_source = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+            fn_name = mixin_stem_to_composable_name(entry.mixin_stem)
+            composable_path = target_dir / f"{fn_name}.js"
+
+            content = generate_composable_from_mixin(
+                mixin_source=mixin_source,
+                mixin_stem=entry.mixin_stem,
+                mixin_members=entry.members,
+                lifecycle_hooks=entry.lifecycle_hooks,
+            )
+            changes.append(FileChange(
+                file_path=composable_path,
+                original_content="",
+                new_content=content,
+                changes=[f"Generated composable from {entry.mixin_stem}"],
+            ))
+
+    return changes
+
+
 def plan_component_injections(
     entries_by_component: list[tuple[Path, list[MixinEntry]]],
     composable_patches: list[FileChange],
@@ -212,6 +262,14 @@ def plan_component_injections(
         c.file_path: c.new_content for c in composable_patches if c.has_changes
     }
 
+    # Build lookup of generated composables by fn_name (original_content == "" → new file)
+    generated_by_fn_name: dict[str, FileChange] = {}
+    for change in composable_patches:
+        if change.original_content == "" and change.has_changes:
+            fn_name = extract_function_name(change.new_content)
+            if fn_name:
+                generated_by_fn_name[fn_name] = change
+
     component_changes = []
 
     for comp_path, entries in entries_by_component:
@@ -221,6 +279,7 @@ def plan_component_injections(
         ready_entries = []
 
         for entry in entries:
+            # Re-classify patched existing composables
             if (
                 entry.composable
                 and entry.composable.file_path in patched_content
@@ -240,6 +299,22 @@ def plan_component_injections(
                 entry.composable = updated
                 entry.classification = updated.classify_members(entry.used_members, own_members)
                 entry.compute_status()
+
+            # Re-classify BLOCKED_NO_COMPOSABLE entries that have a generated composable
+            elif entry.status == MigrationStatus.BLOCKED_NO_COMPOSABLE and not entry.composable:
+                expected_fn = mixin_stem_to_composable_name(entry.mixin_stem)
+                if expected_fn in generated_by_fn_name:
+                    change = generated_by_fn_name[expected_fn]
+                    coverage = ComposableCoverage(
+                        file_path=change.file_path,
+                        fn_name=expected_fn,
+                        import_path=compute_import_path(change.file_path, config.project_root),
+                        all_identifiers=extract_all_identifiers(change.new_content),
+                        return_keys=extract_return_keys(change.new_content),
+                    )
+                    entry.composable = coverage
+                    entry.classification = coverage.classify_members(entry.used_members, own_members)
+                    entry.compute_status()
 
             if entry.status == MigrationStatus.READY:
                 ready_entries.append(entry)
@@ -316,13 +391,23 @@ def plan_component_injections(
     return component_changes
 
 
+def _build_all_composable_changes(
+    entries: list[tuple[Path, list[MixinEntry]]],
+    project_root: Path,
+) -> list[FileChange]:
+    """Combine patched-existing + newly-generated composable changes."""
+    patched = plan_composable_patches(entries)
+    generated = plan_new_composables(entries, project_root)
+    return patched + generated
+
+
 def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     """Main entry point: scan, plan composable patches, plan component injections.
 
     No file I/O. Returns a MigrationPlan the CLI can show as a diff and write.
     """
     entries = collect_all_mixin_entries(project_root, config)
-    composable_changes = plan_composable_patches(entries)
+    composable_changes = _build_all_composable_changes(entries, project_root)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
         component_changes=component_changes,
@@ -355,7 +440,7 @@ def run_scoped(
             if any(e.mixin_stem == mixin_stem for e in es)
         ]
 
-    composable_changes = plan_composable_patches(entries)
+    composable_changes = _build_all_composable_changes(entries, project_root)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
         component_changes=component_changes,
