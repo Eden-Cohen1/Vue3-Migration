@@ -270,6 +270,71 @@ def interactive_menu(config: MigrationConfig):
 # Auto-migrate
 # =============================================================================
 
+def auto_migrate_scoped(target_arg: str, scope: str, config: MigrationConfig) -> None:
+    """Run auto-migrate scoped to one component or one mixin file."""
+    from .workflows import auto_migrate_workflow
+    from .reporting.diff import print_diff_summary
+
+    project_root = config.project_root
+
+    if scope == "component":
+        target_path = Path(target_arg).resolve()
+        if not target_path.is_file():
+            target_path = (project_root / target_arg).resolve()
+        if not target_path.is_file():
+            print(f"  {yellow('Component not found:')} {target_arg}")
+            return
+        print(f"\n{bold('Auto-migrate component:')} {green(target_path.name)}")
+        plan = auto_migrate_workflow.run_scoped(project_root, config, component_path=target_path)
+    else:  # mixin
+        mixin_path = Path(target_arg).resolve()
+        if not mixin_path.is_file():
+            mixin_path = (project_root / target_arg).resolve()
+        if not mixin_path.is_file():
+            print(f"  {yellow('Mixin file not found:')} {target_arg}")
+            return
+        mixin_stem = mixin_path.stem
+        print(f"\n{bold('Auto-migrate mixin:')} {green(mixin_stem)}")
+        plan = auto_migrate_workflow.run_scoped(project_root, config, mixin_stem=mixin_stem)
+
+    if not plan.has_changes:
+        print(f"{green('Nothing to migrate.')} No READY entries found for this target.")
+        return
+
+    composable_count = sum(1 for c in plan.composable_changes if c.has_changes)
+    component_count = sum(1 for c in plan.component_changes if c.has_changes)
+    print(f"  Composables to patch: {yellow(str(composable_count))}")
+    print(f"  Components to update: {yellow(str(component_count))}\n")
+
+    print_diff_summary(plan.all_changes, project_root)
+
+    answer = input(f"\n{bold('Apply all changes?')} (y/n): ").strip().lower()
+    if answer != "y":
+        print("Aborted. No files were written.")
+        return
+
+    written: list[Path] = []
+    try:
+        for change in plan.composable_changes:
+            if change.has_changes:
+                change.file_path.write_text(change.new_content, encoding="utf-8")
+                written.append(change.file_path)
+                print(f"  {green('PATCHED')}  {change.file_path.name}")
+        for change in plan.component_changes:
+            if change.has_changes:
+                change.file_path.write_text(change.new_content, encoding="utf-8")
+                written.append(change.file_path)
+                print(f"  {green('MIGRATED')} {change.file_path.name}")
+    except (KeyboardInterrupt, OSError) as e:
+        print(f"\n  {yellow('WARNING')}: Migration interrupted after {len(written)} file(s) written.")
+        if written:
+            print(f"  Already written: {', '.join(f.name for f in written)}")
+        print(f"  Run: git diff to review. Run: git checkout . to undo.")
+        raise
+
+    print(f"\n{bold('Done.')} Review the diff and test your application.")
+
+
 def auto_migrate(project_root: Path, config: MigrationConfig) -> None:
     """Run auto-migrate: scan, patch composables, inject setup(), show diff, confirm."""
     from .workflows import auto_migrate_workflow
@@ -357,7 +422,19 @@ def main():
         mixin_workflow.run(sys.argv[2], composable_arg, config)
 
     elif command == "auto-migrate":
-        auto_migrate(config.project_root, config)
+        subcommand = sys.argv[2].lower() if len(sys.argv) > 2 else None
+        if subcommand == "component":
+            if len(sys.argv) < 4:
+                print(f"\n  Usage: python -m vue3_migration auto-migrate component <path.vue>\n")
+                return
+            auto_migrate_scoped(sys.argv[3], "component", config)
+        elif subcommand == "mixin":
+            if len(sys.argv) < 4:
+                print(f"\n  Usage: python -m vue3_migration auto-migrate mixin <mixin.js>\n")
+                return
+            auto_migrate_scoped(sys.argv[3], "mixin", config)
+        else:
+            auto_migrate(config.project_root, config)
 
     elif command in ("help", "--help", "-h"):
         print(f"""
