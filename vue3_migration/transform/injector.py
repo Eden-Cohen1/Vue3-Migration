@@ -100,9 +100,10 @@ def inject_setup(
         call_lines.append(f"{indent}{indent}const {{ {', '.join(members)} }} = {fn_name}()")
         all_returned_members.extend(members)
 
-    # Prepend inline lines (created/beforeCreate bodies inlined in setup)
+    # Append inline lines AFTER composable calls (created/beforeCreate bodies
+    # may reference composable-provided symbols, so they must come after)
     if inline_setup_lines:
-        call_lines = inline_setup_lines + call_lines
+        call_lines = call_lines + inline_setup_lines
 
     # Append lifecycle wrapper calls (onMounted, onBeforeUnmount, etc.)
     if lifecycle_calls:
