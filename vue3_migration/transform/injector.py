@@ -61,6 +61,8 @@ def inject_setup(
     content: str,
     composable_calls: list[tuple[str, list[str]]],
     indent: str = "  ",
+    lifecycle_calls: list[str] | None = None,
+    inline_setup_lines: list[str] | None = None,
 ) -> str:
     """Create or merge setup() with multiple composable destructuring calls.
 
@@ -68,15 +70,28 @@ def inject_setup(
         content: The component source text.
         composable_calls: List of (fn_name, [member1, member2, ...]) tuples.
         indent: Indentation string (default 2 spaces).
+        lifecycle_calls: Lines to append at the END of setup() body (e.g.
+            ``onMounted(() => {...})`` wrapped hooks).
+        inline_setup_lines: Lines to prepend at the TOP of setup() body (e.g.
+            ``created``/``beforeCreate`` hook bodies inlined directly).
 
     Returns:
-        Modified source text with setup() containing all composable calls.
+        Modified source text with setup() containing all composable calls,
+        inline setup lines, and lifecycle wrapper calls in that order.
     """
     all_returned_members = []
     call_lines = []
     for fn_name, members in composable_calls:
         call_lines.append(f"{indent}{indent}const {{ {', '.join(members)} }} = {fn_name}()")
         all_returned_members.extend(members)
+
+    # Prepend inline lines (created/beforeCreate bodies inlined in setup)
+    if inline_setup_lines:
+        call_lines = list(inline_setup_lines) + call_lines
+
+    # Append lifecycle wrapper calls (onMounted, onBeforeUnmount, etc.)
+    if lifecycle_calls:
+        call_lines = call_lines + list(lifecycle_calls)
 
     # --- Existing setup(): prepend calls, merge into return ---
     setup_match = re.search(r"\bsetup\s*\([^)]*\)\s*\{", content)
