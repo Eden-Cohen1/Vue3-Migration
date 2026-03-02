@@ -2,7 +2,7 @@
 """Tests for the lifecycle_calls and inline_setup_lines extensions to inject_setup."""
 from textwrap import dedent
 
-from vue3_migration.transform.injector import inject_setup
+from vue3_migration.transform.injector import inject_setup, migrate_methods_to_setup
 from vue3_migration.transform.lifecycle_converter import find_lifecycle_referenced_members
 
 COMPONENT = "<script>\nexport default {\n  name: 'Foo',\n}\n</script>"
@@ -122,3 +122,65 @@ def test_find_lifecycle_referenced_members():
     referenced = find_lifecycle_referenced_members(mixin_source, ["created"], member_names)
     assert "checkAuth" in referenced
     assert "login" not in referenced  # not referenced in created()
+
+
+def test_component_methods_moved_to_setup():
+    """
+    Component-level methods that only reference composable-provided members
+    should be moved into setup() and added to the return object.
+    """
+    source = dedent("""\
+        <script>
+        export default {
+          name: 'Test',
+          setup() {
+            const { selectItem, log } = useSelection()
+
+            return { selectItem, log }
+          },
+          methods: {
+            handleSelect(item) {
+              this.selectItem(item)
+              this.log(`Selected: ${item}`)
+            },
+          },
+        }
+        </script>
+    """)
+    composable_members = {"selectItem", "log"}
+    ref_members = []  # selectItem and log are methods (plain), not refs
+    plain_members = ["selectItem", "log"]
+    result = migrate_methods_to_setup(source, composable_members, ref_members, plain_members)
+    # The methods: {} block should be removed (or empty)
+    assert "methods:" not in result
+    # handleSelect should be in setup() as a function
+    assert "function handleSelect" in result
+    # this.selectItem should be rewritten to selectItem
+    assert "this.selectItem" not in result
+    assert "this.log" not in result
+    # handleSelect should be returned from setup()
+    assert "handleSelect" in result
+
+
+def test_methods_with_unresolved_this_refs_kept():
+    """Methods that reference this.* NOT in composable_members stay as methods."""
+    source = dedent("""\
+        <script>
+        export default {
+          setup() {
+            const { log } = useLogging()
+            return { log }
+          },
+          methods: {
+            doSomething() {
+              this.log('hello')
+              this.$emit('done')
+            },
+          },
+        }
+        </script>
+    """)
+    composable_members = {"log"}
+    result = migrate_methods_to_setup(source, composable_members, [], ["log"])
+    # Method references this.$emit which is NOT in composable_members, so keep it
+    assert "methods:" in result
