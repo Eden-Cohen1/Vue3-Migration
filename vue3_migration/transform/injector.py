@@ -7,7 +7,8 @@ They do NOT perform file I/O — callers handle reading/writing.
 
 import re
 
-from ..core.js_parser import extract_brace_block
+from ..core.js_parser import extract_brace_block, skip_non_code
+from .this_rewriter import rewrite_this_refs
 
 
 def add_composable_import(content: str, fn_name: str, import_path: str) -> str:
@@ -155,6 +156,157 @@ def inject_setup(
     export_match = re.search(r"export\s+default\s*\{[ \t]*\n?", content)
     if export_match:
         return content[:export_match.end()] + setup_block + content[export_match.end():]
+
+    return content
+
+
+def _find_all_this_refs(code: str) -> list[str]:
+    """Return all ``this.xxx`` member names referenced in code, skipping non-code.
+
+    Also catches Vue instance properties like ``this.$emit``, ``this.$refs``.
+    """
+    refs: list[str] = []
+    for m in re.finditer(r"\bthis\.([$\w]+)", code):
+        # Confirm the match isn't inside a string/comment
+        pos = m.start()
+        new_pos, skipped = skip_non_code(code, pos)
+        if not skipped:
+            refs.append(m.group(1))
+    return refs
+
+
+def _extract_methods_block(content: str) -> tuple[int, int, str] | None:
+    """Find the methods: { ... } block. Returns (start, end, body) or None."""
+    match = re.search(r"\bmethods\s*:\s*\{", content)
+    if not match:
+        return None
+    brace_pos = match.end() - 1
+    body = extract_brace_block(content, brace_pos)
+    # start = match.start(), end = closing brace + 1 + optional trailing comma
+    end = brace_pos + 1 + len(body) + 1
+    # Skip trailing comma and whitespace
+    if end < len(content) and content[end] == ",":
+        end += 1
+    return match.start(), end, body
+
+
+def _extract_individual_methods(body: str) -> list[tuple[str, str, str]]:
+    """Extract individual methods from a methods block body.
+
+    Returns list of (name, params, method_body) tuples.
+    Handles: ``name(params) { body }`` and ``async name(params) { body }``
+    """
+    methods = []
+    pattern = re.compile(r"(?:async\s+)?(\w+)\s*\(([^)]*)\)\s*\{")
+    pos = 0
+    while pos < len(body):
+        new_pos, skipped = skip_non_code(body, pos)
+        if skipped:
+            pos = new_pos
+            continue
+        m = pattern.match(body, pos)
+        if m:
+            name = m.group(1)
+            params = m.group(2).strip()
+            brace_pos = m.end() - 1
+            method_body = extract_brace_block(body, brace_pos)
+            methods.append((name, params, method_body))
+            pos = brace_pos + 1 + len(method_body) + 1
+            continue
+        pos += 1
+    return methods
+
+
+def migrate_methods_to_setup(
+    content: str,
+    composable_members: set[str],
+    ref_members: list[str],
+    plain_members: list[str],
+    indent: str = "  ",
+) -> str:
+    """Move component methods into setup() when they only use composable members.
+
+    For each method in the ``methods: { ... }`` block:
+    - If all ``this.xxx`` references are in composable_members, convert it
+      to a plain function inside setup() and add it to the return statement.
+    - If any ``this.xxx`` reference is NOT in composable_members, leave it.
+
+    Removes the ``methods`` block entirely if all methods are migrated.
+    """
+    methods_info = _extract_methods_block(content)
+    if not methods_info:
+        return content
+
+    methods_start, methods_end, methods_body = methods_info
+    individual = _extract_individual_methods(methods_body)
+
+    if not individual:
+        return content
+
+    migrated_names: list[str] = []
+    migrated_functions: list[str] = []
+    kept_methods: list[tuple[str, str, str]] = []
+
+    for name, params, method_body in individual:
+        this_refs = _find_all_this_refs(method_body)
+        # $emit, $refs, $router, etc. are never in composable_members
+        all_resolved = all(ref in composable_members for ref in this_refs)
+
+        if all_resolved and this_refs:  # at least one this.* ref resolved
+            rewritten = rewrite_this_refs(method_body.strip(), ref_members, plain_members)
+            # Build function declaration
+            lines = [f"{indent}{indent}function {name}({params}) {{"]
+            for line in rewritten.splitlines():
+                if line.strip():
+                    lines.append(f"{indent}{indent}  {line.strip()}")
+                else:
+                    lines.append("")
+            lines.append(f"{indent}{indent}}}")
+            migrated_functions.append("\n".join(lines))
+            migrated_names.append(name)
+        else:
+            kept_methods.append((name, params, method_body))
+
+    if not migrated_names:
+        return content  # nothing to migrate
+
+    # Insert migrated functions into setup() (before return statement)
+    setup_match = re.search(r"\bsetup\s*\([^)]*\)\s*\{", content)
+    if not setup_match:
+        return content  # no setup() to insert into
+
+    # Find the return statement in setup()
+    ret_match = re.search(r"\breturn\s*\{", content[setup_match.start():])
+    if ret_match:
+        abs_ret_pos = setup_match.start() + ret_match.start()
+        # Insert functions before the return
+        func_block = "\n".join(migrated_functions) + "\n\n"
+        content = content[:abs_ret_pos] + func_block + content[abs_ret_pos:]
+
+        # Add migrated names to the return statement
+        ret_match2 = re.search(r"\breturn\s*\{", content[setup_match.start():])
+        if ret_match2:
+            abs_pos = setup_match.start() + ret_match2.end()
+            content = content[:abs_pos] + " " + ", ".join(migrated_names) + "," + content[abs_pos:]
+
+    # Remove or rebuild the methods block
+    # Re-find methods block since content may have shifted
+    methods_info2 = _extract_methods_block(content)
+    if methods_info2:
+        m_start, m_end, _ = methods_info2
+        if not kept_methods:
+            # Remove entire methods block (including trailing newline)
+            while m_end < len(content) and content[m_end] in " \t\n":
+                m_end += 1
+            content = content[:m_start] + content[m_end:]
+        else:
+            # Rebuild with only kept methods
+            inner = indent
+            rebuilt_parts = []
+            for name, params, body in kept_methods:
+                rebuilt_parts.append(f"{inner}{indent}{name}({params}) {{{body}}},")
+            rebuilt = f"{inner}methods: {{\n" + "\n".join(rebuilt_parts) + f"\n{inner}}},\n"
+            content = content[:m_start] + rebuilt + content[m_end:]
 
     return content
 
