@@ -3,6 +3,7 @@
 from textwrap import dedent
 
 from vue3_migration.transform.injector import inject_setup
+from vue3_migration.transform.lifecycle_converter import find_lifecycle_referenced_members
 
 COMPONENT = "<script>\nexport default {\n  name: 'Foo',\n}\n</script>"
 
@@ -98,3 +99,26 @@ def test_inject_setup_adds_composable_import():
     result = inject_setup(source, composable_calls)
     assert "import { useSelection } from '@/composables/useSelection'" in result
     assert "import { usePagination } from '@/composables/usePagination'" in result
+
+
+def test_find_lifecycle_referenced_members():
+    """Members referenced inside mixin lifecycle hook bodies must be detected."""
+    mixin_source = dedent("""\
+        export default {
+          data() {
+            return { isAuthenticated: false, currentUser: null, token: null }
+          },
+          methods: {
+            checkAuth() { /* check stored token */ },
+            login(credentials) { /* login logic */ },
+            logout() { this.isAuthenticated = false },
+          },
+          created() {
+            this.checkAuth()
+          },
+        }
+    """)
+    member_names = ["isAuthenticated", "currentUser", "token", "checkAuth", "login", "logout"]
+    referenced = find_lifecycle_referenced_members(mixin_source, ["created"], member_names)
+    assert "checkAuth" in referenced
+    assert "login" not in referenced  # not referenced in created()

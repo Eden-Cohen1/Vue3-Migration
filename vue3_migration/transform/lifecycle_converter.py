@@ -157,6 +157,30 @@ def convert_lifecycle_hooks(
     return inline_lines, wrapped_lines
 
 
+def find_lifecycle_referenced_members(
+    mixin_source: str,
+    hooks: list[str],
+    member_names: list[str],
+) -> list[str]:
+    """Find mixin members referenced inside lifecycle hook bodies.
+
+    When a mixin's created() calls this.checkAuth(), the member checkAuth
+    must be included in the composable destructure even though the component
+    itself never references it.
+    """
+    referenced: list[str] = []
+    for hook in hooks:
+        body = extract_hook_body(mixin_source, hook)
+        if not body:
+            continue
+        for member in member_names:
+            if member not in referenced and re.search(
+                rf"(?<!\w){re.escape(member)}(?!\w)", body
+            ):
+                referenced.append(member)
+    return referenced
+
+
 def get_required_imports(hooks: list[str]) -> list[str]:
     """Return Vue composition API import names needed for the given hooks.
 
