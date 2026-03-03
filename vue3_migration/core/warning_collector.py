@@ -76,6 +76,54 @@ _THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str]] = [
         "this.$once is removed in Vue 3",
         "Use an external event bus library or provide/inject",
     ),
+    (
+        r"this\.\$el\b",
+        "this.$el",
+        "this.$el has no composable equivalent",
+        "Use a template ref on the root element instead",
+    ),
+    (
+        r"this\.\$parent\b",
+        "this.$parent",
+        "this.$parent — avoid in composables",
+        "Use provide/inject or props/emit instead",
+    ),
+    (
+        r"this\.\$children\b",
+        "this.$children",
+        "this.$children is removed in Vue 3",
+        "Use template refs or provide/inject",
+    ),
+    (
+        r"this\.\$listeners\b",
+        "this.$listeners",
+        "$listeners is removed in Vue 3",
+        "Listeners are merged into $attrs in Vue 3",
+    ),
+    (
+        r"this\.\$attrs\b",
+        "this.$attrs",
+        "this.$attrs used — needs useAttrs()",
+        "Add const attrs = useAttrs() and import from 'vue'",
+    ),
+    (
+        r"this\.\$slots\b",
+        "this.$slots",
+        "this.$slots used — needs useSlots()",
+        "Add const slots = useSlots() and import from 'vue'",
+    ),
+    (
+        r"this\.\$forceUpdate\b",
+        "this.$forceUpdate",
+        "$forceUpdate — rarely needed in Vue 3",
+        "Reactive system usually handles it; review logic",
+    ),
+    (
+        r"this\.\$watch\b",
+        "this.$watch",
+        "this.$watch — use watch() from vue instead",
+        "Import watch from 'vue' and use watch() directly",
+    ),
 ]
 
 

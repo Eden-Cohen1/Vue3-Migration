@@ -8,7 +8,7 @@ from ..core.warning_collector import (
 from ..models import MixinMembers
 from .composable_patcher import _extract_data_default
 from .lifecycle_converter import convert_lifecycle_hooks, get_required_imports
-from .this_rewriter import rewrite_this_refs
+from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs
 
 
 def _extract_section_body(mixin_source: str, section: str) -> str:
@@ -160,6 +160,12 @@ def generate_composable_from_mixin(
     body_parts.append(f"{indent}return {{ {return_items} }}")
 
     body = "\n".join(body_parts)
+
+    # Apply this.$ auto-rewrites ($nextTick, $set, $delete)
+    body, dollar_imports = rewrite_this_dollar_refs(body)
+    for imp in dollar_imports:
+        if imp not in vue_imports:
+            vue_imports.append(imp)
 
     # Assemble full file
     import_line = (

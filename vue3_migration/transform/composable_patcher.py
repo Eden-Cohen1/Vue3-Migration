@@ -7,8 +7,24 @@ from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
 )
 from ..models import MixinMembers
-from .this_rewriter import rewrite_this_refs
+from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs
 from .lifecycle_converter import extract_hook_body
+
+
+def _add_vue_import(content: str, name: str) -> str:
+    """Add a name to the existing ``import { ... } from 'vue'`` line.
+
+    If no vue import line exists, prepend one.
+    """
+    m = re.search(r"(import\s*\{)([^}]*)(}\s*from\s*['\"]vue['\"])", content)
+    if m:
+        existing = m.group(2)
+        if not re.search(rf'\b{re.escape(name)}\b', existing):
+            new_imports = existing.rstrip() + ", " + name + " "
+            return content[:m.start(1)] + m.group(1) + new_imports + m.group(3) + content[m.end():]
+        return content
+    # No vue import line — prepend one
+    return f"import {{ {name} }} from 'vue'\n" + content
 
 
 def add_keys_to_return(content: str, keys: list[str]) -> str:
@@ -177,6 +193,11 @@ def patch_composable(
         ]
         content = add_members_to_composable(content, declarations)
         content = add_keys_to_return(content, missing)
+
+    # Apply this.$ auto-rewrites ($nextTick, $set, $delete)
+    content, dollar_imports = rewrite_this_dollar_refs(content)
+    for imp in dollar_imports:
+        content = _add_vue_import(content, imp)
 
     # Collect warnings and inject inline comments + confidence header
     warnings = collect_mixin_warnings(mixin_content, mixin_members, [])

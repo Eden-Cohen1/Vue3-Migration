@@ -136,3 +136,60 @@ def rewrite_this_refs(
     result_parts.append(pattern.sub(_replace, code[prev:]))
 
     return "".join(result_parts)
+
+
+def rewrite_this_dollar_refs(code: str) -> tuple[str, list[str]]:
+    """Rewrite this.$xxx patterns that have direct Vue 3 equivalents.
+
+    Auto-rewrites:
+    - this.$nextTick(cb)         -> nextTick(cb)
+    - this.$set(obj, key, val)   -> obj[key] = val
+    - this.$delete(obj, key)     -> delete obj[key]
+
+    Skips matches inside strings and comments.
+
+    Returns (rewritten_code, list_of_required_imports).
+    """
+    if not code:
+        return code, []
+
+    imports: list[str] = []
+
+    # Collect non-code spans so we only rewrite in actual code
+    non_code_spans = _collect_non_code_spans(code)
+
+    def _in_non_code(pos: int) -> bool:
+        return any(start <= pos < end for start, end in non_code_spans)
+
+    # Process replacements from end to start to preserve positions
+    replacements: list[tuple[int, int, str]] = []
+
+    # 1. this.$nextTick( -> nextTick(
+    for m in re.finditer(r"this\.\$nextTick\b", code):
+        if not _in_non_code(m.start()):
+            replacements.append((m.start(), m.end(), "nextTick"))
+            if "nextTick" not in imports:
+                imports.append("nextTick")
+
+    # 2. this.$set(obj, key, val) -> obj[key] = val
+    for m in re.finditer(r"this\.\$set\(([^,]+),\s*([^,]+),\s*([^)]+)\)", code):
+        if not _in_non_code(m.start()):
+            obj = m.group(1).strip()
+            key = m.group(2).strip()
+            val = m.group(3).strip()
+            replacements.append((m.start(), m.end(), f"{obj}[{key}] = {val}"))
+
+    # 3. this.$delete(obj, key) -> delete obj[key]
+    for m in re.finditer(r"this\.\$delete\(([^,]+),\s*([^)]+)\)", code):
+        if not _in_non_code(m.start()):
+            obj = m.group(1).strip()
+            key = m.group(2).strip()
+            replacements.append((m.start(), m.end(), f"delete {obj}[{key}]"))
+
+    # Apply replacements from end to start
+    replacements.sort(key=lambda r: r[0], reverse=True)
+    result = code
+    for start, end, replacement in replacements:
+        result = result[:start] + replacement + result[end:]
+
+    return result, imports
