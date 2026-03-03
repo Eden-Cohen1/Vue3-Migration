@@ -208,7 +208,7 @@ def generate_status_report(project_root: Path, config) -> str:
 
     for stem, count in mixin_counter.most_common():
         has_comp = mixin_has_composable(stem, composable_stems)
-        status = "found" if has_comp else "needs generation"
+        status = "✓ found" if has_comp else "needs generation"
         lines.append(f"| {stem} | {count} | {status} |")
 
     lines += ["", "## Components", ""]
