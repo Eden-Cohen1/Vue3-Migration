@@ -37,15 +37,15 @@ def build_unified_diff(original: str, modified: str, path: str) -> str:
 
 def _extract_return_keys(source: str) -> list[str]:
     """Extract keys from the last return { ... } statement."""
-    m = re.search(r"return\s*\{([^}]*)\}", source, re.DOTALL)
-    if not m:
+    matches = re.findall(r"return\s*\{([^}]*)\}", source, re.DOTALL)
+    if not matches:
         return []
-    return [k.strip().split(":")[0].strip() for k in m.group(1).split(",") if k.strip()]
+    return [k.strip().split(":")[0].strip() for k in matches[-1].split(",") if k.strip()]
 
 
 def _describe_composable_changes(change: FileChange) -> list[str]:
     """Describe what was added to a composable (refs, computed, functions, return keys)."""
-    original_lines = set(change.original_content.splitlines())
+    original_lines = {line.strip() for line in change.original_content.splitlines()}
 
     added_refs: list[str] = []
     added_computed: list[str] = []
@@ -165,7 +165,8 @@ def format_change_list(plan: MigrationPlan, project_root: Path) -> str:
 
 def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
     """Write a full unified diff to a markdown file. Returns the file path."""
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    now = datetime.now()
+    timestamp = now.strftime("%Y%m%d-%H%M%S")
     report_path = project_root / f"migration-diff-{timestamp}.md"
 
     def _rel(path: Path) -> str:
@@ -176,7 +177,7 @@ def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
 
     sections: list[str] = [
         "# Migration Diff Report",
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
     ]
 

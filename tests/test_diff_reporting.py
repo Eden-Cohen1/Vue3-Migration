@@ -100,3 +100,16 @@ def test_write_diff_report_new_file_uses_code_block(tmp_path):
     content = report_path.read_text()
     assert "New file" in content
     assert "```javascript" in content
+
+
+def test_no_false_positive_for_existing_ref():
+    """Refs that already existed in the composable should not appear as new."""
+    original = "export function useTable() {\n  const tableData = ref([])\n  return { tableData }\n}"
+    new = "export function useTable() {\n  const tableData = ref([])\n  const loading = ref(false)\n  return { tableData, loading }\n}"
+    plan = MigrationPlan(
+        composable_changes=[_change("src/composables/useTable.js", original, new)],
+        component_changes=[],
+    )
+    out = format_change_list(plan, Path("."))
+    assert "loading" in out
+    assert "tableData" not in out  # already existed, should not appear
