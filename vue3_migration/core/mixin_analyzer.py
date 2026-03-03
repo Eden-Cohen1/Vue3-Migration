@@ -27,7 +27,7 @@ def extract_mixin_members(source: str) -> dict[str, list[str]]:
     members: dict[str, list[str]] = {"data": [], "computed": [], "methods": []}
 
     # data() { return { ... } }
-    data_match = re.search(r"\bdata\s*\(\s*\)\s*\{", source)
+    data_match = re.search(r"\bdata\s*\(\s*\)\s*(?::\s*\w+(?:<[^>]*>)?\s*)?\{", source)
     if data_match:
         body = source[data_match.end():]
         ret = re.search(r"\breturn\s*\{", body)

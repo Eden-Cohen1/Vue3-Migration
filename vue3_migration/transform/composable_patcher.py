@@ -2,7 +2,7 @@
 import re
 import textwrap
 from ..core.composable_analyzer import extract_all_identifiers
-from ..core.js_parser import extract_brace_block
+from ..core.js_parser import extract_brace_block, extract_value_at
 from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
 )
@@ -80,7 +80,7 @@ def add_members_to_composable(content: str, member_lines: list[str]) -> str:
 
 def _extract_data_default(mixin_source: str, name: str) -> str:
     """Try to extract the default value of a data property from mixin source."""
-    data_match = re.search(r'\bdata\s*\(\s*\)\s*\{', mixin_source)
+    data_match = re.search(r'\bdata\s*\(\s*\)\s*(?::\s*\w+(?:<[^>]*>)?\s*)?\{', mixin_source)
     if not data_match:
         return "null"
     data_body = extract_brace_block(mixin_source, data_match.end() - 1)
@@ -89,10 +89,12 @@ def _extract_data_default(mixin_source: str, name: str) -> str:
         return "null"
     ret_body = extract_brace_block(data_body, ret_match.end() - 1)
     val_match = re.search(
-        rf'\b{re.escape(name)}\s*:\s*([^,\n}}]+)',
+        rf'\b{re.escape(name)}\s*:\s*',
         ret_body
     )
-    return val_match.group(1).strip() if val_match else "null"
+    if not val_match:
+        return "null"
+    return extract_value_at(ret_body, val_match.end())
 
 
 def generate_member_declaration(

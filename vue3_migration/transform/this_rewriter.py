@@ -135,7 +135,37 @@ def rewrite_this_refs(
     # Remaining code after last non-code span
     result_parts.append(pattern.sub(_replace, code[prev:]))
 
-    return "".join(result_parts)
+    code = "".join(result_parts)
+
+    # Second pass: bracket notation this['name'] and this["name"]
+    # Can't use regex on code segments because the quotes inside brackets
+    # get classified as non-code strings. Use position-based matching instead.
+    all_members_set = set(all_members)
+    bracket_pattern = re.compile(
+        r"""\bthis\[(['"])(\w+)\1\]"""
+    )
+    non_code_spans = _collect_non_code_spans(code)
+
+    def _in_non_code(pos: int) -> bool:
+        return any(s <= pos < e for s, e in non_code_spans)
+
+    replacements: list[tuple[int, int, str]] = []
+    for m in bracket_pattern.finditer(code):
+        if _in_non_code(m.start()):
+            continue
+        name = m.group(2)
+        if name not in all_members_set:
+            continue
+        if name in ref_set:
+            replacements.append((m.start(), m.end(), f"{name}.value"))
+        elif name in plain_set:
+            replacements.append((m.start(), m.end(), name))
+
+    # Apply from end to start to preserve positions
+    for start, end, replacement in reversed(replacements):
+        code = code[:start] + replacement + code[end:]
+
+    return code
 
 
 def rewrite_this_dollar_refs(code: str) -> tuple[str, list[str]]:

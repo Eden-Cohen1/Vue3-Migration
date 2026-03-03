@@ -11,8 +11,25 @@ from .js_parser import extract_brace_block, extract_property_names
 def parse_imports(component_source: str) -> dict[str, str]:
     """Parse import statements. Returns { local_name: import_path }."""
     imports = {}
+    # Default imports: import X from 'path'
     for match in re.finditer(r"""import\s+(\w+)\s+from\s+['"]([^'"]+)['"]""", component_source):
         imports[match.group(1)] = match.group(2)
+    # Named imports: import { X } from 'path' or import { X as Y } from 'path'
+    for match in re.finditer(
+        r"""import\s+\{([^}]+)\}\s+from\s+['"]([^'"]+)['"]""",
+        component_source,
+    ):
+        names_str = match.group(1)
+        path = match.group(2)
+        for name_part in names_str.split(","):
+            name_part = name_part.strip()
+            if not name_part:
+                continue
+            if " as " in name_part:
+                _, local = name_part.split(" as ", 1)
+                imports[local.strip()] = path
+            else:
+                imports[name_part] = path
     return imports
 
 
@@ -57,7 +74,7 @@ def extract_own_members(component_source: str) -> set[str]:
     source = script_match.group(1) if script_match else component_source
 
     # data() { return { ... } }
-    data_match = re.search(r"\bdata\s*\(\s*\)\s*\{", source)
+    data_match = re.search(r"\bdata\s*\(\s*\)\s*(?::\s*\w+(?:<[^>]*>)?\s*)?\{", source)
     if data_match:
         body = source[data_match.end():]
         ret = re.search(r"\breturn\s*\{", body)

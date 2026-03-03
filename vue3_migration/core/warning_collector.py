@@ -166,6 +166,36 @@ def collect_mixin_warnings(
     return warnings
 
 
+def detect_this_aliasing(
+    mixin_source: str, mixin_stem: str
+) -> list[MigrationWarning]:
+    """Detect `const self = this` and similar aliasing patterns.
+
+    Auto-rewriting alias.x is too complex (requires scope tracking), so
+    this is warn-only. Returns warnings for each alias found.
+    """
+    pattern = re.compile(
+        r"\b(?:const|let|var)\s+(self|that|vm|_this|_self)\s*=\s*this\b"
+    )
+    warnings: list[MigrationWarning] = []
+    for m in pattern.finditer(mixin_source):
+        alias = m.group(1)
+        line_start = mixin_source.rfind("\n", 0, m.start()) + 1
+        line_end = mixin_source.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(mixin_source)
+        line_hint = mixin_source[line_start:line_end].strip()
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="this-alias",
+            message=f"'this' is aliased as '{alias}' — references via {alias}.x won't be auto-rewritten",
+            action_required=f"Manually replace {alias}.x with composable equivalents",
+            line_hint=line_hint,
+            severity="warning",
+        ))
+    return warnings
+
+
 def compute_confidence(
     composable_source: str,
     warnings: list[MigrationWarning],

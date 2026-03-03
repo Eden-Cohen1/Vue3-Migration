@@ -78,10 +78,10 @@ class TestParseImports:
         assert result['selectionMixin'] == '@/mixins/selectionMixin'
         assert 'paginationMixin' in result
 
-    def test_named_import_is_ignored(self):
-        # import { ref } from 'vue' — not a default import, should not match
+    def test_named_import_is_parsed(self):
+        # import { ref } from 'vue' — named imports are now supported
         result = parse_imports("import { ref } from 'vue'")
-        assert 'ref' not in result
+        assert result == {'ref': 'vue'}
 
     def test_empty_source(self):
         assert parse_imports('') == {}
