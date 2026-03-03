@@ -292,7 +292,7 @@ def _apply_plan(plan, project_root: Path) -> None:
                 change.file_path.write_text(change.new_content, encoding="utf-8")
                 written.append(change.file_path)
                 is_new = not change.original_content.strip()
-                label = green("CREATED") if is_new else green("PATCHED ")
+                label = green("CREATED") if is_new else green("PATCHED")
                 print(f"  {label}  {change.file_path.name}")
         for change in plan.component_changes:
             if change.has_changes:
@@ -361,7 +361,6 @@ def _scan_components_with_mixins(project_root: Path, config: MigrationConfig) ->
 
 def _scan_mixin_usage(project_root: Path, config: MigrationConfig) -> list[dict]:
     """Return list of mixin info dicts sorted by usage count."""
-    from collections import Counter
     from .core.composable_search import collect_composable_stems, find_composable_dirs, mixin_has_composable
 
     composable_dirs = find_composable_dirs(project_root)
@@ -596,7 +595,7 @@ def project_status(config: MigrationConfig) -> None:
     report_path = config.project_root / f"migration-status-{timestamp}.md"
     report_path.write_text(report, encoding="utf-8")
 
-    print(f"\n  {bold('Full report saved to:')} {green(report_path.name)}")
+    print(f"\n  {bold('Full report saved to:')} {green(str(report_path))}")
 
 
 # =============================================================================
