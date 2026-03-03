@@ -262,12 +262,341 @@ def _print_help():
 """)
 
 
-def full_project_migration(config: MigrationConfig): pass
-def component_migration(path: str, config: MigrationConfig): pass
-def mixin_migration(name: str, config: MigrationConfig): pass
-def pick_component_migration(config: MigrationConfig): pass
-def pick_mixin_migration(config: MigrationConfig): pass
-def project_status(config: MigrationConfig): pass
+# ---------------------------------------------------------------------------
+# Shared write/display helpers
+# ---------------------------------------------------------------------------
+
+def _show_change_summary(plan, project_root: Path) -> None:
+    """Print human-readable change counts and per-file descriptions."""
+    from .reporting.diff import format_change_list
+
+    composable_count = sum(1 for c in plan.composable_changes if c.has_changes)
+    component_count = sum(1 for c in plan.component_changes if c.has_changes)
+
+    if composable_count:
+        print(f"  Composables to patch/create: {yellow(str(composable_count))}")
+    print(f"  Components to update:        {yellow(str(component_count))}")
+    print()
+    print(format_change_list(plan, project_root))
+
+
+def _apply_plan(plan, project_root: Path) -> None:
+    """Write all changed files and save a diff markdown report."""
+    from .reporting.diff import write_diff_report
+
+    written: list[Path] = []
+    try:
+        for change in plan.composable_changes:
+            if change.has_changes:
+                change.file_path.parent.mkdir(parents=True, exist_ok=True)
+                change.file_path.write_text(change.new_content, encoding="utf-8")
+                written.append(change.file_path)
+                is_new = not change.original_content.strip()
+                label = green("CREATED") if is_new else green("PATCHED ")
+                print(f"  {label}  {change.file_path.name}")
+        for change in plan.component_changes:
+            if change.has_changes:
+                change.file_path.write_text(change.new_content, encoding="utf-8")
+                written.append(change.file_path)
+                print(f"  {green('MIGRATED')} {change.file_path.name}")
+    except (KeyboardInterrupt, OSError):
+        print(f"\n  {yellow('WARNING')}: Interrupted after {len(written)} file(s) written.")
+        if written:
+            print(f"  Written so far: {', '.join(f.name for f in written)}")
+        print(f"  Run: git diff   to review.")
+        print(f"  Run: git checkout . to undo all changes.")
+        raise
+
+    report_path = write_diff_report(plan, project_root)
+    print(f"\n  {bold('Done.')} Diff report: {dim(str(report_path.name))}")
+    print(f"  Review changes: git diff")
+
+
+# ---------------------------------------------------------------------------
+# Scanning helpers
+# ---------------------------------------------------------------------------
+
+def _scan_components_with_mixins(project_root: Path, config: MigrationConfig) -> list[dict]:
+    """Return list of component info dicts for all .vue files that use mixins."""
+    from .core.composable_search import collect_composable_stems, find_composable_dirs, mixin_has_composable
+
+    composable_dirs = find_composable_dirs(project_root)
+    composable_stems = collect_composable_stems(composable_dirs)
+    results: list[dict] = []
+
+    for dirpath, _, filenames in os.walk(project_root):
+        rel_dir = Path(dirpath).relative_to(project_root)
+        if any(part in config.skip_dirs for part in rel_dir.parts):
+            continue
+        for fn in filenames:
+            if not fn.endswith(".vue"):
+                continue
+            filepath = Path(dirpath) / fn
+            try:
+                source = filepath.read_text(errors="ignore")
+            except Exception:
+                continue
+            mixin_names = _parse_mixins_array(source)
+            if not mixin_names:
+                continue
+            imports = _parse_imports(source)
+            stems = [resolve_mixin_stem(imports.get(n, "")) or n for n in mixin_names]
+            covered = sum(1 for s in stems if mixin_has_composable(s, composable_stems))
+            try:
+                rel = filepath.relative_to(project_root)
+            except ValueError:
+                rel = filepath
+            results.append({
+                "rel_path": rel,
+                "abs_path": filepath,
+                "mixin_names": mixin_names,
+                "mixin_stems": stems,
+                "covered": covered,
+                "total": len(stems),
+            })
+
+    results.sort(key=lambda c: -len(c["mixin_names"]))
+    return results
+
+
+def _scan_mixin_usage(project_root: Path, config: MigrationConfig) -> list[dict]:
+    """Return list of mixin info dicts sorted by usage count."""
+    from collections import Counter
+    from .core.composable_search import collect_composable_stems, find_composable_dirs, mixin_has_composable
+
+    composable_dirs = find_composable_dirs(project_root)
+    composable_stems = collect_composable_stems(composable_dirs)
+    mixin_counter: Counter[str] = Counter()
+
+    for dirpath, _, filenames in os.walk(project_root):
+        rel_dir = Path(dirpath).relative_to(project_root)
+        if any(part in config.skip_dirs for part in rel_dir.parts):
+            continue
+        for fn in filenames:
+            if not fn.endswith(".vue"):
+                continue
+            filepath = Path(dirpath) / fn
+            try:
+                source = filepath.read_text(errors="ignore")
+            except Exception:
+                continue
+            mixin_names = _parse_mixins_array(source)
+            imports = _parse_imports(source)
+            for name in mixin_names:
+                stem = resolve_mixin_stem(imports.get(name, "")) or name
+                mixin_counter[stem] += 1
+
+    return [
+        {
+            "stem": stem,
+            "count": count,
+            "has_composable": mixin_has_composable(stem, composable_stems),
+        }
+        for stem, count in mixin_counter.most_common()
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — full_project_migration
+# ---------------------------------------------------------------------------
+
+def full_project_migration(config: MigrationConfig) -> None:
+    from .workflows import auto_migrate_workflow
+
+    print(f"\n{bold('Full project migration')}")
+    print(f"  {dim('Scan → patch composables → inject setup() → confirm → write')}\n")
+
+    plan = auto_migrate_workflow.run(config.project_root, config)
+
+    if not plan.has_changes:
+        print(f"  {green('Nothing to migrate.')} All components are already migrated or blocked.")
+        return
+
+    _show_change_summary(plan, config.project_root)
+
+    answer = input(f"\n{bold('Apply all changes?')} (y/n): ").strip().lower()
+    if answer != "y":
+        print("  Aborted. No files were written.")
+        return
+
+    _apply_plan(plan, config.project_root)
+
+
+# ---------------------------------------------------------------------------
+# Task 5 — component_migration / pick_component_migration
+# ---------------------------------------------------------------------------
+
+def pick_component_migration(config: MigrationConfig) -> None:
+    project_root = config.project_root
+    print(f"\n{bold('Pick a component to migrate')}\n")
+    print(f"  {dim('Scanning...')}\n")
+
+    components = _scan_components_with_mixins(project_root, config)
+
+    if not components:
+        print(f"  {green('No components with mixins found.')} Migration complete!\n")
+        return
+
+    for idx, comp in enumerate(components, 1):
+        covered, total = comp["covered"], comp["total"]
+        if covered == total:
+            cov_str = green("all composables found")
+        elif covered > 0:
+            cov_str = yellow(f"{covered}/{total} composables found")
+        else:
+            cov_str = dim("no composables yet (will be generated)")
+
+        print(f"  {bold(str(idx) + '.')} {str(comp['rel_path'])}")
+        print(f"     {dim(', '.join(comp['mixin_stems']))}  —  {cov_str}")
+
+    print(f"\n  Enter a number (1-{len(components)}) or {bold('q')} to go back.\n")
+    choice = input("  > ").strip()
+
+    if not choice or choice.lower() == "q":
+        return
+    try:
+        idx = int(choice)
+        if not (1 <= idx <= len(components)):
+            print(f"  {yellow('Number out of range.')}")
+            return
+    except ValueError:
+        print(f"  {yellow('Please enter a number.')}")
+        return
+
+    comp = components[idx - 1]
+    print(f"\n{bold('Migrating:')} {green(str(comp['rel_path']))}\n")
+    _run_component_migration(comp["abs_path"], config)
+
+
+def component_migration(path: str, config: MigrationConfig) -> None:
+    project_root = config.project_root
+    target = Path(path).resolve()
+    if not target.is_file():
+        target = (project_root / path).resolve()
+    if not target.is_file():
+        print(f"  {yellow('Component not found:')} {path}")
+        return
+    print(f"\n{bold('Migrating:')} {green(target.name)}\n")
+    _run_component_migration(target, config)
+
+
+def _run_component_migration(component_path: Path, config: MigrationConfig) -> None:
+    from .workflows import auto_migrate_workflow
+
+    plan = auto_migrate_workflow.run_scoped(
+        config.project_root, config, component_path=component_path
+    )
+
+    if not plan.has_changes:
+        print(f"  {green('Nothing to migrate.')} Component is already migrated or no composable match found.")
+        return
+
+    _show_change_summary(plan, config.project_root)
+
+    answer = input(f"\n{bold('Apply changes?')} (y/n): ").strip().lower()
+    if answer != "y":
+        print("  Aborted. No files were written.")
+        return
+
+    _apply_plan(plan, config.project_root)
+
+
+# ---------------------------------------------------------------------------
+# Task 6 — mixin_migration / pick_mixin_migration
+# ---------------------------------------------------------------------------
+
+def pick_mixin_migration(config: MigrationConfig) -> None:
+    project_root = config.project_root
+    print(f"\n{bold('Pick a mixin to retire')}\n")
+    print(f"  {dim('Scanning...')}\n")
+
+    mixins = _scan_mixin_usage(project_root, config)
+
+    if not mixins:
+        print(f"  {green('No mixins in use.')} Migration complete!\n")
+        return
+
+    print(f"  {'#':<4} {'Mixin':<40} {'Components':<12} Composable")
+    print(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*20}")
+    for idx, m in enumerate(mixins, 1):
+        comp_label = green("found") if m["has_composable"] else dim("will be generated")
+        component_word = "component" if m["count"] == 1 else "components"
+        print(f"  {idx:<4} {m['stem']:<40} {m['count']} {component_word:<9} {comp_label}")
+
+    print(f"\n  Enter a number (1-{len(mixins)}) or {bold('q')} to go back.\n")
+    choice = input("  > ").strip()
+
+    if not choice or choice.lower() == "q":
+        return
+    try:
+        idx = int(choice)
+        if not (1 <= idx <= len(mixins)):
+            print(f"  {yellow('Number out of range.')}")
+            return
+    except ValueError:
+        print(f"  {yellow('Please enter a number.')}")
+        return
+
+    mixin = mixins[idx - 1]
+    component_word = "component" if mixin["count"] == 1 else "components"
+    print(f"\n{bold('Retiring:')} {green(mixin['stem'])} across {yellow(str(mixin['count']))} {component_word}\n")
+    _run_mixin_migration(mixin["stem"], config)
+
+
+def mixin_migration(name: str, config: MigrationConfig) -> None:
+    # Strip file extension and path if user passed a file path
+    stem = Path(name).stem
+    print(f"\n{bold('Retiring mixin:')} {green(stem)}\n")
+    _run_mixin_migration(stem, config)
+
+
+def _run_mixin_migration(mixin_stem: str, config: MigrationConfig) -> None:
+    from .workflows import auto_migrate_workflow
+
+    plan = auto_migrate_workflow.run_scoped(
+        config.project_root, config, mixin_stem=mixin_stem
+    )
+
+    if not plan.has_changes:
+        print(f"  {green('Nothing to migrate.')} No ready components found for this mixin.")
+        return
+
+    component_count = sum(1 for c in plan.component_changes if c.has_changes)
+    component_word = "component" if component_count == 1 else "components"
+    print(f"  This will update {yellow(str(component_count))} {component_word}.\n")
+
+    _show_change_summary(plan, config.project_root)
+
+    answer = input(f"\n{bold('Apply changes?')} (y/n): ").strip().lower()
+    if answer != "y":
+        print("  Aborted. No files were written.")
+        return
+
+    _apply_plan(plan, config.project_root)
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — project_status
+# ---------------------------------------------------------------------------
+
+def project_status(config: MigrationConfig) -> None:
+    from .reporting.markdown import generate_status_report
+    from datetime import datetime
+
+    print(f"\n{bold('Project status')}")
+    print(f"  {dim('Scanning project...')}\n")
+
+    report = generate_status_report(config.project_root, config)
+
+    # Print concise terminal summary (first 20 lines = header + summary + mixin table start)
+    for line in report.splitlines()[:20]:
+        print(f"  {line}")
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    report_path = config.project_root / f"migration-status-{timestamp}.md"
+    report_path.write_text(report, encoding="utf-8")
+
+    print(f"\n  {bold('Full report saved to:')} {green(report_path.name)}")
 
 
 # =============================================================================
