@@ -20,6 +20,24 @@ class MigrationStatus(Enum):
     FORCE_UNBLOCKED = "force_unblocked"
 
 
+class ConfidenceLevel(str, Enum):
+    """Confidence in the quality of a generated/patched composable."""
+    HIGH = "HIGH"       # 0 remaining this., 0 TODOs, 0 warnings
+    MEDIUM = "MEDIUM"   # has TODOs or warnings but no remaining this.
+    LOW = "LOW"         # has remaining this.$, unbalanced brackets, or structural warnings
+
+
+@dataclass
+class MigrationWarning:
+    """A single warning detected during mixin analysis or composable generation."""
+    mixin_stem: str           # Which mixin triggered this
+    category: str             # e.g. "this.$router", "watch", "mixin-option"
+    message: str              # Human-readable description
+    action_required: str      # What the developer must do
+    line_hint: str | None     # Source line context (for inline comment)
+    severity: str             # "error" | "warning" | "info"
+
+
 @dataclass
 class MixinMembers:
     """Members extracted from a mixin source file."""
@@ -121,6 +139,8 @@ class MixinEntry:
     """Member classification against the composable."""
     status: MigrationStatus = MigrationStatus.BLOCKED_NO_COMPOSABLE
     """Current migration status."""
+    warnings: list[MigrationWarning] = field(default_factory=list)
+    """Migration warnings detected during analysis and generation."""
 
     def compute_status(self) -> MigrationStatus:
         """Determine the migration status based on analysis results."""

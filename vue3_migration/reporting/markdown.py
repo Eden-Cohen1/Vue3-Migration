@@ -4,7 +4,7 @@ Markdown report generation for migration analysis results.
 
 from pathlib import Path
 
-from ..models import MixinEntry
+from ..models import ConfidenceLevel, MixinEntry
 from .terminal import md_green, md_yellow
 
 
@@ -297,5 +297,41 @@ def build_audit_report(
     unused_members = [m for m in all_member_names if m not in all_used_members]
     if unused_members:
         w(f"- Unused members (candidates for removal): {', '.join(unused_members)}\n")
+
+    return "\n".join(lines)
+
+
+def build_warnings_section(
+    entries: list[MixinEntry],
+    confidence_map: dict[str, ConfidenceLevel],
+) -> str:
+    """Build a markdown Migration Warnings section.
+
+    Groups warnings by mixin, shows confidence per composable,
+    and a table of Issue | Action Required for each warning.
+    """
+    if not entries:
+        return ""
+
+    lines: list[str] = []
+    w = lines.append
+
+    w("## Migration Warnings\n")
+
+    for entry in entries:
+        stem = entry.mixin_stem
+        confidence = confidence_map.get(stem)
+        conf_str = confidence.value if confidence else "?"
+
+        w(f"### {stem} — Confidence: **{conf_str}**\n")
+
+        if entry.warnings:
+            w("| Issue | Action Required |")
+            w("|-------|----------------|")
+            for warning in entry.warnings:
+                w(f"| {warning.category}: {warning.message} | {warning.action_required} |")
+            w("")
+        else:
+            w("No warnings detected.\n")
 
     return "\n".join(lines)

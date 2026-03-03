@@ -2,6 +2,9 @@
 import re
 import textwrap
 from ..core.js_parser import extract_brace_block
+from ..core.warning_collector import (
+    collect_mixin_warnings, compute_confidence, inject_inline_warnings,
+)
 from ..models import MixinMembers
 from .composable_patcher import _extract_data_default
 from .lifecycle_converter import convert_lifecycle_hooks, get_required_imports
@@ -163,4 +166,11 @@ def generate_composable_from_mixin(
         f"import {{ {', '.join(vue_imports)} }} from 'vue'\n\n"
         if vue_imports else ""
     )
-    return f"{import_line}export function {fn_name}() {{\n{body}\n}}\n"
+    result = f"{import_line}export function {fn_name}() {{\n{body}\n}}\n"
+
+    # Collect warnings and inject inline comments + confidence header
+    warnings = collect_mixin_warnings(mixin_source, mixin_members, lifecycle_hooks)
+    confidence = compute_confidence(result, warnings)
+    result = inject_inline_warnings(result, warnings, confidence, len(warnings))
+
+    return result
