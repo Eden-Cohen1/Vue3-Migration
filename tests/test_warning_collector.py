@@ -451,8 +451,8 @@ export default {
 """
         members = MixinMembers(data=["token"], methods=["go"])
         result = patch_composable(composable, mixin, [], ["go"], members)
-        # Has this.$router warning, so at least MEDIUM
-        assert "Migration confidence: MEDIUM" in result
+        # Has this.$router in output + warning, so LOW (remaining this. reference)
+        assert "Migration confidence: LOW" in result
 
     def test_clean_mixin_patch_no_router_warnings(self):
         """Mixin without this.$ patterns gets no this.$-category warnings."""
