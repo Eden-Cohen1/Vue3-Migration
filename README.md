@@ -1,6 +1,6 @@
 # vue3-migration
 
-A CLI tool that helps you migrate Vue 2 mixins to Vue 3 composables.
+A CLI tool that migrates Vue 2 mixins to Vue 3 composables.
 
 ## Requirements
 
@@ -21,35 +21,38 @@ Run from the root of your Vue project:
 npx vue3-migration
 ```
 
-This opens an interactive menu with all options.
+This opens an interactive menu with four options:
 
-### Commands
+| # | Option | Description |
+|---|--------|-------------|
+| 1 | **Full project** | Migrate every component at once. Auto-patches and generates composables as needed. Shows a per-file change summary and requires confirmation before writing. |
+| 2 | **Pick a component** | Choose one component from a list. Migrate only that file. Safe for large projects — low blast radius, easy to test and review. |
+| 3 | **Pick a mixin** | Fully retire one mixin. Patches/generates its composable and updates every component that uses it. |
+| 4 | **Project status** | Read-only. Generates a detailed markdown report of what's migrated, what's ready, and what's blocked. No files are changed. |
 
-| Command | Description |
-|---|---|
-| `npx vue3-migration` | Interactive menu |
-| `npx vue3-migration scan` | Scan the project — lists all components still using mixins and shows which composables already exist |
-| `npx vue3-migration component <path>` | Migrate a single component — matches its mixins to composables and injects `setup()` |
-| `npx vue3-migration audit <mixin> [composable]` | Audit a mixin — shows every component that uses it and what members they rely on |
-
-### Examples
+### Direct commands
 
 ```bash
-# Scan the whole project
-npx vue3-migration scan
-
-# Migrate a specific component
-npx vue3-migration component src/components/UserProfile.vue
-
-# Audit a mixin
-npx vue3-migration audit src/mixins/authMixin.js
-
-# Audit a mixin and compare against its composable
-npx vue3-migration audit src/mixins/authMixin.js src/composables/useAuth.js
+npx vue3-migration all                                # Migrate entire project
+npx vue3-migration component src/components/Foo.vue   # Migrate one component
+npx vue3-migration mixin authMixin                    # Retire one mixin
+npx vue3-migration status                             # Generate status report
 ```
 
-## Workflow
+### Output files
 
-1. Run **scan** to see which components still use mixins and which composables are already available.
-2. Pick a component and run **component** to migrate it. The tool matches each mixin to a composable, reports what's missing, and injects `setup()` for every ready composable.
-3. To focus on a single mixin across the codebase, run **audit** to see every component that depends on it and what members they use.
+Every migration writes a `migration-diff-<timestamp>.md` with a full before/after diff of every changed file.
+
+`npx vue3-migration status` writes a `migration-status-<timestamp>.md` with:
+- Summary counts (total, ready, blocked)
+- Mixin overview table
+- Per-component status and blocking reason
+
+## Workflow for large projects
+
+For large codebases where each change is critical:
+
+1. Run `npx vue3-migration status` to see the full picture.
+2. Use **Pick a component** (option 2) to migrate one component at a time.
+3. Test after each migration, then move on to the next.
+4. When a mixin is fully covered and you're ready to retire it, use **Pick a mixin** (option 3).
