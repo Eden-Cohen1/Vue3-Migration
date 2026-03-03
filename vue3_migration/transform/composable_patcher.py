@@ -3,6 +3,9 @@ import re
 import textwrap
 from ..core.composable_analyzer import extract_all_identifiers
 from ..core.js_parser import extract_brace_block
+from ..core.warning_collector import (
+    collect_mixin_warnings, compute_confidence, inject_inline_warnings,
+)
 from ..models import MixinMembers
 from .this_rewriter import rewrite_this_refs
 from .lifecycle_converter import extract_hook_body
@@ -174,5 +177,10 @@ def patch_composable(
         ]
         content = add_members_to_composable(content, declarations)
         content = add_keys_to_return(content, missing)
+
+    # Collect warnings and inject inline comments + confidence header
+    warnings = collect_mixin_warnings(mixin_content, mixin_members, [])
+    confidence = compute_confidence(content, warnings)
+    content = inject_inline_warnings(content, warnings, confidence, len(warnings))
 
     return content

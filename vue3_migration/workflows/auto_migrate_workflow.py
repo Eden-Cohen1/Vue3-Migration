@@ -15,6 +15,7 @@ from ..core.composable_analyzer import (
 from ..core.composable_search import find_composable_dirs, search_for_composable
 from ..core.file_resolver import compute_import_path, resolve_import_path
 from ..core.mixin_analyzer import extract_lifecycle_hooks, extract_mixin_members
+from ..core.warning_collector import collect_mixin_warnings
 from ..models import (
     ComposableCoverage, FileChange, MigrationConfig, MigrationPlan, MigrationStatus,
     MixinEntry, MixinMembers,
@@ -87,6 +88,12 @@ def _analyze_mixin_silent(
             )
             entry.composable = coverage
             entry.classification = coverage.classify_members(used, component_own_members)
+
+    # Collect migration warnings
+    mixin_warnings = collect_mixin_warnings(mixin_source, members, hooks)
+    for w in mixin_warnings:
+        w.mixin_stem = entry.mixin_stem
+    entry.warnings = mixin_warnings
 
     entry.compute_status()
     return entry

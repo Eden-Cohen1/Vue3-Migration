@@ -59,3 +59,48 @@ def md_green(text: str) -> str:
 
 def md_yellow(text: str) -> str:
     return f'<span style="color:#d29922">{text}</span>'
+
+
+# -- Warning summary formatting --
+
+def format_warning_summary(
+    entries: "list",
+    confidence_map: "dict",
+) -> str:
+    """Format a terminal-friendly warning summary for migration entries.
+
+    Args:
+        entries: list of MixinEntry objects (with .warnings, .mixin_stem)
+        confidence_map: dict mapping mixin_stem -> ConfidenceLevel
+
+    Returns:
+        Formatted string ready for printing, or "" if no entries.
+    """
+    if not entries:
+        return ""
+
+    lines: list[str] = []
+    for entry in entries:
+        stem = entry.mixin_stem
+        confidence = confidence_map.get(stem)
+        conf_str = confidence.value if confidence else "?"
+
+        if confidence and confidence.value == "HIGH":
+            prefix = green("✓")
+            conf_display = green(conf_str)
+        elif confidence and confidence.value == "LOW":
+            prefix = red("✗")
+            conf_display = red(conf_str)
+        else:
+            prefix = yellow("⚠")
+            conf_display = yellow(conf_str)
+
+        warning_count = len(entry.warnings)
+        if warning_count:
+            lines.append(f"  {prefix} {stem} — {conf_display} confidence ({warning_count} warnings)")
+            for w in entry.warnings:
+                lines.append(f"    {yellow('⚠')} {w.category}: {w.message}")
+        else:
+            lines.append(f"  {prefix} {stem} — {conf_display} confidence")
+
+    return "\n".join(lines)
