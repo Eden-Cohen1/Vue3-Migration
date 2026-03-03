@@ -4,7 +4,6 @@ No file I/O is performed here. All changes are represented as FileChange objects
 The CLI shows the diff and writes files only after user confirmation.
 """
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..core.component_analyzer import (
@@ -17,7 +16,7 @@ from ..core.composable_search import find_composable_dirs, search_for_composable
 from ..core.file_resolver import compute_import_path, resolve_import_path
 from ..core.mixin_analyzer import extract_lifecycle_hooks, extract_mixin_members
 from ..models import (
-    ComposableCoverage, FileChange, MigrationConfig, MigrationStatus,
+    ComposableCoverage, FileChange, MigrationConfig, MigrationPlan, MigrationStatus,
     MixinEntry, MixinMembers,
 )
 from ..transform.composable_generator import (
@@ -32,21 +31,6 @@ from ..transform.injector import (
 from ..transform.lifecycle_converter import (
     convert_lifecycle_hooks, find_lifecycle_referenced_members, get_required_imports,
 )
-
-
-@dataclass
-class MigrationPlan:
-    """All planned file changes for a project-wide auto-migrate run."""
-    component_changes: list[FileChange] = field(default_factory=list)
-    composable_changes: list[FileChange] = field(default_factory=list)
-
-    @property
-    def all_changes(self) -> list[FileChange]:
-        return self.composable_changes + self.component_changes
-
-    @property
-    def has_changes(self) -> bool:
-        return any(c.has_changes for c in self.all_changes)
 
 
 def _analyze_mixin_silent(

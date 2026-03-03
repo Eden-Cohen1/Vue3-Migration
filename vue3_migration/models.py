@@ -152,6 +152,21 @@ class FileChange:
 
 
 @dataclass
+class MigrationPlan:
+    """All planned file changes for a project-wide auto-migrate run."""
+    component_changes: list["FileChange"] = field(default_factory=list)
+    composable_changes: list["FileChange"] = field(default_factory=list)
+
+    @property
+    def all_changes(self) -> list["FileChange"]:
+        return self.composable_changes + self.component_changes
+
+    @property
+    def has_changes(self) -> bool:
+        return any(c.has_changes for c in self.all_changes)
+
+
+@dataclass
 class MigrationConfig:
     """Configuration for the migration tool."""
     project_root: Path = field(default_factory=Path.cwd)
