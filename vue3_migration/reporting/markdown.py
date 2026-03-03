@@ -132,6 +132,105 @@ def build_component_report(
     return "\n".join(lines)
 
 
+def generate_status_report(project_root: Path, config) -> str:
+    """Generate a detailed markdown status report of migration progress."""
+    import os
+    from collections import Counter
+    from datetime import datetime
+
+    from ..core.component_analyzer import parse_imports, parse_mixins_array
+    from ..core.composable_search import (
+        collect_composable_stems,
+        find_composable_dirs,
+        mixin_has_composable,
+    )
+    from ..core.file_resolver import resolve_mixin_stem
+
+    composable_dirs = find_composable_dirs(project_root)
+    composable_stems = collect_composable_stems(composable_dirs)
+    mixin_counter: Counter[str] = Counter()
+    components_info: list[dict] = []
+
+    for dirpath, _, filenames in os.walk(project_root):
+        rel_dir = Path(dirpath).relative_to(project_root)
+        if any(part in config.skip_dirs for part in rel_dir.parts):
+            continue
+        for fn in filenames:
+            if not fn.endswith(".vue"):
+                continue
+            filepath = Path(dirpath) / fn
+            try:
+                source = filepath.read_text(errors="ignore")
+            except Exception:
+                continue
+            mixin_names = parse_mixins_array(source)
+            if not mixin_names:
+                continue
+            imports = parse_imports(source)
+            stems = []
+            for name in mixin_names:
+                imp = imports.get(name, "")
+                stems.append(resolve_mixin_stem(imp) if imp else name)
+                mixin_counter[stems[-1]] += 1
+            covered = sum(1 for s in stems if mixin_has_composable(s, composable_stems))
+            try:
+                rel = filepath.relative_to(project_root)
+            except ValueError:
+                rel = filepath
+            components_info.append(
+                {
+                    "rel_path": rel,
+                    "stems": stems,
+                    "covered": covered,
+                    "total": len(stems),
+                    "all_covered": covered == len(stems),
+                }
+            )
+
+    ready = sum(1 for c in components_info if c["all_covered"])
+    blocked = len(components_info) - ready
+
+    lines: list[str] = [
+        "# Vue Migration Status Report",
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "## Summary",
+        "",
+        f"- Components with mixins remaining: **{len(components_info)}**",
+        f"- Ready to migrate now: **{ready}**",
+        f"- Blocked (composable missing or incomplete): **{blocked}**",
+        "",
+        "## Mixin Overview",
+        "",
+        "| Mixin | Used in | Composable |",
+        "|-------|---------|------------|",
+    ]
+
+    for stem, count in mixin_counter.most_common():
+        has_comp = mixin_has_composable(stem, composable_stems)
+        status = "found" if has_comp else "needs generation"
+        lines.append(f"| {stem} | {count} | {status} |")
+
+    lines += ["", "## Components", ""]
+
+    # Ready components first, then blocked; alphabetical within each group
+    components_info.sort(key=lambda c: (not c["all_covered"], str(c["rel_path"])))
+
+    for comp in components_info:
+        if comp["all_covered"]:
+            status_str = "**Ready** -- all composables found"
+        else:
+            missing = comp["total"] - comp["covered"]
+            status_str = f"**Blocked** -- {missing} composable(s) missing or incomplete"
+
+        lines.append(f"### `{comp['rel_path']}`")
+        lines.append(f"- Mixins: {', '.join(f'`{s}`' for s in comp['stems'])}")
+        lines.append(f"- Status: {status_str}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def build_audit_report(
     mixin_path: Path,
     members: dict[str, list[str]],
