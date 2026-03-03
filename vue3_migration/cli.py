@@ -441,7 +441,10 @@ def project_status(config: MigrationConfig) -> None:
 
     # Print concise terminal summary (first 20 lines = header + summary + mixin table start)
     for line in report.splitlines()[:20]:
-        print(f"  {line}")
+        try:
+            print(f"  {line}")
+        except UnicodeEncodeError:
+            print(f"  {line.encode('ascii', errors='replace').decode('ascii')}")
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     report_path = config.project_root / f"migration-status-{timestamp}.md"
