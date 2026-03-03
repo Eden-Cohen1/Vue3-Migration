@@ -84,3 +84,59 @@ def test_all_changes_are_filechange_instances(project):
         assert hasattr(c, "file_path")
         assert hasattr(c, "new_content")
         assert hasattr(c, "original_content")
+
+
+def test_lifecycle_hooks_component_has_composable_import(project):
+    """LifecycleHooks.vue must have import { useLogging } even when members
+    are only referenced through lifecycle hooks, not directly in template."""
+    plan = _run(project)
+    lh = next((c for c in plan.component_changes
+               if str(c.file_path).endswith("LifecycleHooks.vue")
+               and "All" not in str(c.file_path)), None)
+    assert lh is not None
+    assert "import { useLogging }" in lh.new_content
+
+
+def test_fuzzy_match_component_has_composable_import(project):
+    """FuzzyMatch.vue must have import { useAdvancedFilter } for fuzzy-matched composable."""
+    plan = _run(project)
+    fm = next((c for c in plan.component_changes if "FuzzyMatch" in str(c.file_path)), None)
+    assert fm is not None
+    assert "import { useAdvancedFilter }" in fm.new_content
+
+
+def test_multi_mixin_has_all_composable_imports(project):
+    """MultiMixin.vue must import all 4 composables including useLogging."""
+    plan = _run(project)
+    mm = next((c for c in plan.component_changes if "MultiMixin" in str(c.file_path)), None)
+    assert mm is not None
+    for fn_name in ["useSelection", "usePagination", "useAuth", "useLogging"]:
+        assert f"import {{ {fn_name} }}" in mm.new_content, f"Missing import for {fn_name}"
+
+
+def test_vue_lifecycle_imports_consolidated(project):
+    """Components with multiple lifecycle hooks should have a single `from 'vue'` import."""
+    plan = _run(project)
+    lh = next((c for c in plan.component_changes
+               if str(c.file_path).endswith("LifecycleHooks.vue")
+               and "All" not in str(c.file_path)), None)
+    assert lh is not None
+    vue_imports = [l for l in lh.new_content.splitlines() if "from 'vue'" in l]
+    assert len(vue_imports) == 1, f"Expected 1 vue import line, got {len(vue_imports)}: {vue_imports}"
+
+
+def test_overridden_members_excluded_from_setup_destructure(project):
+    """WithOverrides.vue overrides selectionMode and clearSelection — these
+    should NOT appear in the setup() destructure from useSelection()."""
+    plan = _run(project)
+    wo = next((c for c in plan.component_changes if "WithOverrides" in str(c.file_path)), None)
+    assert wo is not None
+    # Find the destructure line
+    setup_line = next(
+        (l for l in wo.new_content.splitlines()
+         if "useSelection" in l and "const {" in l),
+        None
+    )
+    assert setup_line is not None, "Expected const { ... } = useSelection() in setup()"
+    assert "selectionMode" not in setup_line, "selectionMode is overridden, should not be destructured"
+    assert "clearSelection" not in setup_line, "clearSelection is overridden, should not be destructured"

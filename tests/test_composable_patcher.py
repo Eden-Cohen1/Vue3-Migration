@@ -90,3 +90,31 @@ def test_generate_member_declaration_computed():
     decl = generate_member_declaration("double", mixin, members, ["count"], [])
     assert "computed(" in decl
     assert "double" in decl
+
+
+# --- Bug 5: method body indentation in patched composables ---
+
+def test_generate_member_declaration_method_not_double_indented():
+    """Method body should have exactly 4-space (inner) indentation.
+
+    Note: generate_member_declaration uses extract_hook_body on the full mixin
+    source, which excludes methods blocks (R-2). So we test with a method-like
+    function at the top level of the export default object.
+    """
+    mixin = """export default {
+  save(data) {
+    this.items.push(data)
+    this.count++
+  }
+}"""
+    members = MixinMembers(data=["items", "count"], methods=["save"])
+    decl = generate_member_declaration("save", mixin, members, ["items", "count"], ["save"])
+    lines = decl.splitlines()
+    body_lines = [l for l in lines if "items" in l or "count" in l]
+    assert len(body_lines) >= 2, f"Expected at least 2 body lines, found: {body_lines}"
+    for line in body_lines:
+        stripped = line.lstrip()
+        indent_len = len(line) - len(stripped)
+        assert indent_len == 4, (
+            f"Expected 4-space indent, got {indent_len}: {repr(line)}"
+        )

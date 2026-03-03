@@ -1,5 +1,6 @@
 """Patch existing composables to fix BLOCKED_NOT_RETURNED and BLOCKED_MISSING_MEMBERS."""
 import re
+import textwrap
 from ..core.composable_analyzer import extract_all_identifiers
 from ..core.js_parser import extract_brace_block
 from ..models import MixinMembers
@@ -113,7 +114,8 @@ def generate_member_declaration(
         params = sig_match.group(1) if sig_match else ""
         body = extract_hook_body(mixin_source, name)
         if body:
-            rewritten = rewrite_this_refs(body.strip(), ref_members, plain_members)
+            body_clean = textwrap.dedent(body).strip()
+            rewritten = rewrite_this_refs(body_clean, ref_members, plain_members)
             inner = indent + indent
             body_lines = f"\n{inner}" + f"\n{inner}".join(rewritten.splitlines()) + f"\n{indent}"
             # Detect async

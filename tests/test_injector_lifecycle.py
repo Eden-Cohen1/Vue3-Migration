@@ -2,7 +2,7 @@
 """Tests for the lifecycle_calls and inline_setup_lines extensions to inject_setup."""
 from textwrap import dedent
 
-from vue3_migration.transform.injector import inject_setup, migrate_methods_to_setup
+from vue3_migration.transform.injector import inject_setup, migrate_methods_to_setup, add_vue_import
 from vue3_migration.transform.lifecycle_converter import find_lifecycle_referenced_members
 
 COMPONENT = "<script>\nexport default {\n  name: 'Foo',\n}\n</script>"
@@ -184,3 +184,37 @@ def test_methods_with_unresolved_this_refs_kept():
     result = migrate_methods_to_setup(source, composable_members, [], ["log"])
     # Method references this.$emit which is NOT in composable_members, so keep it
     assert "methods:" in result
+
+
+# --- Bug 3: Vue import consolidation ---
+
+def test_add_vue_import_merges_into_existing():
+    content = "<script>\nimport { ref } from 'vue'\nexport default {}\n</script>"
+    result = add_vue_import(content, "onMounted")
+    assert result.count("from 'vue'") == 1
+    assert "ref" in result
+    assert "onMounted" in result
+
+
+def test_add_vue_import_creates_new_if_absent():
+    content = "<script>\nexport default {}\n</script>"
+    result = add_vue_import(content, "onMounted")
+    assert "import { onMounted } from 'vue'" in result
+
+
+def test_add_vue_import_idempotent():
+    content = "<script>\nimport { onMounted } from 'vue'\nexport default {}\n</script>"
+    result = add_vue_import(content, "onMounted")
+    assert result.count("onMounted") == 1
+
+
+def test_add_vue_import_multiple_hooks_single_line():
+    content = "<script>\nexport default {}\n</script>"
+    result = add_vue_import(content, "onMounted")
+    result = add_vue_import(result, "onBeforeUnmount")
+    result = add_vue_import(result, "onUpdated")
+    vue_lines = [l for l in result.splitlines() if "from 'vue'" in l]
+    assert len(vue_lines) == 1, f"Expected 1 vue import line, got {len(vue_lines)}: {vue_lines}"
+    assert "onMounted" in vue_lines[0]
+    assert "onBeforeUnmount" in vue_lines[0]
+    assert "onUpdated" in vue_lines[0]

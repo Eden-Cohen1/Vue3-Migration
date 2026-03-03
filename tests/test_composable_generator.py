@@ -126,3 +126,31 @@ def test_this_refs_rewritten_in_methods():
     logout_body_start = result.index("function logout(")
     logout_section = result[logout_body_start:logout_body_start + 200]
     assert "isAuthenticated.value" in logout_section
+
+
+# --- Bug 5: method body indentation in generated composables ---
+
+def test_method_body_not_double_indented():
+    """Method body lines should have exactly 4-space (inner) indentation,
+    not original mixin indentation stacked on top of inner."""
+    result = generate_composable_from_mixin(AUTH_MIXIN, "authMixin", MEMBERS, [])
+    # Find lines inside the logout() function body specifically
+    lines = result.splitlines()
+    in_logout = False
+    body_lines = []
+    for line in lines:
+        if "function logout(" in line:
+            in_logout = True
+            continue
+        if in_logout:
+            if line.strip() == "}":
+                break
+            if line.strip():
+                body_lines.append(line)
+    assert len(body_lines) >= 2, f"Expected at least 2 body lines, found: {body_lines}"
+    for line in body_lines:
+        stripped = line.lstrip()
+        indent_len = len(line) - len(stripped)
+        assert indent_len == 4, (
+            f"Expected 4-space indent (inner), got {indent_len}: {repr(line)}"
+        )

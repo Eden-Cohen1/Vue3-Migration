@@ -11,9 +11,28 @@ from ..core.js_parser import extract_brace_block, skip_non_code
 from .this_rewriter import rewrite_this_refs
 
 
+def add_vue_import(content: str, name: str) -> str:
+    """Add a named Vue import, merging into an existing ``import { ... } from 'vue'`` line."""
+    if re.search(rf"\b{re.escape(name)}\b", content):
+        return content
+    vue_match = re.search(
+        r"^([ \t]*import\s+\{)([^}]+)(\}\s*from\s*['\"]vue['\"].*)",
+        content,
+        re.MULTILINE,
+    )
+    if vue_match:
+        new_names = vue_match.group(2).rstrip() + f", {name}"
+        new_line = vue_match.group(1) + new_names + vue_match.group(3)
+        return content[:vue_match.start()] + new_line + content[vue_match.end():]
+    return add_composable_import(content, name, "vue")
+
+
 def add_composable_import(content: str, fn_name: str, import_path: str) -> str:
     """Add composable import at the top of <script>. No-op if already present."""
-    if re.search(rf"\b{re.escape(fn_name)}\b", content):
+    if re.search(
+        rf"import\s+\{{[^}}]*\b{re.escape(fn_name)}\b[^}}]*\}}\s+from\s",
+        content,
+    ):
         return content
 
     import_line = f"import {{ {fn_name} }} from '{import_path}'\n"

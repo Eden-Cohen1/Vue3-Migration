@@ -26,7 +26,7 @@ from ..transform.composable_generator import (
 )
 from ..transform.composable_patcher import patch_composable
 from ..transform.injector import (
-    add_composable_import, inject_setup,
+    add_composable_import, add_vue_import, inject_setup,
     remove_import_line, remove_mixin_from_array,
 )
 from ..transform.lifecycle_converter import (
@@ -361,6 +361,17 @@ def plan_component_injections(
                     if m not in injectable:
                         injectable.append(m)
 
+            # Exclude members the component overrides — Options API takes
+            # precedence over setup() returns, so injecting them is redundant.
+            # Keep lifecycle-referenced members even if overridden, since the
+            # composable's lifecycle wrapper closure may depend on them.
+            if injectable and entry.composable:
+                lifecycle_members_set = set(lifecycle_members) if entry.lifecycle_hooks else set()
+                injectable = [
+                    m for m in injectable
+                    if m not in own_members or m in lifecycle_members_set
+                ]
+
             if injectable and entry.composable:
                 composable_calls.append((entry.composable.fn_name, injectable))
 
@@ -376,7 +387,7 @@ def plan_component_injections(
                 all_lifecycle_calls.extend(wrapped)
 
                 for hook_import in get_required_imports(entry.lifecycle_hooks):
-                    content = add_composable_import(content, hook_import, "vue")
+                    content = add_vue_import(content, hook_import)
 
         if composable_calls or all_inline_lines or all_lifecycle_calls:
             new = inject_setup(

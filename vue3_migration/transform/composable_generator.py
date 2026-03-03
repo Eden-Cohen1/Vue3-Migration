@@ -1,5 +1,6 @@
 """Generate a new Vue 3 composable file from a Vue 2 mixin source."""
 import re
+import textwrap
 from ..core.js_parser import extract_brace_block
 from ..models import MixinMembers
 from .composable_patcher import _extract_data_default
@@ -106,7 +107,8 @@ def generate_composable_from_mixin(
         params = _extract_func_params(methods_body, name) if methods_body else ""
         body = _extract_func_body(methods_body, name) if methods_body else None
         if body:
-            rewritten = rewrite_this_refs(body.strip(), ref_members, plain_members)
+            body_clean = textwrap.dedent(body).strip()
+            rewritten = rewrite_this_refs(body_clean, ref_members, plain_members)
             inner = indent + indent
             body_lines = f"\n{inner}" + f"\n{inner}".join(rewritten.splitlines()) + f"\n{indent}"
             async_prefix = "async " if _is_async(methods_body, name) else ""

@@ -90,12 +90,37 @@ def extract_hook_body(mixin_source: str, hook_name: str) -> str | None:
             if ch == '{':
                 brace_pos = pos
                 break
+            if ch == '(':
+                # Skip parenthesized parameter list to avoid breaking
+                # on commas inside e.g. hookName(err, vm, info) { ... }
+                depth = 1
+                pos += 1
+                while pos < len(mixin_source) and depth > 0:
+                    if mixin_source[pos] == '(':
+                        depth += 1
+                    elif mixin_source[pos] == ')':
+                        depth -= 1
+                    pos += 1
+                continue
             if ch in (',', '}'):
                 break
             pos += 1
         if brace_pos is not None:
             return extract_brace_block(mixin_source, brace_pos)
     return None
+
+
+def extract_hook_params(mixin_source: str, hook_name: str) -> str:
+    """Extract the parameter list of a lifecycle hook.
+
+    Scans for ``hookName(params)`` or ``hookName: function(params)`` and
+    returns the text between the parentheses.  Returns '' if no params found.
+    """
+    m = re.search(
+        rf'\b{re.escape(hook_name)}\s*(?::\s*(?:async\s+)?function\s*)?\(([^)]*)\)',
+        mixin_source,
+    )
+    return m.group(1).strip() if m else ""
 
 
 def convert_lifecycle_hooks(
@@ -137,7 +162,8 @@ def convert_lifecycle_hooks(
         body = extract_hook_body(mixin_source, hook)
         if body is None or not body.strip():
             continue  # skip missing or empty hooks
-        rewritten = rewrite_this_refs(body.strip(), ref_members, plain_members)
+        body_clean = textwrap.dedent(body).strip()
+        rewritten = rewrite_this_refs(body_clean, ref_members, plain_members)
         vue3_fn = HOOK_MAP[hook]
         if vue3_fn is None:
             dedented = textwrap.dedent(rewritten)
@@ -146,11 +172,13 @@ def convert_lifecycle_hooks(
                 if line.strip()
             )
         else:
+            params = extract_hook_params(mixin_source, hook)
+            param_str = f"({params})" if params else "()"
             body_lines = [
                 f"{inner}{line}" if line.strip() else ""
                 for line in rewritten.splitlines()
             ]
-            wrapped_lines.append(f"{indent}{vue3_fn}(() => {{")
+            wrapped_lines.append(f"{indent}{vue3_fn}({param_str} => {{")
             wrapped_lines.extend(body_lines)
             wrapped_lines.append(f"{indent}}})")
 

@@ -72,3 +72,75 @@ def test_hook_map_covers_all_vue2_hooks():
                  "beforeUpdate", "updated", "beforeDestroy", "destroyed",
                  "activated", "deactivated", "errorCaptured"]:
         assert hook in HOOK_MAP
+
+
+# --- Bug 2: lifecycle hook parameters must be preserved ---
+
+MIXIN_WITH_ERROR_CAPTURED = """
+export default {
+  errorCaptured(err) {
+    this.logHook('errorCaptured: ' + err.message)
+    return false
+  }
+}
+"""
+
+def test_error_captured_preserves_params():
+    inline, wrapped = convert_lifecycle_hooks(
+        MIXIN_WITH_ERROR_CAPTURED, ["errorCaptured"],
+        ref_members=[], plain_members=["logHook"]
+    )
+    joined = "\n".join(wrapped)
+    assert "(err) =>" in joined, f"Expected (err) => but got: {joined}"
+
+
+MIXIN_WITH_MULTI_PARAMS = """
+export default {
+  errorCaptured(err, vm, info) {
+    this.logHook(err.message + info)
+    return false
+  }
+}
+"""
+
+def test_error_captured_preserves_multiple_params():
+    inline, wrapped = convert_lifecycle_hooks(
+        MIXIN_WITH_MULTI_PARAMS, ["errorCaptured"],
+        ref_members=[], plain_members=["logHook"]
+    )
+    joined = "\n".join(wrapped)
+    assert "(err, vm, info) =>" in joined, f"Expected (err, vm, info) => but got: {joined}"
+
+
+def test_hook_without_params_gets_empty_parens():
+    """Hooks like mounted() that have no params should still produce () =>."""
+    inline, wrapped = convert_lifecycle_hooks(
+        MIXIN_SRC, ["mounted"], ref_members=["logs"], plain_members=["log"]
+    )
+    joined = "\n".join(wrapped)
+    assert "() =>" in joined
+
+
+# --- Bug 4: wrapped hook body indentation ---
+
+MIXIN_WITH_MULTILINE_BODY = """
+export default {
+  mounted() {
+    this.count++
+    this.log('mounted')
+  }
+}
+"""
+
+def test_wrapped_hook_body_dedented():
+    """Wrapped hook body lines should have exactly inner (4 spaces) indentation,
+    not original mixin indentation stacked on top."""
+    inline, wrapped = convert_lifecycle_hooks(
+        MIXIN_WITH_MULTILINE_BODY, ["mounted"],
+        ref_members=["count"], plain_members=["log"]
+    )
+    body_lines = [l for l in wrapped if "count" in l or "log(" in l]
+    assert len(body_lines) == 2
+    for line in body_lines:
+        assert line.startswith("    "), f"Expected 4-space indent, got: {repr(line)}"
+        assert not line.startswith("      "), f"Over-indented (6+ spaces): {repr(line)}"
