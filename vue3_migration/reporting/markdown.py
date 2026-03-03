@@ -135,6 +135,7 @@ def build_component_report(
 def generate_status_report(project_root: Path, config) -> str:
     """Generate a detailed markdown status report of migration progress."""
     import os
+    import re as _re
     from collections import Counter
     from datetime import datetime
 
@@ -148,6 +149,22 @@ def generate_status_report(project_root: Path, config) -> str:
 
     composable_dirs = find_composable_dirs(project_root)
     composable_stems = collect_composable_stems(composable_dirs)
+
+    # Detect composables that need manual migration (reactive() or variable return)
+    manual_stems: set[str] = set()
+    for comp_dir in composable_dirs:
+        for dirpath_c, _, filenames_c in os.walk(comp_dir):
+            for fn_c in filenames_c:
+                fp = Path(dirpath_c) / fn_c
+                if fp.suffix not in (".js", ".ts") or not fp.stem.lower().startswith("use"):
+                    continue
+                try:
+                    content = fp.read_text(errors="ignore")
+                except Exception:
+                    continue
+                if 'reactive(' in content or not _re.search(r'\breturn\s*\{', content):
+                    manual_stems.add(fp.stem.lower())
+
     mixin_counter: Counter[str] = Counter()
     components_info: list[dict] = []
 
@@ -172,7 +189,15 @@ def generate_status_report(project_root: Path, config) -> str:
                 imp = imports.get(name, "")
                 stems.append(resolve_mixin_stem(imp) if imp else name)
                 mixin_counter[stems[-1]] += 1
-            covered = sum(1 for s in stems if mixin_has_composable(s, composable_stems))
+            covered = sum(
+                1 for s in stems
+                if mixin_has_composable(s, composable_stems)
+                and not mixin_has_composable(s, manual_stems)
+            )
+            needs_manual = sum(
+                1 for s in stems
+                if mixin_has_composable(s, manual_stems)
+            )
             try:
                 rel = filepath.relative_to(project_root)
             except ValueError:
@@ -182,13 +207,16 @@ def generate_status_report(project_root: Path, config) -> str:
                     "rel_path": rel,
                     "stems": stems,
                     "covered": covered,
+                    "needs_manual": needs_manual,
                     "total": len(stems),
-                    "all_covered": covered == len(stems),
+                    "all_covered": covered == len(stems) and needs_manual == 0,
+                    "has_manual": needs_manual > 0,
                 }
             )
 
     ready = sum(1 for c in components_info if c["all_covered"])
-    blocked = len(components_info) - ready
+    needs_manual_count = sum(1 for c in components_info if c["has_manual"])
+    blocked = len(components_info) - ready - needs_manual_count
 
     lines: list[str] = [
         "# Vue Migration Status Report",
@@ -198,29 +226,44 @@ def generate_status_report(project_root: Path, config) -> str:
         "",
         f"- Components with mixins remaining: **{len(components_info)}**",
         f"- Ready to migrate now: **{ready}**",
+    ]
+    if needs_manual_count:
+        lines.append(f"- Needs manual migration: **{needs_manual_count}**")
+    lines.extend([
         f"- Blocked (composable missing or incomplete): **{blocked}**",
         "",
         "## Mixin Overview",
         "",
         "| Mixin | Used in | Composable |",
         "|-------|---------|------------|",
-    ]
+    ])
 
     for stem, count in mixin_counter.most_common():
         has_comp = mixin_has_composable(stem, composable_stems)
-        status = "✓ found" if has_comp else "needs generation"
+        is_manual = mixin_has_composable(stem, manual_stems)
+        if is_manual:
+            status = "found (needs manual migration)"
+        elif has_comp:
+            status = "found"
+        else:
+            status = "needs generation"
         lines.append(f"| {stem} | {count} | {status} |")
 
     lines += ["", "## Components", ""]
 
-    # Ready components first, then blocked; alphabetical within each group
-    components_info.sort(key=lambda c: (not c["all_covered"], str(c["rel_path"])))
+    # Ready first, then needs-manual, then blocked; alphabetical within each group
+    components_info.sort(key=lambda c: (
+        0 if c["all_covered"] else (1 if c["has_manual"] else 2),
+        str(c["rel_path"]),
+    ))
 
     for comp in components_info:
         if comp["all_covered"]:
             status_str = "**Ready** -- all composables found"
+        elif comp["has_manual"]:
+            status_str = "**Needs manual migration** -- composable uses reactive() or variable return"
         else:
-            missing = comp["total"] - comp["covered"]
+            missing = comp["total"] - comp["covered"] - comp["needs_manual"]
             status_str = f"**Blocked** -- {missing} composable(s) missing or incomplete"
 
         lines.append(f"### `{comp['rel_path']}`")

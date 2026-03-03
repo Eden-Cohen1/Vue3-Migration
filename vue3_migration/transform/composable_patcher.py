@@ -19,7 +19,7 @@ def add_keys_to_return(content: str, keys: list[str]) -> str:
     if not matches:
         print(
             "  [composable_patcher] WARNING: No 'return {' found. "
-            "Composable may use a variable return — manual migration required."
+            "Composable may use a variable return -- manual migration required."
         )
         return content
     m = matches[-1]  # use LAST return (R-3 fix)
@@ -97,7 +97,7 @@ def generate_member_declaration(
         return f"{indent}const {name} = ref({default})"
 
     if name in mixin_members.computed:
-        body = extract_hook_body(mixin_source, name)  # reuse brace extractor
+        body = extract_hook_body(mixin_source, name, exclude_sections=False)
         # R-5: getter/setter computed guard
         if body and re.search(r'\bget\s*\(', body):
             return f"{indent}const {name} = computed(() => null) // TODO: getter/setter computed — migrate manually"
@@ -112,7 +112,7 @@ def generate_member_declaration(
             mixin_source
         )
         params = sig_match.group(1) if sig_match else ""
-        body = extract_hook_body(mixin_source, name)
+        body = extract_hook_body(mixin_source, name, exclude_sections=False)
         if body:
             body_clean = textwrap.dedent(body).strip()
             rewritten = rewrite_this_refs(body_clean, ref_members, plain_members)
@@ -151,7 +151,7 @@ def patch_composable(
     # R-6: reactive() guard
     if 'reactive(' in composable_content:
         print(
-            "  [composable_patcher] WARNING: Composable uses reactive() — "
+            "  [composable_patcher] WARNING: Composable uses reactive() -- "
             "skipping auto-patch, manual migration required."
         )
         return composable_content

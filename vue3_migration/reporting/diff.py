@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..models import FileChange, MigrationPlan
-from .terminal import bold, green
+from .terminal import bold, dim, green
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,10 @@ def _extract_return_keys(source: str) -> list[str]:
 
 
 def _describe_composable_changes(change: FileChange) -> list[str]:
-    """Describe what was added to a composable (refs, computed, functions, return keys)."""
+    """Describe what was added to a composable (refs, computed, functions, return keys).
+
+    Returns a list of individual detail lines (one item per line).
+    """
     original_lines = {line.strip() for line in change.original_content.splitlines()}
 
     added_refs: list[str] = []
@@ -77,13 +80,13 @@ def _describe_composable_changes(change: FileChange) -> list[str]:
 
     parts = []
     if added_refs:
-        parts.append(f"adding refs: {', '.join(added_refs)}")
+        parts.append(f"+ refs: {', '.join(added_refs)}")
     if added_computed:
-        parts.append(f"adding computed: {', '.join(added_computed)}")
+        parts.append(f"+ computed: {', '.join(added_computed)}")
     if added_functions:
-        parts.append(f"adding functions: {', '.join(added_functions)}")
+        parts.append(f"+ functions: {', '.join(added_functions)}")
     if added_to_return:
-        parts.append(f"adding to return: {', '.join(added_to_return)}")
+        parts.append(f"+ return: {', '.join(added_to_return)}")
     return parts
 
 
@@ -92,7 +95,10 @@ def _describe_composable_changes(change: FileChange) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _describe_component_changes(change: FileChange) -> list[str]:
-    """Describe what changed in a component file (mixin removed, composable added, setup injected)."""
+    """Describe what changed in a component file (mixin removed, composable added, setup injected).
+
+    Returns a list of individual detail lines (one item per line).
+    """
     original_line_set = set(change.original_content.splitlines())
     new_line_set = set(change.new_content.splitlines())
 
@@ -120,11 +126,11 @@ def _describe_component_changes(change: FileChange) -> list[str]:
 
     parts = []
     if removed_mixin_imports:
-        parts.append(f"removing mixin imports: {', '.join(removed_mixin_imports)}")
+        parts.append(f"- mixins: {', '.join(removed_mixin_imports)}")
     if added_composable_imports:
-        parts.append(f"adding composable imports: {', '.join(added_composable_imports)}")
+        parts.append(f"+ composables: {', '.join(added_composable_imports)}")
     if setup_injected:
-        parts.append("injecting setup()")
+        parts.append("+ setup() injected")
     return parts
 
 
@@ -139,26 +145,27 @@ def format_change_list(plan: MigrationPlan, project_root: Path) -> str:
     composable_changes = [c for c in plan.composable_changes if c.has_changes]
     component_changes = [c for c in plan.component_changes if c.has_changes]
 
-    def _rel(path: Path) -> str:
-        try:
-            return str(path.relative_to(project_root))
-        except ValueError:
-            return str(path)
-
     if composable_changes:
         lines.append(f"  {bold('Composable changes:')}")
         for change in composable_changes:
             is_new = not change.original_content.strip()
-            parts = ["new file generated"] if is_new else _describe_composable_changes(change)
-            desc = " · ".join(parts) if parts else "modified"
-            lines.append(f"    {green(_rel(change.file_path))}: {desc}")
+            lines.append(f"    {green(change.file_path.name)}")
+            if is_new:
+                lines.append(f"      {dim('new file generated')}")
+            else:
+                for part in _describe_composable_changes(change):
+                    lines.append(f"      {dim(part)}")
+
+    if composable_changes and component_changes:
+        lines.append("")
 
     if component_changes:
         lines.append(f"  {bold('Component changes:')}")
         for change in component_changes:
             parts = _describe_component_changes(change)
-            desc = " · ".join(parts) if parts else "modified"
-            lines.append(f"    {green(_rel(change.file_path))}: {desc}")
+            lines.append(f"    {green(change.file_path.name)}")
+            for part in parts:
+                lines.append(f"      {dim(part)}")
 
     return "\n".join(lines)
 

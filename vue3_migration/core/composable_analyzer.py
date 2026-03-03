@@ -51,19 +51,38 @@ def extract_return_keys(source: str) -> list[str]:
     """Extract ONLY the keys from the composable's return { ... } statement.
 
     Members must be in the return statement to be accessible by the component.
+    Handles both direct returns (return { a, b }) and indirect returns
+    (const obj = { a, b }; return obj).
     """
-    ret = re.search(r"\breturn\s*\{", source)
-    if not ret:
-        return []
-
-    block = extract_brace_block(source, ret.end() - 1)
-    keys = re.findall(r"\b(\w+)\b", block)
-
     noise = {
         "const", "let", "var", "function", "return", "true", "false",
         "null", "undefined", "new", "value",
     }
-    return list(dict.fromkeys(k for k in keys if k not in noise))
+
+    # Case 1: direct return { ... }
+    ret = re.search(r"\breturn\s*\{", source)
+    if ret:
+        block = extract_brace_block(source, ret.end() - 1)
+        keys = re.findall(r"\b(\w+)\b", block)
+        return list(dict.fromkeys(k for k in keys if k not in noise))
+
+    # Case 2: indirect return — return varName  where varName = { ... }
+    ret_var = re.search(r"\breturn\s+(\w+)\s*;?\s*\n?\s*\}", source)
+    if ret_var:
+        var_name = ret_var.group(1)
+        if var_name in noise:
+            return []
+        # Find the variable's object literal assignment
+        var_def = re.search(
+            rf"\b(?:const|let|var)\s+{re.escape(var_name)}\s*=\s*\{{",
+            source,
+        )
+        if var_def:
+            block = extract_brace_block(source, var_def.end() - 1)
+            keys = re.findall(r"\b(\w+)\b", block)
+            return list(dict.fromkeys(k for k in keys if k not in noise))
+
+    return []
 
 
 def extract_function_name(source: str) -> Optional[str]:

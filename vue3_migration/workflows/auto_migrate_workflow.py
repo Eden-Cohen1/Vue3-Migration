@@ -365,7 +365,8 @@ def plan_component_injections(
                 ref_m = entry.members.data + entry.members.computed + entry.members.watch
                 plain_m = entry.members.methods
                 inline, wrapped = convert_lifecycle_hooks(
-                    mixin_content, entry.lifecycle_hooks, ref_m, plain_m, config.indent
+                    mixin_content, entry.lifecycle_hooks, ref_m, plain_m,
+                    config.indent + config.indent,  # double indent to match setup() body level
                 )
                 all_inline_lines.extend(inline)
                 all_lifecycle_calls.extend(wrapped)

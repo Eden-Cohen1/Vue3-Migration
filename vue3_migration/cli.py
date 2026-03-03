@@ -67,7 +67,7 @@ def interactive_menu(config: MigrationConfig):
     print(f"     composables as needed. Shows a change summary before writing.\n")
     print(f"  {bold('2.')} {green('Pick a component')}")
     print(f"     Choose one component from a list. Migrate only that component.")
-    print(f"     Safe for large projects — low blast radius, easy to test.\n")
+    print(f"     Safe for large projects -- low blast radius, easy to test.\n")
     print(f"  {bold('3.')} {green('Pick a mixin')}")
     print(f"     Choose one mixin. Fully retires it across all components that use it.")
     print(f"     Patches/generates the composable and updates every affected component.\n")
@@ -255,7 +255,7 @@ def full_project_migration(config: MigrationConfig) -> None:
     from .workflows import auto_migrate_workflow
 
     print(f"\n{bold('Full project migration')}")
-    print(f"  {dim('Scan → patch composables → inject setup() → confirm → write')}\n")
+    print(f"  {dim('Scan -> patch composables -> inject setup() -> confirm -> write')}\n")
 
     plan = auto_migrate_workflow.run(config.project_root, config)
 
@@ -298,23 +298,51 @@ def pick_component_migration(config: MigrationConfig) -> None:
             cov_str = dim("no composables yet (will be generated)")
 
         print(f"  {bold(str(idx) + '.')} {str(comp['rel_path'])}")
-        print(f"     {dim(', '.join(comp['mixin_stems']))}  —  {cov_str}")
+        print(f"     {dim(', '.join(comp['mixin_stems']))}  --  {cov_str}")
 
-    print(f"\n  Enter a number (1-{len(components)}) or {bold('q')} to go back.\n")
+    print(f"\n  Enter a number (1-{len(components)}), component name/path, or {bold('q')} to go back.\n")
     choice = input("  > ").strip()
 
     if not choice or choice.lower() == "q":
         return
+    comp = None
     try:
         idx = int(choice)
-        if not (1 <= idx <= len(components)):
+        if 1 <= idx <= len(components):
+            comp = components[idx - 1]
+        else:
             print(f"  {yellow('Number out of range.')}")
             return
     except ValueError:
-        print(f"  {yellow('Please enter a number.')}")
-        return
+        search = choice if choice.endswith('.vue') else choice + '.vue'
+        matches = [
+            c for c in components
+            if c['rel_path'].name.lower() == search.lower()
+            or search.lower() in str(c['rel_path']).lower()
+        ]
+        if len(matches) == 1:
+            comp = matches[0]
+        elif len(matches) > 1:
+            print(f"  {yellow('Multiple matches:')}")
+            for i, m in enumerate(matches, 1):
+                print(f"    {bold(str(i) + '.')} {str(m['rel_path'])}")
+            pick = input(f"\n  Select (1-{len(matches)}) or {bold('q')} to go back: ").strip()
+            if not pick or pick.lower() == "q":
+                return
+            try:
+                pick_idx = int(pick)
+                if 1 <= pick_idx <= len(matches):
+                    comp = matches[pick_idx - 1]
+                else:
+                    print(f"  {yellow('Number out of range.')}")
+                    return
+            except ValueError:
+                print(f"  {yellow('Please enter a number.')}")
+                return
+        else:
+            print(f"  {yellow('No component found matching:')} {choice}")
+            return
 
-    comp = components[idx - 1]
     print(f"\n{bold('Migrating:')} {green(str(comp['rel_path']))}\n")
     _run_component_migration(comp["abs_path"], config)
 
@@ -374,21 +402,45 @@ def pick_mixin_migration(config: MigrationConfig) -> None:
         component_word = "component" if m["count"] == 1 else "components"
         print(f"  {idx:<4} {m['stem']:<40} {m['count']} {component_word:<9} {comp_label}")
 
-    print(f"\n  Enter a number (1-{len(mixins)}) or {bold('q')} to go back.\n")
+    print(f"\n  Enter a number (1-{len(mixins)}), mixin name, or {bold('q')} to go back.\n")
     choice = input("  > ").strip()
 
     if not choice or choice.lower() == "q":
         return
+    mixin = None
     try:
         idx = int(choice)
-        if not (1 <= idx <= len(mixins)):
+        if 1 <= idx <= len(mixins):
+            mixin = mixins[idx - 1]
+        else:
             print(f"  {yellow('Number out of range.')}")
             return
     except ValueError:
-        print(f"  {yellow('Please enter a number.')}")
-        return
+        search = choice.lower()
+        matches = [m for m in mixins if m['stem'].lower() == search or search in m['stem'].lower()]
+        if len(matches) == 1:
+            mixin = matches[0]
+        elif len(matches) > 1:
+            print(f"  {yellow('Multiple matches:')}")
+            for i, m in enumerate(matches, 1):
+                print(f"    {bold(str(i) + '.')} {m['stem']}")
+            pick = input(f"\n  Select (1-{len(matches)}) or {bold('q')} to go back: ").strip()
+            if not pick or pick.lower() == "q":
+                return
+            try:
+                pick_idx = int(pick)
+                if 1 <= pick_idx <= len(matches):
+                    mixin = matches[pick_idx - 1]
+                else:
+                    print(f"  {yellow('Number out of range.')}")
+                    return
+            except ValueError:
+                print(f"  {yellow('Please enter a number.')}")
+                return
+        else:
+            print(f"  {yellow('No mixin found matching:')} {choice}")
+            return
 
-    mixin = mixins[idx - 1]
     component_word = "component" if mixin["count"] == 1 else "components"
     print(f"\n{bold('Retiring:')} {green(mixin['stem'])} across {yellow(str(mixin['count']))} {component_word}\n")
     _run_mixin_migration(mixin["stem"], config)

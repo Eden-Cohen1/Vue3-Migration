@@ -21,8 +21,8 @@ HOOK_MAP: dict[str, str | None] = {
 }
 
 
-def extract_hook_body(mixin_source: str, hook_name: str) -> str | None:
-    """Extract the body of a lifecycle hook from mixin source.
+def extract_hook_body(mixin_source: str, hook_name: str, exclude_sections: bool = True) -> str | None:
+    """Extract the body of a named function/property from mixin source.
 
     Handles patterns:
       hookName() { ... }
@@ -32,6 +32,8 @@ def extract_hook_body(mixin_source: str, hook_name: str) -> str | None:
     Safety measures:
     - Skips hook name occurrences in strings/comments (R-1)
     - Skips hook name occurrences inside methods/computed/data blocks (R-2)
+      (only when exclude_sections=True; set False to extract members
+       that live *inside* those blocks, e.g. a method or computed property)
 
     Uses extract_brace_block for correct nested-brace handling.
     Returns the text between the outer braces, or None if not found.
@@ -52,24 +54,25 @@ def extract_hook_body(mixin_source: str, hook_name: str) -> str | None:
 
     # R-2: Build exclusion zones for methods/computed/data sub-blocks
     excluded: list[tuple[int, int]] = []
-    export_match = re.search(r'export\s+default\s*\{', mixin_source)
-    if export_match:
-        obj_start = export_match.end() - 1  # position of {
-        obj_body = extract_brace_block(mixin_source, obj_start)
-        content_start = obj_start + 1  # first char inside {}
+    if exclude_sections:
+        export_match = re.search(r'export\s+default\s*\{', mixin_source)
+        if export_match:
+            obj_start = export_match.end() - 1  # position of {
+            obj_body = extract_brace_block(mixin_source, obj_start)
+            content_start = obj_start + 1  # first char inside {}
 
-        for section in ('methods', 'computed'):
-            sm = re.search(rf'\b{section}\s*:\s*\{{', mixin_source[content_start:content_start + len(obj_body)])
-            if sm:
-                abs_brace = content_start + sm.end() - 1
+            for section in ('methods', 'computed'):
+                sm = re.search(rf'\b{section}\s*:\s*\{{', mixin_source[content_start:content_start + len(obj_body)])
+                if sm:
+                    abs_brace = content_start + sm.end() - 1
+                    blk = extract_brace_block(mixin_source, abs_brace)
+                    excluded.append((abs_brace, abs_brace + 1 + len(blk) + 1))
+
+            dm = re.search(r'\bdata\s*\(\s*\)\s*\{', mixin_source[content_start:content_start + len(obj_body)])
+            if dm:
+                abs_brace = content_start + dm.end() - 1
                 blk = extract_brace_block(mixin_source, abs_brace)
                 excluded.append((abs_brace, abs_brace + 1 + len(blk) + 1))
-
-        dm = re.search(r'\bdata\s*\(\s*\)\s*\{', mixin_source[content_start:content_start + len(obj_body)])
-        if dm:
-            abs_brace = content_start + dm.end() - 1
-            blk = extract_brace_block(mixin_source, abs_brace)
-            excluded.append((abs_brace, abs_brace + 1 + len(blk) + 1))
 
     def _in_excluded(p: int) -> bool:
         return any(s <= p < e for s, e in excluded)

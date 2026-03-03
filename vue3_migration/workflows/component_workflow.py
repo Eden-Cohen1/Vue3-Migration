@@ -360,9 +360,9 @@ def run(component_arg: str, config: MigrationConfig | None = None):
     # --- Action prompt ---
     if blocked:
         print(f"\n{bold('What would you like to do?')}")
-        print(f"  {bold('a')}. Auto-migrate — auto-patch composables for blocked mixins, then inject all")
+        print(f"  {bold('a')}. Auto-migrate -- auto-patch composables for blocked mixins, then inject all")
         if ready:
-            print(f"  {bold('r')}. Inject ready only — inject the {green(str(len(ready)))} ready mixin(s), leave {yellow(str(len(blocked)))} blocked")
+            print(f"  {bold('r')}. Inject ready only -- inject the {green(str(len(ready)))} ready mixin(s), leave {yellow(str(len(blocked)))} blocked")
         print(f"  {bold('q')}. Skip\n")
         choice = input("  > ").strip().lower()
     else:
