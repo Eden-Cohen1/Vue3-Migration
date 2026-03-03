@@ -8,7 +8,6 @@ direct module imports.
 
 import os
 import re
-import sys
 from collections import Counter
 from pathlib import Path
 from typing import Optional
@@ -209,61 +208,66 @@ def interactive_menu(config: MigrationConfig):
 
     print()
     print(f"  {bold('Vue Mixin Migration Tool')}")
-    print(f"  {dim('Helps you migrate Vue 2 mixins to Vue 3 composables.')}")
+    print(f"  {dim('Migrate Vue 2 mixins to Vue 3 composables.')}")
     print()
-    print(f"  This tool supports two migration workflows:\n")
-    print(f"  {bold('1.')} {green('Scan project')}")
-    print(f"     Get an overview of all components still using mixins,")
-    print(f"     see which composables already exist, and pick a component")
-    print(f"     or mixin to work on next.\n")
-    print(f"  {bold('2.')} {green('Migrate a component')}")
-    print(f"     Given a single .vue file, find all its mixins, match them")
-    print(f"     to composables, check coverage, and inject setup() for")
-    print(f"     every mixin that has a ready composable.\n")
-    print(f"  {bold('3.')} {green('Audit a mixin')}")
-    print(f"     Given a mixin file, find every component that uses it,")
-    print(f"     show which members each component relies on, and compare")
-    print(f"     against a composable to see what's covered.\n")
-    print(f"  {bold('4.')} {green('Auto-migrate (full project)')}")
-    print(f"     Scan the entire project, auto-patch composables for blocked cases,")
-    print(f"     convert lifecycle hooks to Vue 3, show a dry-run diff, then")
-    print(f"     write all changes after a single confirmation.\n")
+    print(f"  {bold('1.')} {green('Full project')}")
+    print(f"     Migrate every component at once. Auto-patches and generates")
+    print(f"     composables as needed. Shows a change summary before writing.\n")
+    print(f"  {bold('2.')} {green('Pick a component')}")
+    print(f"     Choose one component from a list. Migrate only that component.")
+    print(f"     Safe for large projects — low blast radius, easy to test.\n")
+    print(f"  {bold('3.')} {green('Pick a mixin')}")
+    print(f"     Choose one mixin. Fully retires it across all components that use it.")
+    print(f"     Patches/generates the composable and updates every affected component.\n")
+    print(f"  {bold('4.')} {green('Project status')}")
+    print(f"     Read-only. Generates a detailed report of what's migrated,")
+    print(f"     what's ready, and what's blocked. No files are changed.\n")
     print(f"  {bold('q.')} Quit\n")
 
     choice = input(f"  Choose (1/2/3/4/q): ").strip()
     print()
 
     if choice == "1":
-        scan_project(config.project_root, config)
-
+        full_project_migration(config)
     elif choice == "2":
-        print(f"  {bold('Migrate a component')}")
-        print(f"  {dim('Enter the path to a .vue file relative to the project root.')}\n")
-        path = input(f"  Component path: ").strip()
-        if path:
-            component_workflow.run(path, config)
-        else:
-            print(f"  {yellow('No path provided.')}")
-
+        pick_component_migration(config)
     elif choice == "3":
-        print(f"  {bold('Audit a mixin')}")
-        print(f"  {dim('Enter the path to a mixin .js/.ts file.')}")
-        print(f"  {dim('Optionally, also provide a composable path to compare against.')}\n")
-        mixin_path = input(f"  Mixin path: ").strip()
-        if not mixin_path:
-            print(f"  {yellow('No path provided.')}")
-            return
-        composable_path = input(f"  Composable path (optional, press Enter to skip): ").strip()
-        mixin_workflow.run(mixin_path, composable_path or None, config)
-
+        pick_mixin_migration(config)
     elif choice == "4":
-        auto_migrate(config.project_root, config)
-
+        project_status(config)
     elif choice.lower() == "q":
         return
-
     else:
         print(f"  {yellow('Invalid choice.')}")
+
+
+# =============================================================================
+# New CLI helpers and stubs (Task 1)
+# =============================================================================
+
+def _print_help():
+    print(f"""
+  {bold('Vue Mixin Migration Tool')}
+
+  {bold('Usage:')}
+    vue3-migration                       Interactive menu
+    vue3-migration all                   Migrate entire project
+    vue3-migration component <path>      Migrate one component
+    vue3-migration mixin <name>          Retire one mixin across all components
+    vue3-migration status                Generate project status report
+
+  {bold('Examples:')}
+    vue3-migration component src/components/UserProfile.vue
+    vue3-migration mixin authMixin
+""")
+
+
+def full_project_migration(config: MigrationConfig): pass
+def component_migration(path: str, config: MigrationConfig): pass
+def mixin_migration(name: str, config: MigrationConfig): pass
+def pick_component_migration(config: MigrationConfig): pass
+def pick_mixin_migration(config: MigrationConfig): pass
+def project_status(config: MigrationConfig): pass
 
 
 # =============================================================================
@@ -389,82 +393,33 @@ def auto_migrate(project_root: Path, config: MigrationConfig) -> None:
 # CLI Entry Point
 # =============================================================================
 
-def main():
+def main(argv: list[str] | None = None):
+    import sys
+    args = argv if argv is not None else sys.argv[1:]
     config = MigrationConfig()
 
-    # No arguments -> interactive menu
-    if len(sys.argv) < 2:
+    if not args:
         interactive_menu(config)
         return
 
-    command = sys.argv[1].lower()
+    command = args[0].lower()
 
-    if command == "scan":
-        scan_project(config.project_root, config)
-
+    if command == "all":
+        full_project_migration(config)
     elif command == "component":
-        if len(sys.argv) < 3:
-            print(f"\n  {bold('Migrate a component')}")
-            print(f"  {dim('Finds all mixins in a component, matches them to composables,')}")
-            print(f"  {dim('and injects setup() for those with full coverage.')}\n")
-            print(f"  Usage: python -m vue3_migration component <path/to/Component.vue>\n")
+        if len(args) < 2:
+            print(f"\n  Usage: vue3-migration component <path/to/Component.vue>\n")
             return
-        component_workflow.run(sys.argv[2], config)
-
-    elif command == "audit":
-        if len(sys.argv) < 3:
-            print(f"\n  {bold('Audit a mixin')}")
-            print(f"  {dim('Finds every component using a mixin, shows member usage,')}")
-            print(f"  {dim('and compares against a composable if provided.')}\n")
-            print(f"  Usage: python -m vue3_migration audit <mixin_path> [composable_path]\n")
+        component_migration(args[1], config)
+    elif command == "mixin":
+        if len(args) < 2:
+            print(f"\n  Usage: vue3-migration mixin <mixinName>\n")
             return
-        composable_arg = sys.argv[3] if len(sys.argv) > 3 else None
-        mixin_workflow.run(sys.argv[2], composable_arg, config)
-
-    elif command == "auto-migrate":
-        subcommand = sys.argv[2].lower() if len(sys.argv) > 2 else None
-        if subcommand == "component":
-            if len(sys.argv) < 4:
-                print(f"\n  Usage: python -m vue3_migration auto-migrate component <path.vue>\n")
-                return
-            auto_migrate_scoped(sys.argv[3], "component", config)
-        elif subcommand == "mixin":
-            if len(sys.argv) < 4:
-                print(f"\n  Usage: python -m vue3_migration auto-migrate mixin <mixin.js>\n")
-                return
-            auto_migrate_scoped(sys.argv[3], "mixin", config)
-        else:
-            auto_migrate(config.project_root, config)
-
+        mixin_migration(args[1], config)
+    elif command == "status":
+        project_status(config)
     elif command in ("help", "--help", "-h"):
-        print(f"""
-  {bold('Vue Mixin Migration Tool')}
-
-  {bold('Usage:')}
-    python -m vue3_migration                           Interactive menu
-    python -m vue3_migration scan                      Scan project for migration status
-    python -m vue3_migration component <path.vue>      Migrate one component
-    python -m vue3_migration audit <mixin> [composable] Audit one mixin
-    python -m vue3_migration auto-migrate              Fully automated: patch composables, inject setup(), show diff
-
-  {bold('Workflow:')}
-    1. Run {green('scan')} to see which components still use mixins
-       and which composables are already available.
-
-    2. Pick a component and run {green('component')} to migrate it.
-       The tool will match each mixin to a composable, report what's
-       missing, and inject setup() for every ready composable.
-
-    3. If you want to focus on a single mixin across the codebase,
-       run {green('audit')} to see every component that depends on it
-       and what members they use.
-
-    4. Run {green('auto-migrate')} for a fully automated project-wide migration.
-       Scans all components, auto-patches composables for blocked cases,
-       converts lifecycle hooks to Vue 3, shows a dry-run diff, and writes
-       all changes after a single 'y' confirmation.
-""")
-
+        _print_help()
     else:
         print(f"\n  {yellow('Unknown command')}: {command}")
-        print(f"  Run {bold('python -m vue3_migration help')} to see available commands.\n")
+        print(f"  Run {bold('vue3-migration --help')} for available commands.\n")
