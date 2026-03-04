@@ -141,6 +141,8 @@ class MixinEntry:
     """Current migration status."""
     warnings: list[MigrationWarning] = field(default_factory=list)
     """Migration warnings detected during analysis and generation."""
+    external_deps: list[str] = field(default_factory=list)
+    """External this.X references not defined in this mixin."""
 
     def compute_status(self) -> MigrationStatus:
         """Determine the migration status based on analysis results."""

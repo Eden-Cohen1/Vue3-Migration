@@ -6,8 +6,11 @@ import shutil
 from pathlib import Path
 from unittest.mock import patch
 import pytest
-from vue3_migration.models import MigrationConfig
-from vue3_migration.workflows.auto_migrate_workflow import run, MigrationPlan
+from vue3_migration.models import MigrationConfig, MixinEntry, MixinMembers
+from vue3_migration.workflows.auto_migrate_workflow import (
+    run, MigrationPlan,
+    _inject_setup_external_dep_warnings, _format_setup_warning,
+)
 
 DUMMY = Path(__file__).parent / "fixtures" / "dummy_project"
 
@@ -140,3 +143,106 @@ def test_overridden_members_excluded_from_setup_destructure(project):
     assert setup_line is not None, "Expected const { ... } = useSelection() in setup()"
     assert "selectionMode" not in setup_line, "selectionMode is overridden, should not be destructured"
     assert "clearSelection" not in setup_line, "clearSelection is overridden, should not be destructured"
+
+
+# ---------------------------------------------------------------------------
+# External dependency setup() warning tests
+# ---------------------------------------------------------------------------
+
+def _make_entry(stem, data=None, computed=None, methods=None, watch=None):
+    return MixinEntry(
+        local_name=stem,
+        mixin_path=Path(f"/fake/{stem}.js"),
+        mixin_stem=stem,
+        members=MixinMembers(
+            data=data or [], computed=computed or [],
+            methods=methods or [], watch=watch or [],
+        ),
+    )
+
+
+class TestFormatSetupWarning:
+    def test_sibling_source(self):
+        entry = _make_entry("commentMixin", methods=["loadComments"])
+        src = {"kind": "sibling", "detail": "loadingMixin.data", "sources": ["loadingMixin.data"]}
+        lines = _format_setup_warning("isLoading", src, entry, "    ")
+        text = "\n".join(lines)
+        assert "loadingMixin.data" in text
+        assert "useLoading" in text
+        assert "unavailable in setup()" in text
+
+    def test_component_source(self):
+        entry = _make_entry("commentMixin")
+        src = {"kind": "component", "detail": "TaskDetail.data", "sources": ["TaskDetail.data"]}
+        lines = _format_setup_warning("entityId", src, entry, "    ")
+        text = "\n".join(lines)
+        assert "TaskDetail.data" in text
+        assert "Replace with local ref" in text
+
+    def test_ambiguous_source(self):
+        entry = _make_entry("commentMixin")
+        src = {"kind": "ambiguous", "detail": None, "sources": ["mixinA.data", "CompB.computed"]}
+        lines = _format_setup_warning("status", src, entry, "    ")
+        text = "\n".join(lines)
+        assert "mixinA.data" in text
+        assert "CompB.computed" in text
+        assert "Ambiguous" in text
+
+    def test_unknown_source(self):
+        entry = _make_entry("commentMixin")
+        src = {"kind": "unknown", "detail": None, "sources": []}
+        lines = _format_setup_warning("mystery", src, entry, "    ")
+        text = "\n".join(lines)
+        assert "source not found" in text
+        assert "props, inject" in text
+
+
+class TestInjectSetupExternalDepWarnings:
+    def test_injects_warnings_for_external_this_refs(self):
+        lines = [
+            "    onMounted(() => {",
+            "      if (this.entityId) {",
+            "        loadComments(this.entityId)",
+            "      }",
+            "    })",
+        ]
+        current = _make_entry("commentMixin", methods=["loadComments"])
+        sibling = _make_entry("dataMixin", data=["entityId"])
+        result = _inject_setup_external_dep_warnings(
+            lines, current, [current, sibling], set(), "MyComp", "    ",
+        )
+        text = "\n".join(result)
+        assert "entityId" in text
+        assert "MIGRATION" in text
+        assert "dataMixin.data" in text
+
+    def test_no_warnings_when_no_external_refs(self):
+        lines = [
+            "    onMounted(() => {",
+            "      doSomething()",
+            "    })",
+        ]
+        entry = _make_entry("myMixin")
+        result = _inject_setup_external_dep_warnings(
+            lines, entry, [entry], set(), "Comp", "    ",
+        )
+        assert result == lines
+
+    def test_deduplicates_warnings(self):
+        lines = [
+            "    this.ext + this.ext + this.ext",
+        ]
+        entry = _make_entry("myMixin")
+        result = _inject_setup_external_dep_warnings(
+            lines, entry, [entry], set(), "Comp", "    ",
+        )
+        warning_count = sum(1 for l in result if "MIGRATION" in l)
+        # 1 MIGRATION header per warning, only 1 warning for 'ext'
+        assert warning_count == 1
+
+    def test_empty_lines_returns_empty(self):
+        entry = _make_entry("myMixin")
+        result = _inject_setup_external_dep_warnings(
+            [], entry, [entry], set(), "Comp", "    ",
+        )
+        assert result == []

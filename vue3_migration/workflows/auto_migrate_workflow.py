@@ -14,7 +14,10 @@ from ..core.composable_analyzer import (
 )
 from ..core.composable_search import find_composable_dirs, search_for_composable
 from ..core.file_resolver import compute_import_path, resolve_import_path
-from ..core.mixin_analyzer import extract_lifecycle_hooks, extract_mixin_members
+from ..core.mixin_analyzer import (
+    extract_lifecycle_hooks, extract_mixin_members,
+    find_external_this_refs, resolve_external_dep_sources,
+)
 from ..core.warning_collector import collect_mixin_warnings
 from ..models import (
     ComposableCoverage, FileChange, MigrationConfig, MigrationPlan, MigrationStatus,
@@ -54,6 +57,8 @@ def _analyze_mixin_silent(
     hooks = extract_lifecycle_hooks(mixin_source)
     used = find_used_members(component_source, members.all_names)
 
+    ext_deps = find_external_this_refs(mixin_source, members.all_names)
+
     entry = MixinEntry(
         local_name=local_name,
         mixin_path=mixin_file,
@@ -61,6 +66,7 @@ def _analyze_mixin_silent(
         members=members,
         lifecycle_hooks=hooks,
         used_members=used,
+        external_deps=ext_deps,
     )
 
     if not used:
@@ -241,6 +247,86 @@ def plan_new_composables(
     return changes
 
 
+def _inject_setup_external_dep_warnings(
+    lines: list[str],
+    entry: "MixinEntry",
+    all_entries: list["MixinEntry"],
+    own_members: set[str],
+    component_name: str,
+    indent: str,
+    component_members_by_section: dict[str, list[str]] | None = None,
+) -> list[str]:
+    """Scan lifecycle lines for remaining ``this.X`` and prepend source-resolved warnings.
+
+    Only processes non-``$`` references that survived ``rewrite_this_refs``
+    (i.e. external deps not defined in the current mixin).
+    """
+    if not lines:
+        return lines
+
+    all_text = "\n".join(lines)
+    external_names: list[str] = []
+    for m in re.finditer(r"\bthis\.(\w+)", all_text):
+        name = m.group(1)
+        if not name.startswith("$") and name not in external_names:
+            external_names.append(name)
+
+    if not external_names:
+        return lines
+
+    siblings = [e for e in all_entries if e is not entry]
+    sources = resolve_external_dep_sources(
+        external_names, siblings, own_members, component_name,
+        component_members_by_section=component_members_by_section,
+    )
+
+    result: list[str] = []
+    warned: set[str] = set()
+    for line in lines:
+        for m in re.finditer(r"\bthis\.(\w+)", line):
+            name = m.group(1)
+            if name.startswith("$") or name in warned:
+                continue
+            warned.add(name)
+            src = sources.get(name, {"kind": "unknown", "detail": None, "sources": []})
+            result.extend(
+                _format_setup_warning(name, src, entry, indent)
+            )
+        result.append(line)
+    return result
+
+
+def _format_setup_warning(
+    name: str, src: dict, entry: "MixinEntry", indent: str
+) -> list[str]:
+    """Format a source-resolved warning comment for a setup() external dep."""
+    if src["kind"] == "sibling":
+        detail = src["detail"]  # e.g. "loadingMixin.data"
+        sibling_stem = detail.split(".")[0]
+        sibling_composable = mixin_stem_to_composable_name(sibling_stem)
+        return [
+            f"{indent}// ⚠ MIGRATION: '{name}' — external dep (source: {detail} → {sibling_composable}).",
+            f"{indent}// this.{name} is unavailable in setup(). Use return value from {sibling_composable}() instead.",
+        ]
+    elif src["kind"] == "component":
+        detail = src["detail"]
+        return [
+            f"{indent}// ⚠ MIGRATION: '{name}' — external dep (source: {detail}).",
+            f"{indent}// this.{name} is unavailable in setup(). Replace with local ref.",
+        ]
+    elif src["kind"] == "ambiguous":
+        sources_str = ", ".join(src["sources"])
+        return [
+            f"{indent}// ⚠ MIGRATION: '{name}' — external dep (sources: {sources_str}).",
+            f"{indent}// Ambiguous origin — verify correct source before replacing this.{name}.",
+        ]
+    else:
+        return [
+            f"{indent}// ⚠ MIGRATION: '{name}' — external dep, source not found in component or sibling mixins.",
+            f"{indent}// May come from props, inject, or a parent component. Replace this.{name} manually.",
+        ]
+
+
 def plan_component_injections(
     entries_by_component: list[tuple[Path, list[MixinEntry]]],
     composable_patches: list[FileChange],
@@ -269,6 +355,7 @@ def plan_component_injections(
         # R-7: normalize CRLF
         comp_source = comp_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
         own_members = extract_own_members(comp_source)
+        comp_members_by_section = extract_mixin_members(comp_source)
         ready_entries = []
 
         for entry in entries:
@@ -377,6 +464,19 @@ def plan_component_injections(
                     mixin_content, entry.lifecycle_hooks, ref_m, plain_m,
                     config.indent + config.indent,  # double indent to match setup() body level
                 )
+
+                # Inject source-resolved warnings for external deps in lifecycle code
+                comp_name = comp_path.stem
+                setup_indent = config.indent + config.indent
+                inline = _inject_setup_external_dep_warnings(
+                    inline, entry, entries, own_members, comp_name, setup_indent,
+                    component_members_by_section=comp_members_by_section,
+                )
+                wrapped = _inject_setup_external_dep_warnings(
+                    wrapped, entry, entries, own_members, comp_name, setup_indent,
+                    component_members_by_section=comp_members_by_section,
+                )
+
                 all_inline_lines.extend(inline)
                 all_lifecycle_calls.extend(wrapped)
 

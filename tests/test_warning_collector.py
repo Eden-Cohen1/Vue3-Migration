@@ -302,13 +302,15 @@ class TestInjectInlineWarnings:
                 assert "this.$router" in lines[i + 1]
                 break
 
-    def test_no_injection_when_no_line_hint(self):
+    def test_no_line_hint_placed_as_block_at_top(self):
         source = "  function go() { doSomething() }\n"
         warnings = [
             MigrationWarning("auth", "test", "msg", "act", None, "warning"),
         ]
         result = inject_inline_warnings(source, warnings)
-        assert "// ⚠ MIGRATION:" not in result
+        assert "// ⚠ MIGRATION: msg" in result
+        # Should be at the very top (no confidence header)
+        assert result.startswith("// ⚠ MIGRATION: msg\n")
 
     def test_no_injection_when_no_warnings(self):
         source = "  const x = ref(0)\n"
@@ -342,6 +344,88 @@ class TestInjectInlineWarnings:
         source = "export function useAuth() {\n  return {}\n}\n"
         result = inject_inline_warnings(source, [])
         assert "Migration confidence:" not in result
+
+    def test_unplaced_warnings_appear_after_confidence_header(self):
+        """Warnings with line_hint=None should appear as block after header."""
+        source = "import { ref } from 'vue'\n\nexport function useX() {\n  return {}\n}\n"
+        warnings = [
+            MigrationWarning("x", "structural:nested-mixins",
+                             "Mixin uses nested mixins", "Check transitive", None, "warning"),
+        ]
+        result = inject_inline_warnings(
+            source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=1,
+        )
+        lines = result.splitlines()
+        assert "Migration confidence: MEDIUM" in lines[0]
+        assert "// ⚠ MIGRATION: Mixin uses nested mixins" in lines[1]
+        assert "import { ref }" in lines[2]
+
+    def test_unmatched_line_hint_falls_back_to_block(self):
+        """Warnings whose line_hint doesn't match any composable line go to block."""
+        source = "import { ref } from 'vue'\n\nexport function useX() {\n  return {}\n}\n"
+        warnings = [
+            MigrationWarning("x", "this.$refs",
+                             "this.$refs not available", "Use template refs",
+                             "const el = this.$refs.input",  # doesn't exist in composable
+                             "warning"),
+        ]
+        result = inject_inline_warnings(
+            source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=1,
+        )
+        lines = result.splitlines()
+        assert "Migration confidence: MEDIUM" in lines[0]
+        assert "// ⚠ MIGRATION: this.$refs not available" in lines[1]
+
+    def test_mix_of_placed_and_unplaced_warnings(self):
+        """Inline-placed + fallback-block warnings both appear."""
+        source = (
+            "import { ref } from 'vue'\n"
+            "\n"
+            "export function useX() {\n"
+            "  function go() { this.$router.push('/') }\n"
+            "  return { go }\n"
+            "}\n"
+        )
+        warnings = [
+            MigrationWarning("x", "this.$router",
+                             "this.$router not available", "Use useRouter()",
+                             "this.$router.push('/')",  # matches line in composable
+                             "warning"),
+            MigrationWarning("x", "structural:nested-mixins",
+                             "Nested mixins", "Check", None, "warning"),
+        ]
+        result = inject_inline_warnings(
+            source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=2,
+        )
+        lines = result.splitlines()
+        # Header line
+        assert "Migration confidence: MEDIUM" in lines[0]
+        # Unplaced warning right after header
+        assert "// ⚠ MIGRATION: Nested mixins" in lines[1]
+        # Inline warning above matching line somewhere in the body
+        inline_found = False
+        for i, line in enumerate(lines):
+            if "// ⚠ MIGRATION: this.$router not available" in line:
+                inline_found = True
+                assert "this.$router.push" in lines[i + 1]
+                break
+        assert inline_found, "Inline warning not found"
+
+    def test_multiple_unplaced_warnings_all_appear(self):
+        """All unplaced warnings appear in the block."""
+        source = "export function useX() {\n  return {}\n}\n"
+        warnings = [
+            MigrationWarning("x", "a", "Warning A", "Fix A", None, "warning"),
+            MigrationWarning("x", "b", "Warning B", "Fix B", None, "warning"),
+            MigrationWarning("x", "c", "Warning C", "Fix C",
+                             "nonexistent line hint", "warning"),
+        ]
+        result = inject_inline_warnings(
+            source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=3,
+        )
+        assert "// ⚠ MIGRATION: Warning A" in result
+        assert "// ⚠ MIGRATION: Warning B" in result
+        assert "// ⚠ MIGRATION: Warning C" in result
 
 
 # ---------------------------------------------------------------------------
@@ -758,3 +842,80 @@ class TestBuildWarningsSection:
             [entry], {"authMixin": ConfidenceLevel.HIGH}
         )
         assert "HIGH" in result
+
+
+# ---------------------------------------------------------------------------
+# External dependency detection tests
+# ---------------------------------------------------------------------------
+
+from vue3_migration.core.warning_collector import detect_external_dependencies
+
+
+class TestDetectExternalDependencies:
+    def test_detects_external_refs(self):
+        source = """\
+export default {
+  data() { return { comments: [] } },
+  mounted() {
+    if (this.entityId) {
+      this.loadComments(this.entityId)
+    }
+  },
+  methods: {
+    loadComments(id) {
+      this.comments = []
+    }
+  }
+}
+"""
+        members = MixinMembers(
+            data=["comments"],
+            methods=["loadComments"],
+        )
+        warnings = detect_external_dependencies(source, members)
+        names = [w.category for w in warnings]
+        assert all(c == "external-dependency" for c in names)
+        messages = " ".join(w.message for w in warnings)
+        assert "entityId" in messages
+
+    def test_no_external_deps(self):
+        source = """\
+export default {
+  data() { return { count: 0 } },
+  methods: {
+    increment() { this.count++ }
+  }
+}
+"""
+        members = MixinMembers(data=["count"], methods=["increment"])
+        warnings = detect_external_dependencies(source, members)
+        assert warnings == []
+
+    def test_severity_is_error(self):
+        source = "function foo() { return this.unknown }"
+        members = MixinMembers()
+        warnings = detect_external_dependencies(source, members)
+        assert len(warnings) == 1
+        assert warnings[0].severity == "error"
+
+    def test_excludes_dollar_refs(self):
+        source = "function foo() { this.$router.push('/') }"
+        members = MixinMembers()
+        warnings = detect_external_dependencies(source, members)
+        assert warnings == []
+
+    def test_line_hint_present(self):
+        source = """\
+export default {
+  methods: {
+    doThing() {
+      this.externalProp + 1
+    }
+  }
+}
+"""
+        members = MixinMembers(methods=["doThing"])
+        warnings = detect_external_dependencies(source, members)
+        assert len(warnings) == 1
+        assert warnings[0].line_hint is not None
+        assert "externalProp" in warnings[0].line_hint

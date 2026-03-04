@@ -337,7 +337,9 @@ export default {
 """
         members = MixinMembers(methods=["refresh"])
         result = generate_composable_from_mixin(source, "updateMixin", members, [])
-        assert "this.$nextTick" not in result
+        # Check code lines only (skip comments which may contain the original pattern in warnings)
+        code_lines = [l for l in result.splitlines() if not l.lstrip().startswith("//")]
+        assert not any("this.$nextTick" in l for l in code_lines)
         assert "nextTick(" in result
         assert "import" in result and "nextTick" in result
 
@@ -354,7 +356,8 @@ export default {
 """
         members = MixinMembers(data=["items"], methods=["update"])
         result = generate_composable_from_mixin(source, "listMixin", members, [])
-        assert "this.$set" not in result
+        code_lines = [l for l in result.splitlines() if not l.lstrip().startswith("//")]
+        assert not any("this.$set" in l for l in code_lines)
 
     def test_delete_rewritten_in_generated_composable(self):
         source = """
@@ -369,7 +372,8 @@ export default {
 """
         members = MixinMembers(data=["config"], methods=["removeKey"])
         result = generate_composable_from_mixin(source, "configMixin", members, [])
-        assert "this.$delete" not in result
+        code_lines = [l for l in result.splitlines() if not l.lstrip().startswith("//")]
+        assert not any("this.$delete" in l for l in code_lines)
         assert "delete" in result
 
     def test_router_warning_still_emitted_after_dollar_rewrite(self):
@@ -386,8 +390,9 @@ export default {
 """
         members = MixinMembers(methods=["go"])
         result = generate_composable_from_mixin(source, "navMixin", members, [])
-        # $nextTick rewritten, $router warned
-        assert "this.$nextTick" not in result
+        # $nextTick rewritten in code, $router warned
+        code_lines = [l for l in result.splitlines() if not l.lstrip().startswith("//")]
+        assert not any("this.$nextTick" in l for l in code_lines)
         assert "// ⚠ MIGRATION:" in result
         assert "$router" in result
 
@@ -440,7 +445,8 @@ export default {
 """
         members = MixinMembers(data=["items"], methods=["refresh"])
         result = patch_composable(composable, mixin, [], ["refresh"], members)
-        assert "this.$nextTick" not in result
+        code_lines = [l for l in result.splitlines() if not l.lstrip().startswith("//")]
+        assert not any("this.$nextTick" in l for l in code_lines)
         assert "nextTick(" in result
 
     def test_set_rewritten_in_patched_composable(self):
@@ -464,4 +470,5 @@ export default {
 """
         members = MixinMembers(data=["items"], methods=["update"])
         result = patch_composable(composable, mixin, [], ["update"], members)
-        assert "this.$set" not in result
+        code_lines = [l for l in result.splitlines() if not l.lstrip().startswith("//")]
+        assert not any("this.$set" in l for l in code_lines)

@@ -1,4 +1,5 @@
 # tests/test_composable_generator.py
+from vue3_migration.core.mixin_analyzer import extract_lifecycle_hooks, extract_mixin_members
 from vue3_migration.models import MixinMembers
 from vue3_migration.transform.composable_generator import (
     mixin_stem_to_composable_name,
@@ -154,3 +155,60 @@ def test_method_body_not_double_indented():
         assert indent_len == 4, (
             f"Expected 4-space indent (inner), got {indent_len}: {repr(line)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# External dependency warning injection in generated composable
+# ---------------------------------------------------------------------------
+
+MIXIN_WITH_EXTERNAL_DEPS = """\
+export default {
+  data() {
+    return {
+      comments: [],
+      newComment: '',
+    }
+  },
+  methods: {
+    loadComments(id) {
+      this.comments = []
+    },
+  },
+  mounted() {
+    if (this.entityId) {
+      this.loadComments(this.entityId)
+    }
+  }
+}
+"""
+
+
+class TestExternalDepWarningsInComposable:
+    def test_generated_composable_contains_external_dep_warning(self):
+        members_dict = extract_mixin_members(MIXIN_WITH_EXTERNAL_DEPS)
+        members = MixinMembers(**members_dict)
+        hooks = extract_lifecycle_hooks(MIXIN_WITH_EXTERNAL_DEPS)
+        result = generate_composable_from_mixin(
+            MIXIN_WITH_EXTERNAL_DEPS, "commentMixin", members, hooks,
+        )
+        assert "external dep" in result
+        assert "entityId" in result
+
+    def test_generated_composable_confidence_is_low(self):
+        """External deps leave remaining this. refs → LOW confidence."""
+        members_dict = extract_mixin_members(MIXIN_WITH_EXTERNAL_DEPS)
+        members = MixinMembers(**members_dict)
+        hooks = extract_lifecycle_hooks(MIXIN_WITH_EXTERNAL_DEPS)
+        result = generate_composable_from_mixin(
+            MIXIN_WITH_EXTERNAL_DEPS, "commentMixin", members, hooks,
+        )
+        assert "LOW" in result
+
+    def test_no_warning_for_mixin_without_external_deps(self):
+        """Clean mixin should not have external-dep warnings."""
+        result = generate_composable_from_mixin(
+            AUTH_MIXIN, "authMixin",
+            MixinMembers(**extract_mixin_members(AUTH_MIXIN)),
+            extract_lifecycle_hooks(AUTH_MIXIN),
+        )
+        assert "external dep" not in result

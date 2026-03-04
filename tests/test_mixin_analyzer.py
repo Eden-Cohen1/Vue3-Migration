@@ -1,7 +1,13 @@
 """Tests for vue3_migration.core.mixin_analyzer."""
 import pytest
 
-from vue3_migration.core.mixin_analyzer import extract_lifecycle_hooks, extract_mixin_members
+from vue3_migration.core.mixin_analyzer import (
+    extract_lifecycle_hooks,
+    extract_mixin_members,
+    find_external_this_refs,
+    resolve_external_dep_sources,
+)
+from vue3_migration.models import MixinEntry, MixinMembers
 
 # ---------------------------------------------------------------------------
 # Inline fixture sources (mirror the dummy project files)
@@ -224,3 +230,166 @@ class TestExtractLifecycleHooks:
         src = 'export default { methods: { createdAt() {} } }'
         result = extract_lifecycle_hooks(src)
         assert 'created' not in result
+
+
+# ---------------------------------------------------------------------------
+# find_external_this_refs tests
+# ---------------------------------------------------------------------------
+
+COMMENT_MIXIN_WITH_EXTERNAL = """\
+export default {
+  data() {
+    return {
+      comments: [],
+      newComment: '',
+    }
+  },
+  methods: {
+    loadComments(entityId) {
+      this.isLoadingComments = true
+    },
+    addComment() {
+      if (!this.newComment.trim()) return
+      this.$emit('comment-added')
+    },
+  },
+  mounted() {
+    if (this.entityId) {
+      this.loadComments(this.entityId)
+    }
+  }
+}
+"""
+
+
+class TestFindExternalThisRefs:
+    def test_finds_external_refs(self):
+        own = ["comments", "newComment", "loadComments", "addComment", "isLoadingComments"]
+        result = find_external_this_refs(COMMENT_MIXIN_WITH_EXTERNAL, own)
+        assert "entityId" in result
+
+    def test_excludes_own_members(self):
+        own = ["comments", "newComment", "loadComments", "addComment", "isLoadingComments"]
+        result = find_external_this_refs(COMMENT_MIXIN_WITH_EXTERNAL, own)
+        assert "comments" not in result
+        assert "newComment" not in result
+        assert "loadComments" not in result
+
+    def test_excludes_dollar_refs(self):
+        own = ["comments", "newComment", "loadComments", "addComment", "isLoadingComments"]
+        result = find_external_this_refs(COMMENT_MIXIN_WITH_EXTERNAL, own)
+        # this.$emit should not appear as an external dep
+        for name in result:
+            assert not name.startswith("$")
+
+    def test_no_external_refs(self):
+        """Mixin that only references its own members has no external deps."""
+        result = find_external_this_refs(SELECTION_MIXIN, [
+            "selectedItems", "selectionMode", "hasSelection",
+            "selectionCount", "selectItem", "clearSelection", "toggleItem",
+        ])
+        assert result == []
+
+    def test_skips_refs_in_strings(self):
+        code = """
+        function foo() {
+          console.log("this.externalThing is a string")
+          this.ownMethod()
+        }
+        """
+        result = find_external_this_refs(code, ["ownMethod"])
+        assert "externalThing" not in result
+
+    def test_skips_refs_in_comments(self):
+        code = """
+        function foo() {
+          // this.externalThing
+          this.ownMethod()
+        }
+        """
+        result = find_external_this_refs(code, ["ownMethod"])
+        assert "externalThing" not in result
+
+    def test_deduplicates(self):
+        code = """
+        function foo() {
+          this.ext + this.ext + this.ext
+        }
+        """
+        result = find_external_this_refs(code, [])
+        assert result == ["ext"]
+
+
+# ---------------------------------------------------------------------------
+# resolve_external_dep_sources tests
+# ---------------------------------------------------------------------------
+
+def _make_entry(stem: str, data=None, computed=None, methods=None, watch=None):
+    """Create a minimal MixinEntry for testing source resolution."""
+    from pathlib import Path
+    return MixinEntry(
+        local_name=stem,
+        mixin_path=Path(f"/fake/{stem}.js"),
+        mixin_stem=stem,
+        members=MixinMembers(
+            data=data or [],
+            computed=computed or [],
+            methods=methods or [],
+            watch=watch or [],
+        ),
+    )
+
+
+class TestResolveExternalDepSources:
+    def test_found_in_sibling_data(self):
+        sibling = _make_entry("loadingMixin", data=["entityId", "isLoading"])
+        result = resolve_external_dep_sources(
+            ["entityId"], [sibling], set(), "MyComponent",
+        )
+        assert result["entityId"]["kind"] == "sibling"
+        assert "loadingMixin.data" in result["entityId"]["detail"]
+
+    def test_found_in_component(self):
+        result = resolve_external_dep_sources(
+            ["entityId"], [], {"entityId", "otherProp"}, "TaskDetail",
+        )
+        assert result["entityId"]["kind"] == "component"
+        assert "TaskDetail" in result["entityId"]["detail"]
+
+    def test_found_in_component_with_section(self):
+        result = resolve_external_dep_sources(
+            ["entityId"], [], {"entityId"}, "TaskDetail",
+            component_members_by_section={"data": ["entityId"], "computed": [], "methods": [], "watch": []},
+        )
+        assert result["entityId"]["kind"] == "component"
+        assert result["entityId"]["detail"] == "TaskDetail.data"
+
+    def test_ambiguous_multiple_sources(self):
+        sibling = _make_entry("dataMixin", data=["status"])
+        result = resolve_external_dep_sources(
+            ["status"], [sibling], {"status"}, "MyComponent",
+        )
+        assert result["status"]["kind"] == "ambiguous"
+        assert len(result["status"]["sources"]) == 2
+
+    def test_unknown_source(self):
+        result = resolve_external_dep_sources(
+            ["mystery"], [], set(), "MyComponent",
+        )
+        assert result["mystery"]["kind"] == "unknown"
+
+    def test_found_in_sibling_methods(self):
+        sibling = _make_entry("authMixin", methods=["checkAuth"])
+        result = resolve_external_dep_sources(
+            ["checkAuth"], [sibling], set(), "App",
+        )
+        assert result["checkAuth"]["kind"] == "sibling"
+        assert "authMixin.methods" in result["checkAuth"]["detail"]
+
+    def test_multiple_deps_resolved(self):
+        sibling = _make_entry("loadingMixin", data=["isLoading"])
+        result = resolve_external_dep_sources(
+            ["isLoading", "userId"], [sibling], {"userId"}, "Comp",
+        )
+        assert result["isLoading"]["kind"] == "sibling"
+        assert result["userId"]["kind"] == "component"

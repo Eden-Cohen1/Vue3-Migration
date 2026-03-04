@@ -163,6 +163,9 @@ def collect_mixin_warnings(
                 severity="warning",
             ))
 
+    # External dependencies (this.X where X is not in this mixin)
+    warnings.extend(detect_external_dependencies(mixin_source, mixin_members))
+
     # this-aliasing (const self = this)
     warnings.extend(detect_this_aliasing(mixin_source, ""))
 
@@ -171,6 +174,47 @@ def collect_mixin_warnings(
 
     # Structural patterns (factory functions, nested mixins, render, etc.)
     warnings.extend(detect_structural_patterns(mixin_source, ""))
+
+    return warnings
+
+
+def detect_external_dependencies(
+    mixin_source: str,
+    mixin_members: MixinMembers,
+) -> list[MigrationWarning]:
+    """Detect ``this.X`` references where X is not defined in the mixin.
+
+    These are external dependencies — members that come from the component
+    or a sibling mixin via shared ``this`` context. They break in composables
+    because composables are isolated functions without ``this``.
+    """
+    from .mixin_analyzer import find_external_this_refs
+
+    external = find_external_this_refs(mixin_source, mixin_members.all_names)
+    warnings: list[MigrationWarning] = []
+
+    for name in external:
+        # Find the first line containing this.<name> for line_hint
+        match = re.search(rf"\bthis\.{re.escape(name)}\b", mixin_source)
+        line_hint = None
+        if match:
+            line_start = mixin_source.rfind("\n", 0, match.start()) + 1
+            line_end = mixin_source.find("\n", match.end())
+            if line_end == -1:
+                line_end = len(mixin_source)
+            line_hint = mixin_source[line_start:line_end].strip()
+
+        warnings.append(MigrationWarning(
+            mixin_stem="",
+            category="external-dependency",
+            message=(
+                f"'{name}' — external dep, not available in composable scope.\n"
+                f"// Accept as composable param: this.{name} → {name}.value or {name}."
+            ),
+            action_required=f"Accept '{name}' as a composable parameter and rewrite this.{name}",
+            line_hint=line_hint,
+            severity="error",
+        ))
 
     return warnings
 
@@ -255,14 +299,20 @@ def inject_inline_warnings(
     For each warning with a line_hint, inserts ``// ⚠ MIGRATION: {message}``
     above the first line that contains the hint text.
 
+    Warnings that cannot be placed inline (no line_hint or no matching line)
+    are collected and inserted as a block after the confidence header.
+
     Optionally prepends a confidence header comment at the top.
     """
     if confidence is not None:
         header = f"// Migration confidence: {confidence.value} ({warning_count} warnings — see migration report)\n"
         source = header + source
 
+    unplaced: list[MigrationWarning] = []
+
     for w in warnings:
         if not w.line_hint:
+            unplaced.append(w)
             continue
         # Find a line containing the hint text
         lines = source.splitlines(keepends=True)
@@ -276,6 +326,20 @@ def inject_inline_warnings(
             new_lines.append(line)
         if injected:
             source = "".join(new_lines)
+        else:
+            unplaced.append(w)
+
+    # Place unmatched warnings as a block after the confidence header
+    if unplaced:
+        block = "".join(
+            f"// ⚠ MIGRATION: {w.message}\n" for w in unplaced
+        )
+        if confidence is not None:
+            # Insert right after the first line (confidence header)
+            idx = source.index('\n') + 1
+            source = source[:idx] + block + source[idx:]
+        else:
+            source = block + source
 
     return source
 
