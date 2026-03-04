@@ -93,3 +93,54 @@ def test_project_status_prints_summary(tmp_path, capsys):
         project_status(config)
     out = capsys.readouterr().out
     assert "Summary" in out
+
+
+# --- --root CLI option ---
+
+from vue3_migration.cli import main
+
+
+def test_root_option_sets_project_root(tmp_path, capsys):
+    """--root <path> sets config.project_root before running the command."""
+    captured_roots = []
+
+    def fake_run(project_root, config):
+        captured_roots.append(config.project_root)
+        return _empty_plan()
+
+    with patch("vue3_migration.workflows.auto_migrate_workflow.run", side_effect=fake_run):
+        main(["--root", str(tmp_path), "all"])
+
+    assert len(captured_roots) == 1
+    assert captured_roots[0].resolve() == tmp_path.resolve()
+
+
+def test_root_option_with_status_command(tmp_path, capsys):
+    """--root <path> works with 'status' command too."""
+    captured_roots = []
+
+    def fake_status(project_root, config):
+        captured_roots.append(config.project_root)
+        return "# Report\n## Summary\n"
+
+    with patch("vue3_migration.reporting.markdown.generate_status_report", side_effect=fake_status):
+        main(["--root", str(tmp_path), "status"])
+
+    assert len(captured_roots) == 1
+    assert captured_roots[0].resolve() == tmp_path.resolve()
+
+
+def test_no_root_option_uses_cwd(capsys):
+    """Without --root, project_root defaults to Path.cwd()."""
+    import os
+    captured_roots = []
+
+    def fake_run(project_root, config):
+        captured_roots.append(config.project_root)
+        return _empty_plan()
+
+    with patch("vue3_migration.workflows.auto_migrate_workflow.run", side_effect=fake_run):
+        main(["all"])
+
+    assert len(captured_roots) == 1
+    assert captured_roots[0].resolve() == Path(os.getcwd()).resolve()

@@ -6,8 +6,8 @@ tests/
 .git/
 
 # Python build artifacts
-__pycache__/
-*.py[cod]
+**/__pycache__/
+**/*.py[cod]
 *.egg-info/
 dist/
 build/
@@ -17,8 +17,12 @@ pyproject.toml
 uv.lock
 
 # Output reports
+migration-*.md
 migration_*.md
 mixin_audit_*.md
+
+# Internal dev plans
+docs/
 
 # Editor / OS
 .vscode/

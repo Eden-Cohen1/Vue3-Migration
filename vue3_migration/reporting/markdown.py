@@ -148,7 +148,7 @@ def generate_status_report(project_root: Path, config) -> str:
     from ..core.file_resolver import resolve_mixin_stem
 
     composable_dirs = find_composable_dirs(project_root)
-    composable_stems = collect_composable_stems(composable_dirs)
+    composable_stems = collect_composable_stems(composable_dirs, project_root=project_root)
 
     # Detect composables that need manual migration (reactive() or variable return)
     manual_stems: set[str] = set()

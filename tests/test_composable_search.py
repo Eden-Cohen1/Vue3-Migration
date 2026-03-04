@@ -7,6 +7,7 @@ from pathlib import Path
 
 from vue3_migration.core.composable_search import (
     collect_composable_stems,
+    find_all_composable_files,
     generate_candidates,
     mixin_has_composable,
     search_for_composable,
@@ -175,3 +176,123 @@ class TestMixinHasComposable:
         # 'filterhelper' does not start with 'use' -> should not match
         stems = {'filterhelper'}
         assert mixin_has_composable('filterMixin', stems) is False
+
+
+# ---------------------------------------------------------------------------
+# find_all_composable_files
+# ---------------------------------------------------------------------------
+
+class TestFindAllComposableFiles:
+    def test_finds_composables_in_standard_dir(self, tmp_path):
+        comp_dir = tmp_path / "src" / "composables"
+        comp_dir.mkdir(parents=True)
+        (comp_dir / "useAuth.js").write_text("export function useAuth() {}")
+        (comp_dir / "useItems.ts").write_text("export function useItems() {}")
+
+        files = find_all_composable_files(tmp_path)
+        names = [f.name for f in files]
+        assert "useAuth.js" in names
+        assert "useItems.ts" in names
+
+    def test_finds_composables_in_non_standard_dir(self, tmp_path):
+        utils_dir = tmp_path / "src" / "utils"
+        utils_dir.mkdir(parents=True)
+        (utils_dir / "useSearch.js").write_text("export function useSearch() {}")
+
+        files = find_all_composable_files(tmp_path)
+        assert any(f.name == "useSearch.js" for f in files)
+
+    def test_skips_non_use_files(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "helpers.js").write_text("export function helper() {}")
+        (src / "useValid.js").write_text("export function useValid() {}")
+
+        files = find_all_composable_files(tmp_path)
+        names = [f.name for f in files]
+        assert "helpers.js" not in names
+        assert "useValid.js" in names
+
+    def test_skips_node_modules(self, tmp_path):
+        nm = tmp_path / "node_modules" / "some-pkg"
+        nm.mkdir(parents=True)
+        (nm / "useStuff.js").write_text("export function useStuff() {}")
+
+        files = find_all_composable_files(tmp_path)
+        assert not any("node_modules" in str(f) for f in files)
+
+    def test_finds_across_multiple_dirs(self, tmp_path):
+        (tmp_path / "src" / "hooks").mkdir(parents=True)
+        (tmp_path / "src" / "composables").mkdir(parents=True)
+        (tmp_path / "src" / "hooks" / "useModal.js").write_text("export function useModal() {}")
+        (tmp_path / "src" / "composables" / "useFilter.js").write_text("export function useFilter() {}")
+
+        files = find_all_composable_files(tmp_path)
+        names = [f.name for f in files]
+        assert "useModal.js" in names
+        assert "useFilter.js" in names
+
+
+# ---------------------------------------------------------------------------
+# collect_composable_stems — project_root fallback
+# ---------------------------------------------------------------------------
+
+class TestCollectComposableStemsProjectRoot:
+    def test_finds_stems_when_no_composable_dir(self, tmp_path):
+        utils = tmp_path / "src" / "utils"
+        utils.mkdir(parents=True)
+        (utils / "useSearch.js").write_text("export function useSearch() {}")
+
+        stems = collect_composable_stems([], project_root=tmp_path)
+        assert "usesearch" in stems
+
+    def test_empty_when_no_composable_dir_and_no_root(self, tmp_path):
+        utils = tmp_path / "src" / "utils"
+        utils.mkdir(parents=True)
+        (utils / "useSearch.js").write_text("export function useSearch() {}")
+
+        stems = collect_composable_stems([])
+        assert stems == set()
+
+    def test_standard_dir_takes_precedence(self, tmp_path):
+        comp_dir = tmp_path / "src" / "composables"
+        comp_dir.mkdir(parents=True)
+        (comp_dir / "useAuth.js").write_text("export function useAuth() {}")
+
+        stems = collect_composable_stems([comp_dir], project_root=tmp_path)
+        assert "useauth" in stems
+
+
+# ---------------------------------------------------------------------------
+# search_for_composable — project_root fallback
+# ---------------------------------------------------------------------------
+
+class TestSearchForComposableProjectRoot:
+    def test_finds_composable_outside_composables_dir(self, tmp_path):
+        utils = tmp_path / "src" / "utils"
+        utils.mkdir(parents=True)
+        (utils / "useAuth.js").write_text("export function useAuth() {}")
+
+        result = search_for_composable("authMixin", [], project_root=tmp_path)
+        assert any(f.name == "useAuth.js" for f in result)
+
+    def test_returns_empty_when_no_match_even_with_root(self, tmp_path):
+        utils = tmp_path / "src" / "utils"
+        utils.mkdir(parents=True)
+        (utils / "useAuth.js").write_text("export function useAuth() {}")
+
+        result = search_for_composable("notificationMixin", [], project_root=tmp_path)
+        assert result == []
+
+    def test_composable_dir_match_takes_priority_over_root_fallback(self, tmp_path):
+        comp_dir = tmp_path / "src" / "composables"
+        comp_dir.mkdir(parents=True)
+        (comp_dir / "useAuth.js").write_text("export function useAuth() {}")
+        utils = tmp_path / "src" / "utils"
+        utils.mkdir(parents=True)
+        (utils / "useAuth.js").write_text("export function useAuth() {}")
+
+        result = search_for_composable("authMixin", [comp_dir], project_root=tmp_path)
+        # Should return the composable-dir match, not duplicates
+        assert len(result) == 1
+        assert "composables" in str(result[0])
