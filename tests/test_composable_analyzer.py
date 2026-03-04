@@ -101,6 +101,49 @@ export function useLogging() {
 }
 """
 
+# Composable with a method that returns an object literal BEFORE the main return
+USE_TABLE_NESTED_RETURN = """\
+import { ref, computed } from 'vue'
+
+export function useTable() {
+  const sortField = ref('name')
+  const sortDirection = ref('asc')
+  const items = ref([])
+
+  const sortedItems = computed(() => {
+    return [...items.value].sort((a, b) => {
+      const dir = sortDirection.value === 'asc' ? 1 : -1
+      return a[sortField.value] > b[sortField.value] ? dir : -dir
+    })
+  })
+
+  function getColumnClass(col) {
+    return {
+      sortable: col.sortable,
+      sorted: col.field === sortField.value,
+    }
+  }
+
+  function toggleSort(field) {
+    if (sortField.value === field) {
+      sortDirection.value = sortDirection.value === 'asc' ? 'desc' : 'asc'
+    } else {
+      sortField.value = field
+      sortDirection.value = 'asc'
+    }
+  }
+
+  return {
+    sortField,
+    sortDirection,
+    items,
+    sortedItems,
+    getColumnClass,
+    toggleSort,
+  }
+}
+"""
+
 
 # ---------------------------------------------------------------------------
 # extract_all_identifiers
@@ -145,6 +188,14 @@ export function useFoo() {
         assert 'a' in result
         assert 'renamed' in result
 
+    def test_nested_return_uses_main_return(self):
+        """When a method has its own return {}, identifiers should come from the main return."""
+        result = extract_all_identifiers(USE_TABLE_NESTED_RETURN)
+        # Main return keys should be found
+        for key in ('sortField', 'sortDirection', 'items', 'sortedItems',
+                    'getColumnClass', 'toggleSort'):
+            assert key in result
+
 
 # ---------------------------------------------------------------------------
 # extract_return_keys
@@ -182,6 +233,17 @@ class TestExtractReturnKeys:
         result = extract_return_keys(USE_LOGGING)
         assert 'logs' in result
         assert 'log' in result
+
+    def test_nested_return_skipped(self):
+        """A method's return { sortable, sorted } must not be mistaken for the main return."""
+        result = extract_return_keys(USE_TABLE_NESTED_RETURN)
+        # Main return keys must be present
+        for key in ('sortField', 'sortDirection', 'items', 'sortedItems',
+                    'getColumnClass', 'toggleSort'):
+            assert key in result, f"Expected '{key}' in return keys"
+        # Keys from the nested getColumnClass return must NOT appear
+        assert 'sortable' not in result
+        assert 'sorted' not in result
 
 
 # ---------------------------------------------------------------------------

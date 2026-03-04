@@ -61,3 +61,5 @@ npm-debug.log*
 
 # uv lock file
 uv.lock
+
+.todo

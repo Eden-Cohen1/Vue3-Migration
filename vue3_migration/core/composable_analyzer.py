@@ -34,8 +34,9 @@ def extract_all_identifiers(source: str) -> list[str]:
             else:
                 ids.add(part.split("=")[0].strip())
 
-    # Return keys: return { foo, bar, baz: val }
-    ret = re.search(r"\breturn\s*\{", source)
+    # Return keys: return { foo, bar, baz: val } — use LAST match to skip nested returns
+    ret_matches = list(re.finditer(r"\breturn\s*\{", source))
+    ret = ret_matches[-1] if ret_matches else None
     if ret:
         block = extract_brace_block(source, ret.end() - 1)
         ids.update(re.findall(r"\b(\w+)\s*[,}\n:]", block))
@@ -59,8 +60,9 @@ def extract_return_keys(source: str) -> list[str]:
         "null", "undefined", "new", "value",
     }
 
-    # Case 1: direct return { ... }
-    ret = re.search(r"\breturn\s*\{", source)
+    # Case 1: direct return { ... } — use LAST match to skip nested returns
+    matches = list(re.finditer(r"\breturn\s*\{", source))
+    ret = matches[-1] if matches else None
     if ret:
         block = extract_brace_block(source, ret.end() - 1)
         keys = re.findall(r"\b(\w+)\b", block)
