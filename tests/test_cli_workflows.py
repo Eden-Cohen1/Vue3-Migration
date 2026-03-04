@@ -144,3 +144,21 @@ def test_no_root_option_uses_cwd(capsys):
 
     assert len(captured_roots) == 1
     assert captured_roots[0].resolve() == Path(os.getcwd()).resolve()
+
+
+# --- bin/cli.js PYTHONPATH integration ---
+
+def test_cli_js_sets_pythonpath_not_cwd():
+    """bin/cli.js must NOT set cwd to pkgRoot; it should set PYTHONPATH instead.
+
+    This is a static analysis test that reads the JS source to verify
+    the fix is in place (cwd removed, PYTHONPATH set).
+    """
+    cli_js = Path(__file__).parent.parent / "bin" / "cli.js"
+    source = cli_js.read_text()
+    # Must NOT contain cwd: pkgRoot
+    assert "cwd:" not in source or "cwd: pkgRoot" not in source, \
+        "bin/cli.js must not set cwd to pkgRoot — Python would run in the wrong directory"
+    # Must set PYTHONPATH
+    assert "PYTHONPATH" in source, \
+        "bin/cli.js must set PYTHONPATH so python -m vue3_migration finds the package"

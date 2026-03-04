@@ -28,13 +28,16 @@ if (!python) {
   process.exit(1);
 }
 
+const sep = process.platform === 'win32' ? ';' : ':';
 const result = spawnSync(
   python,
   ['-m', 'vue3_migration', ...process.argv.slice(2)],
   {
-    cwd: pkgRoot,
     stdio: 'inherit',
-    env: process.env,
+    env: {
+      ...process.env,
+      PYTHONPATH: pkgRoot + (process.env.PYTHONPATH ? sep + process.env.PYTHONPATH : ''),
+    },
   }
 );
 
