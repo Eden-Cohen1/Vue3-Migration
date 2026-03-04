@@ -67,7 +67,7 @@ def _analyze_mixin_silent(
         entry.compute_status()
         return entry
 
-    matches = search_for_composable(mixin_file.stem, composable_dirs)
+    matches = search_for_composable(mixin_file.stem, composable_dirs, project_root=project_root)
     composable_file = matches[0] if matches else None
 
     if composable_file:
@@ -204,9 +204,11 @@ def plan_new_composables(
     Returns FileChange objects with original_content="" (new files).
     """
     composable_dirs = find_composable_dirs(project_root)
-    if not composable_dirs:
-        return []
-    target_dir = composable_dirs[0]
+    if composable_dirs:
+        target_dir = composable_dirs[0]
+    else:
+        src_dir = project_root / "src"
+        target_dir = (src_dir / "composables") if src_dir.is_dir() else (project_root / "composables")
 
     seen_stems: set[str] = set()
     changes = []

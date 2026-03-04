@@ -48,8 +48,12 @@ Thumbs.db
 .worktrees/
 
 # Tool output reports (generated at runtime)
+migration-*.md
 migration_*.md
 mixin_audit_*.md
+
+# Internal dev plans
+docs/plans/
 
 # npm
 node_modules/
