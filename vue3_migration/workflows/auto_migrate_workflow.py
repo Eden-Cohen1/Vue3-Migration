@@ -18,7 +18,7 @@ from ..core.mixin_analyzer import (
     extract_lifecycle_hooks, extract_mixin_members,
     find_external_this_refs,
 )
-from ..core.warning_collector import collect_mixin_warnings
+from ..core.warning_collector import collect_mixin_warnings, detect_name_collisions
 from ..models import (
     ComposableCoverage, FileChange, MigrationConfig, MigrationPlan, MigrationStatus,
     MixinEntry, MixinMembers,
@@ -336,6 +336,20 @@ def plan_component_injections(
         if not ready_entries:
             continue
 
+        # Detect member name collisions across composables for this component
+        if len(ready_entries) > 1:
+            composable_members_map = {}
+            for entry in ready_entries:
+                if entry.composable and entry.classification:
+                    composable_members_map[entry.composable.fn_name] = list(
+                        entry.classification.injectable
+                    )
+            collision_warnings = detect_name_collisions(composable_members_map)
+            if collision_warnings:
+                for w in collision_warnings:
+                    w.mixin_stem = "cross-composable"
+                ready_entries[0].warnings.extend(collision_warnings)
+
         content = comp_source
         changes_desc = []
 
@@ -447,6 +461,11 @@ def run_scoped(
 
     Exactly one of component_path or mixin_stem must be provided.
     No file I/O. Returns a MigrationPlan the CLI can show as a diff and write.
+
+    Note: When component_path is provided, composable patches only aggregate
+    requirements from that component's entries. Shared composables may receive
+    incomplete patches. Use mixin_stem scope or full-project run for complete
+    composable coverage.
     """
     if component_path is None and mixin_stem is None:
         raise ValueError("Provide either component_path or mixin_stem")
