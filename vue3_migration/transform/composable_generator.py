@@ -6,7 +6,14 @@ from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
 )
 from ..models import MixinMembers
-from .composable_patcher import _extract_data_default
+from .composable_patcher import (
+    _extract_data_default,
+    _extract_watch_section_body,
+    parse_watch_entry,
+    generate_watch_call,
+    parse_getter_setter_computed,
+    generate_getter_setter_computed,
+)
 from .lifecycle_converter import convert_lifecycle_hooks, get_required_imports
 from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs
 
@@ -96,7 +103,11 @@ def generate_composable_from_mixin(
     for name in mixin_members.computed:
         body = _extract_func_body(computed_body, name) if computed_body else None
         if body and re.search(r'\bget\s*\(', body):
-            decl_lines.append(f"{indent}const {name} = computed(() => null) // TODO: getter/setter computed — migrate manually")
+            gs = parse_getter_setter_computed(body)
+            if gs:
+                decl_lines.append(generate_getter_setter_computed(name, gs, ref_members, plain_members, indent))
+            else:
+                decl_lines.append(f"{indent}const {name} = computed(() => null) // TODO: getter/setter computed — migrate manually")
         elif body:
             rewritten = rewrite_this_refs(body.strip(), ref_members, plain_members)
             decl_lines.append(f"{indent}const {name} = computed(() => {{ {rewritten} }})")
@@ -122,8 +133,15 @@ def generate_composable_from_mixin(
     if mixin_members.methods and mixin_members.watch:
         decl_lines.append("")
 
+    watch_section = _extract_watch_section_body(mixin_source)
+    has_auto_watch = False
     for name in mixin_members.watch:
-        decl_lines.append(f"{indent}// watch: {name} — migrate manually")
+        entry = parse_watch_entry(watch_section, name) if watch_section else None
+        if entry and not entry["complex"]:
+            decl_lines.append(generate_watch_call(name, entry, ref_members, plain_members, indent))
+            has_auto_watch = True
+        else:
+            decl_lines.append(f"{indent}// watch: {name} — migrate manually")
 
     # Convert lifecycle hooks
     inline_lines, wrapped_lines = convert_lifecycle_hooks(
@@ -136,6 +154,8 @@ def generate_composable_from_mixin(
         vue_imports.append("ref")
     if mixin_members.computed:
         vue_imports.append("computed")
+    if has_auto_watch:
+        vue_imports.append("watch")
     for hook_fn in get_required_imports(lifecycle_hooks):
         if hook_fn not in vue_imports:
             vue_imports.append(hook_fn)

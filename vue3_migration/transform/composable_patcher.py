@@ -97,6 +97,156 @@ def _extract_data_default(mixin_source: str, name: str) -> str:
     return extract_value_at(ret_body, val_match.end())
 
 
+def parse_getter_setter_computed(body: str) -> dict | None:
+    """Parse a getter/setter computed property body.
+
+    Expects the body of a computed entry like:
+      get() { return this.first + ' ' + this.last },
+      set(val) { ... }
+
+    Returns dict with keys: get_body, set_body (optional), set_params.
+    Returns None if no get() found.
+    """
+    get_m = re.search(r'\bget\s*\(\s*\)', body)
+    if not get_m:
+        return None
+    rest = body[get_m.end():].lstrip()
+    if not rest.startswith("{"):
+        return None
+    get_body = extract_brace_block(rest, 0)
+
+    set_m = re.search(r'\bset\s*\(([^)]*)\)', body)
+    set_body = None
+    set_params = ""
+    if set_m:
+        set_params = set_m.group(1)
+        rest2 = body[set_m.end():].lstrip()
+        if rest2.startswith("{"):
+            set_body = extract_brace_block(rest2, 0)
+
+    return {"get_body": get_body, "set_body": set_body, "set_params": set_params}
+
+
+def generate_getter_setter_computed(
+    name: str,
+    gs: dict,
+    ref_members: list[str],
+    plain_members: list[str],
+    indent: str,
+) -> str:
+    """Generate a writable computed() call from getter/setter parts."""
+    get_body = textwrap.dedent(gs["get_body"]).strip()
+    get_rewritten = rewrite_this_refs(get_body, ref_members, plain_members)
+
+    parts = [f"{indent}const {name} = computed({{"]
+    parts.append(f"{indent}  get: () => {{ {get_rewritten} }},")
+
+    if gs["set_body"]:
+        set_body = textwrap.dedent(gs["set_body"]).strip()
+        set_rewritten = rewrite_this_refs(set_body, ref_members, plain_members)
+        set_params = gs["set_params"]
+        parts.append(f"{indent}  set: ({set_params}) => {{ {set_rewritten} }},")
+
+    parts.append(f"{indent}}})")
+    return "\n".join(parts)
+
+
+def _extract_watch_section_body(mixin_source: str) -> str:
+    """Return the content of `watch: { ... }` from a mixin, or empty string."""
+    m = re.search(r'\bwatch\s*:\s*\{', mixin_source)
+    if not m:
+        return ""
+    return extract_brace_block(mixin_source, m.end() - 1)
+
+
+def parse_watch_entry(watch_body: str, name: str) -> dict | None:
+    """Parse a single watch entry from the watch section body.
+
+    Returns a dict with keys:
+      - params: str (parameter list)
+      - body: str (handler function body)
+      - options: dict (deep, immediate, etc.)
+      - complex: bool (True if string/array handler — can't auto-convert)
+
+    Returns None if the entry can't be found.
+    """
+    m = re.search(rf'\b{re.escape(name)}\s*(?:\(|:)', watch_body)
+    if not m:
+        return None
+
+    after_name = watch_body[m.end() - 1:]
+
+    # Form 1: shorthand — name(params) { body }
+    if after_name[0] == "(":
+        params_m = re.match(r'\(([^)]*)\)', after_name)
+        if params_m:
+            params = params_m.group(1)
+            rest = after_name[params_m.end():].lstrip()
+            if rest.startswith("{"):
+                body = extract_brace_block(rest, 0)
+                return {"params": params, "body": body, "options": {}, "complex": False}
+
+    # After the colon
+    if after_name[0] == ":":
+        value_start = after_name[1:].lstrip()
+
+        # String handler — name: 'methodName'
+        if value_start and value_start[0] in ("'", '"'):
+            return {"params": "", "body": "", "options": {}, "complex": True}
+
+        # Array handler — name: [handler1, handler2]
+        if value_start and value_start[0] == "[":
+            return {"params": "", "body": "", "options": {}, "complex": True}
+
+        # Function property — name: function(params) { body }
+        func_m = re.match(r'function\s*\(([^)]*)\)', value_start)
+        if func_m:
+            params = func_m.group(1)
+            rest = value_start[func_m.end():].lstrip()
+            if rest.startswith("{"):
+                body = extract_brace_block(rest, 0)
+                return {"params": params, "body": body, "options": {}, "complex": False}
+
+        # Options object — name: { handler(params) { body }, deep: true }
+        if value_start and value_start[0] == "{":
+            obj_body = extract_brace_block(value_start, 0)
+            handler_m = re.search(r'\bhandler\s*\(([^)]*)\)', obj_body)
+            if handler_m:
+                params = handler_m.group(1)
+                rest = obj_body[handler_m.end():].lstrip()
+                if rest.startswith("{"):
+                    body = extract_brace_block(rest, 0)
+                    options = {}
+                    for opt in ("deep", "immediate", "flush"):
+                        opt_m = re.search(rf'\b{opt}\s*:\s*(\w+)', obj_body)
+                        if opt_m:
+                            options[opt] = opt_m.group(1)
+                    return {"params": params, "body": body, "options": options, "complex": False}
+
+    return None
+
+
+def generate_watch_call(
+    name: str,
+    watch_entry: dict,
+    ref_members: list[str],
+    plain_members: list[str],
+    indent: str,
+) -> str:
+    """Generate a watch() call from a parsed watch entry."""
+    params = watch_entry["params"]
+    body = textwrap.dedent(watch_entry["body"]).strip()
+    rewritten = rewrite_this_refs(body, ref_members, plain_members)
+    options = watch_entry["options"]
+
+    options_str = ""
+    if options:
+        opts = ", ".join(f"{k}: {v}" for k, v in options.items())
+        options_str = f", {{ {opts} }}"
+
+    return f"{indent}watch({name}, ({params}) => {{ {rewritten} }}{options_str})"
+
+
 def generate_member_declaration(
     name: str,
     mixin_source: str,
@@ -119,8 +269,11 @@ def generate_member_declaration(
 
     if name in mixin_members.computed:
         body = extract_hook_body(mixin_source, name, exclude_sections=False)
-        # R-5: getter/setter computed guard
+        # Getter/setter computed — auto-convert
         if body and re.search(r'\bget\s*\(', body):
+            gs = parse_getter_setter_computed(body)
+            if gs:
+                return generate_getter_setter_computed(name, gs, ref_members, plain_members, indent)
             return f"{indent}const {name} = computed(() => null) // TODO: getter/setter computed — migrate manually"
         if body:
             rewritten = rewrite_this_refs(body.strip(), ref_members, plain_members)
@@ -146,6 +299,10 @@ def generate_member_declaration(
         return f"{indent}function {name}({params}) {{}} // TODO: implement"
 
     if name in mixin_members.watch:
+        watch_body = _extract_watch_section_body(mixin_source)
+        entry = parse_watch_entry(watch_body, name) if watch_body else None
+        if entry and not entry["complex"]:
+            return generate_watch_call(name, entry, ref_members, plain_members, indent)
         return f"{indent}// watch: {name} — migrate manually"
 
     return f"{indent}// {name} — could not classify, migrate manually"
