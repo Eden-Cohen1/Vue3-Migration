@@ -296,7 +296,7 @@ def run(mixin_arg: str, composable_arg: Optional[str] = None, config: MigrationC
         candidates = generate_candidates(mixin_path.stem)
         print(f"  Looking for: {cyan(', '.join(candidates))}")
         comp_dirs = find_composable_dirs(project_root)
-        matches = search_for_composable(mixin_path.stem, comp_dirs)
+        matches = search_for_composable(mixin_path.stem, comp_dirs, project_root=project_root)
 
         if len(matches) == 1:
             found_path = matches[0]

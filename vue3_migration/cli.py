@@ -173,7 +173,7 @@ def _scan_components_with_mixins(project_root: Path, config: MigrationConfig) ->
     from .core.composable_search import collect_composable_stems, find_composable_dirs, mixin_has_composable
 
     composable_dirs = find_composable_dirs(project_root)
-    composable_stems = collect_composable_stems(composable_dirs)
+    composable_stems = collect_composable_stems(composable_dirs, project_root=project_root)
     results: list[dict] = []
 
     for dirpath, _, filenames in os.walk(project_root):
@@ -216,7 +216,7 @@ def _scan_mixin_usage(project_root: Path, config: MigrationConfig) -> list[dict]
     from .core.composable_search import collect_composable_stems, find_composable_dirs, mixin_has_composable
 
     composable_dirs = find_composable_dirs(project_root)
-    composable_stems = collect_composable_stems(composable_dirs)
+    composable_stems = collect_composable_stems(composable_dirs, project_root=project_root)
     mixin_counter: Counter[str] = Counter()
 
     for dirpath, _, filenames in os.walk(project_root):
@@ -511,9 +511,15 @@ def project_status(config: MigrationConfig) -> None:
 # =============================================================================
 
 def main(argv: list[str] | None = None):
+    import argparse
     import sys
     args = argv if argv is not None else sys.argv[1:]
-    config = MigrationConfig()
+
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--root", default=None)
+    known, args = parser.parse_known_args(args)
+    project_root = Path(known.root).resolve() if known.root else Path.cwd()
+    config = MigrationConfig(project_root=project_root)
 
     if not args:
         interactive_menu(config)

@@ -91,3 +91,78 @@ def test_no_file_io_during_run(project):
         run(project, _make_config(project))
     for path, t in mtimes.items():
         assert os.path.getmtime(path) == t
+
+
+# ---------------------------------------------------------------------------
+# plan_new_composables — no composables/ directory in project
+# ---------------------------------------------------------------------------
+
+from vue3_migration.workflows.auto_migrate_workflow import plan_new_composables
+
+
+_AUTH_MIXIN = "export default { data() { return { user: null }; }, methods: { login() {} } }"
+_LOGIN_VUE = (
+    "<template><div>{{ user }}</div></template>\n"
+    "<script>\n"
+    "import authMixin from '@/mixins/authMixin';\n"
+    "export default { mixins: [authMixin] };\n"
+    "</script>\n"
+)
+_LOGIN_VUE_RELATIVE = (
+    "<template><div>{{ user }}</div></template>\n"
+    "<script>\n"
+    "import authMixin from '../mixins/authMixin';\n"
+    "export default { mixins: [authMixin] };\n"
+    "</script>\n"
+)
+
+
+def test_plan_new_composables_no_composables_dir_uses_src_composables(tmp_path):
+    """When no composables/ dir exists but src/ does, new composables go to src/composables/."""
+    (tmp_path / "src" / "mixins").mkdir(parents=True)
+    (tmp_path / "src" / "components").mkdir(parents=True)
+    (tmp_path / "src" / "mixins" / "authMixin.js").write_text(_AUTH_MIXIN)
+    (tmp_path / "src" / "components" / "Login.vue").write_text(_LOGIN_VUE)
+
+    config = MigrationConfig(project_root=tmp_path)
+    with patch("builtins.print"):
+        entries = collect_all_mixin_entries(tmp_path, config)
+
+    changes = plan_new_composables(entries, tmp_path)
+
+    assert len(changes) >= 1
+    target_paths = [str(c.file_path) for c in changes]
+    assert any("src" in p and "composables" in p for p in target_paths)
+
+
+def test_plan_new_composables_no_src_dir_uses_project_root_composables(tmp_path):
+    """When neither src/ nor composables/ exist, new composables go to <root>/composables/."""
+    (tmp_path / "mixins").mkdir()
+    (tmp_path / "components").mkdir()
+    (tmp_path / "mixins" / "authMixin.js").write_text(_AUTH_MIXIN)
+    (tmp_path / "components" / "Login.vue").write_text(_LOGIN_VUE_RELATIVE)
+
+    config = MigrationConfig(project_root=tmp_path)
+    with patch("builtins.print"):
+        entries = collect_all_mixin_entries(tmp_path, config)
+
+    changes = plan_new_composables(entries, tmp_path)
+
+    assert len(changes) >= 1
+    for c in changes:
+        assert c.file_path.parts[-2] == "composables"
+
+
+def test_run_generates_composable_when_no_composables_dir(tmp_path):
+    """Full run() on a project with no composables/ dir still generates composables."""
+    (tmp_path / "src" / "mixins").mkdir(parents=True)
+    (tmp_path / "src" / "components").mkdir(parents=True)
+    (tmp_path / "src" / "mixins" / "authMixin.js").write_text(_AUTH_MIXIN)
+    (tmp_path / "src" / "components" / "Login.vue").write_text(_LOGIN_VUE)
+
+    config = MigrationConfig(project_root=tmp_path)
+    with patch("builtins.print"):
+        plan = run(tmp_path, config)
+
+    assert plan.has_changes
+    assert any("useAuth" in str(c.file_path) for c in plan.composable_changes)
