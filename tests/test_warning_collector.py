@@ -187,7 +187,7 @@ class TestCollectMixinWarnings:
         assert w.severity in ("error", "warning", "info")
         assert w.message  # non-empty
 
-    def test_detects_this_dollar_nextTick(self):
+    def test_no_warning_for_auto_migrated_nextTick(self):
         source = """
         export default {
             methods: {
@@ -196,7 +196,7 @@ class TestCollectMixinWarnings:
         }
         """
         warnings = collect_mixin_warnings(source, MixinMembers(methods=["update"]), [])
-        assert any(w.category == "this.$nextTick" for w in warnings)
+        assert not any(w.category == "this.$nextTick" for w in warnings)
 
 
 class TestComputeConfidence:
@@ -337,13 +337,13 @@ class TestInjectInlineWarnings:
         result = inject_inline_warnings(
             source, [], confidence=ConfidenceLevel.MEDIUM, warning_count=2
         )
-        assert "Migration confidence: MEDIUM" in result
+        assert "Transformation confidence: MEDIUM" in result
         assert "2 warnings" in result
 
     def test_no_confidence_header_when_not_provided(self):
         source = "export function useAuth() {\n  return {}\n}\n"
         result = inject_inline_warnings(source, [])
-        assert "Migration confidence:" not in result
+        assert "Transformation confidence:" not in result
 
     def test_unplaced_warnings_appear_after_confidence_header(self):
         """Warnings with line_hint=None should appear as block after header."""
@@ -356,7 +356,7 @@ class TestInjectInlineWarnings:
             source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=1,
         )
         lines = result.splitlines()
-        assert "Migration confidence: MEDIUM" in lines[0]
+        assert "Transformation confidence: MEDIUM" in lines[0]
         assert "// ⚠ MIGRATION: Mixin uses nested mixins" in lines[1]
         assert "import { ref }" in lines[2]
 
@@ -373,7 +373,7 @@ class TestInjectInlineWarnings:
             source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=1,
         )
         lines = result.splitlines()
-        assert "Migration confidence: MEDIUM" in lines[0]
+        assert "Transformation confidence: MEDIUM" in lines[0]
         assert "// ⚠ MIGRATION: this.$refs not available" in lines[1]
 
     def test_mix_of_placed_and_unplaced_warnings(self):
@@ -399,7 +399,7 @@ class TestInjectInlineWarnings:
         )
         lines = result.splitlines()
         # Header line
-        assert "Migration confidence: MEDIUM" in lines[0]
+        assert "Transformation confidence: MEDIUM" in lines[0]
         # Unplaced warning right after header
         assert "// ⚠ MIGRATION: Nested mixins" in lines[1]
         # Inline warning above matching line somewhere in the body
@@ -451,7 +451,7 @@ export default {
 """
         members = MixinMembers(data=["token"], methods=["go"])
         result = generate_composable_from_mixin(source, "authMixin", members, [])
-        assert "// Migration confidence:" in result
+        assert "// Transformation confidence:" in result
 
     def test_generated_composable_has_inline_warning(self):
         source = """
@@ -483,7 +483,7 @@ export default {
         members = MixinMembers(data=["count"], methods=["increment"])
         result = generate_composable_from_mixin(source, "counterMixin", members, [])
         # Clean mixin — no this.$ patterns — should be HIGH
-        assert "Migration confidence: HIGH" in result
+        assert "Transformation confidence: HIGH" in result
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +513,7 @@ export default {
 """
         members = MixinMembers(data=["token"], methods=["go"])
         result = patch_composable(composable, mixin, [], ["go"], members)
-        assert "// Migration confidence:" in result
+        assert "// Transformation confidence:" in result
 
     def test_patched_composable_with_router_warning_is_medium(self):
         """Mixin warnings (this.$router) downgrade patched composable to MEDIUM."""
@@ -536,7 +536,7 @@ export default {
         members = MixinMembers(data=["token"], methods=["go"])
         result = patch_composable(composable, mixin, [], ["go"], members)
         # Has this.$router in output + warning, so LOW (remaining this. reference)
-        assert "Migration confidence: LOW" in result
+        assert "Transformation confidence: LOW" in result
 
     def test_clean_mixin_patch_no_router_warnings(self):
         """Mixin without this.$ patterns gets no this.$-category warnings."""
@@ -563,8 +563,8 @@ export default {
         members = MixinMembers(data=["count"], methods=["increment"])
         result = patch_composable(composable, mixin, [], ["increment"], members)
         # No this.$ patterns but the TODO from body extraction → MEDIUM
-        assert "Migration confidence:" in result
-        assert "// Migration confidence: MEDIUM" in result or "// Migration confidence: HIGH" in result
+        assert "Transformation confidence:" in result
+        assert "// Transformation confidence: MEDIUM" in result or "// Transformation confidence: HIGH" in result
 
 
 # ---------------------------------------------------------------------------
@@ -845,7 +845,7 @@ class TestBuildWarningSummary:
         w = MigrationWarning("auth", "this.$router", "msg", "action", None, "warning")
         entry = self._make_entry("authMixin", [w])
         result = build_warning_summary(self._wrap(entry))
-        assert "- [ ]" in result
+        assert "**this.$router**" in result
         assert "\u2192" in result
 
     def test_overview_counts(self):

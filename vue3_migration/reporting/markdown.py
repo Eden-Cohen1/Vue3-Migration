@@ -425,16 +425,19 @@ def build_warning_summary(
         conf = confidence_map[entry.mixin_stem]
         icon = _CONF_ICON.get(conf, "\u2753")
 
-        a(f"### {icon} {entry.mixin_stem} \u2014 {conf.value} confidence\n")
+        a(f"### {icon} {entry.mixin_stem} \u2014 Transformation confidence: {conf.value}\n")
 
         if not entry.warnings:
             a("No manual changes needed.\n")
             continue
 
+        item_count = len(entry.warnings)
+        a(f"> {item_count} item{'s' if item_count != 1 else ''} need{'s' if item_count == 1 else ''} attention\n")
+
         for warning in entry.warnings:
             sev_icon = _SEVERITY_ICON.get(warning.severity, "\u2753")
-            a(f"- [ ] **{warning.category}** ({warning.severity}): {warning.message}")
-            a(f"  \u2192 {warning.action_required}")
-        a("")
+            a(f"- {sev_icon} **{warning.category}** ({warning.severity}): {warning.message}")
+            a(f"")
+            a(f"    **\u2192 {warning.action_required}**\n")
 
     return "\n".join(lines)

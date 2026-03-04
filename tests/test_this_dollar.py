@@ -41,20 +41,20 @@ class TestThisDollarWarningDetection:
         warnings = collect_mixin_warnings(source, MixinMembers(), [])
         assert any(w.category == "this.$refs" for w in warnings)
 
-    def test_detects_dollar_nextTick(self):
+    def test_no_warning_for_auto_migrated_nextTick(self):
         source = "this.$nextTick(() => {})"
         warnings = collect_mixin_warnings(source, MixinMembers(), [])
-        assert any(w.category == "this.$nextTick" for w in warnings)
+        assert not any(w.category == "this.$nextTick" for w in warnings)
 
-    def test_detects_dollar_set(self):
+    def test_no_warning_for_auto_migrated_set(self):
         source = "this.$set(this.items, 0, newItem)"
         warnings = collect_mixin_warnings(source, MixinMembers(), [])
-        assert any(w.category == "this.$set" for w in warnings)
+        assert not any(w.category == "this.$set" for w in warnings)
 
-    def test_detects_dollar_delete(self):
+    def test_no_warning_for_auto_migrated_delete(self):
         source = "this.$delete(this.config, 'key')"
         warnings = collect_mixin_warnings(source, MixinMembers(), [])
-        assert any(w.category == "this.$delete" for w in warnings)
+        assert not any(w.category == "this.$delete" for w in warnings)
 
     def test_detects_dollar_on(self):
         source = "this.$on('event', handler)"

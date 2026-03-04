@@ -40,24 +40,8 @@ _THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str]] = [
         "this.$refs is not available in composables",
         "Use template refs with ref() instead",
     ),
-    (
-        r"this\.\$nextTick\b",
-        "this.$nextTick",
-        "this.$nextTick should use the imported nextTick",
-        "Import nextTick from 'vue' and call it directly",
-    ),
-    (
-        r"this\.\$set\b",
-        "this.$set",
-        "this.$set is removed in Vue 3",
-        "Assign directly — Vue 3 reactivity tracks new properties",
-    ),
-    (
-        r"this\.\$delete\b",
-        "this.$delete",
-        "this.$delete is removed in Vue 3",
-        "Use delete operator directly — Vue 3 reactivity tracks deletions",
-    ),
+    # $nextTick, $set, $delete are auto-migrated by rewrite_this_dollar_refs()
+    # in this_rewriter.py — no warning needed.
     (
         r"this\.\$on\b",
         "this.$on",
@@ -305,7 +289,7 @@ def inject_inline_warnings(
     Optionally prepends a confidence header comment at the top.
     """
     if confidence is not None:
-        header = f"// Migration confidence: {confidence.value} ({warning_count} warnings — see migration report)\n"
+        header = f"// Transformation confidence: {confidence.value} ({warning_count} warnings — see migration report)\n"
         source = header + source
 
     unplaced: list[MigrationWarning] = []
@@ -420,6 +404,26 @@ _MIXIN_OPTION_PATTERNS: list[tuple[str, str, str, str]] = [
 ]
 
 
+def _brace_depth_at(source: str, pos: int) -> int:
+    """Count net brace depth from start of *source* to *pos*, skipping non-code."""
+    from .js_parser import skip_non_code
+
+    depth = 0
+    i = 0
+    while i < pos:
+        new_i, skipped = skip_non_code(source, i)
+        if skipped:
+            i = new_i
+            continue
+        ch = source[i]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+        i += 1
+    return depth
+
+
 def detect_mixin_options(
     mixin_source: str, mixin_stem: str
 ) -> list[MigrationWarning]:
@@ -446,6 +450,10 @@ def detect_mixin_options(
                 else:
                     pos += 1
             if in_non_code:
+                continue
+            # Mixin options sit at brace depth 1 (inside `export default {}`).
+            # Deeper matches (e.g. `filters` inside data()) are not options.
+            if _brace_depth_at(mixin_source, m.start()) != 1:
                 continue
             warnings.append(MigrationWarning(
                 mixin_stem=mixin_stem,

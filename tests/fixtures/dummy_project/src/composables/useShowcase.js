@@ -1,4 +1,4 @@
-// Migration confidence: LOW (7 warnings — see migration report)
+// Transformation confidence: LOW (7 warnings — see migration report)
 import {
   ref,
   computed,
