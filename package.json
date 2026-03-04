@@ -1,13 +1,14 @@
 {
   "name": "vue3-migration",
-  "version": "1.0.2",
-  "description": "Vue 2 mixin to Vue 3 composable migration tool",
+  "version": "1.1.0",
+  "description": "Automatically migrate Vue 2 mixins to Vue 3 composables — data, computed, methods, watchers, lifecycle hooks, and all",
   "bin": {
     "vue3-migration": "./bin/cli.js"
   },
   "files": [
     "bin/",
-    "vue3_migration/"
+    "vue3_migration/**/*.py",
+    "!**/__pycache__/"
   ],
   "engines": {
     "node": ">=14"
