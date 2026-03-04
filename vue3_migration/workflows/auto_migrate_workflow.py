@@ -16,7 +16,7 @@ from ..core.composable_search import find_composable_dirs, search_for_composable
 from ..core.file_resolver import compute_import_path, resolve_import_path
 from ..core.mixin_analyzer import (
     extract_lifecycle_hooks, extract_mixin_members,
-    find_external_this_refs, resolve_external_dep_sources,
+    find_external_this_refs,
 )
 from ..core.warning_collector import collect_mixin_warnings
 from ..models import (
@@ -24,8 +24,7 @@ from ..models import (
     MixinEntry, MixinMembers,
 )
 from ..transform.composable_generator import (
-    generate_composable_from_mixin,
-    mixin_stem_to_composable_name,
+    generate_composable_from_mixin, mixin_stem_to_composable_name,
 )
 from ..transform.composable_patcher import patch_composable
 from ..transform.injector import (
@@ -33,7 +32,8 @@ from ..transform.injector import (
     remove_import_line, remove_mixin_from_array,
 )
 from ..transform.lifecycle_converter import (
-    convert_lifecycle_hooks, find_lifecycle_referenced_members, get_required_imports,
+    convert_lifecycle_hooks, find_lifecycle_referenced_members,
+    get_required_imports, HOOK_MAP,
 )
 
 
@@ -247,84 +247,35 @@ def plan_new_composables(
     return changes
 
 
-def _inject_setup_external_dep_warnings(
-    lines: list[str],
-    entry: "MixinEntry",
-    all_entries: list["MixinEntry"],
-    own_members: set[str],
-    component_name: str,
-    indent: str,
-    component_members_by_section: dict[str, list[str]] | None = None,
-) -> list[str]:
-    """Scan lifecycle lines for remaining ``this.X`` and prepend source-resolved warnings.
+def _get_composable_content(
+    composable: ComposableCoverage,
+    patched_content: dict[Path, str],
+    generated_by_fn_name: dict[str, FileChange],
+) -> str | None:
+    """Get the final composable source (patched, generated, or from disk)."""
+    if composable.file_path in patched_content:
+        return patched_content[composable.file_path]
+    if composable.fn_name in generated_by_fn_name:
+        return generated_by_fn_name[composable.fn_name].new_content
+    if composable.file_path.exists():
+        return composable.file_path.read_text(errors="ignore")
+    return None
 
-    Only processes non-``$`` references that survived ``rewrite_this_refs``
-    (i.e. external deps not defined in the current mixin).
+
+def _composable_has_hooks(composable_src: str, hooks: list[str]) -> bool:
+    """Check if the composable already contains Vue 3 lifecycle calls for the given hooks.
+
+    Looks for actual calls like ``onMounted(`` rather than just the name,
+    to avoid false positives from import lines.
     """
-    if not lines:
-        return lines
-
-    all_text = "\n".join(lines)
-    external_names: list[str] = []
-    for m in re.finditer(r"\bthis\.(\w+)", all_text):
-        name = m.group(1)
-        if not name.startswith("$") and name not in external_names:
-            external_names.append(name)
-
-    if not external_names:
-        return lines
-
-    siblings = [e for e in all_entries if e is not entry]
-    sources = resolve_external_dep_sources(
-        external_names, siblings, own_members, component_name,
-        component_members_by_section=component_members_by_section,
-    )
-
-    result: list[str] = []
-    warned: set[str] = set()
-    for line in lines:
-        for m in re.finditer(r"\bthis\.(\w+)", line):
-            name = m.group(1)
-            if name.startswith("$") or name in warned:
-                continue
-            warned.add(name)
-            src = sources.get(name, {"kind": "unknown", "detail": None, "sources": []})
-            result.extend(
-                _format_setup_warning(name, src, entry, indent)
-            )
-        result.append(line)
-    return result
-
-
-def _format_setup_warning(
-    name: str, src: dict, entry: "MixinEntry", indent: str
-) -> list[str]:
-    """Format a source-resolved warning comment for a setup() external dep."""
-    if src["kind"] == "sibling":
-        detail = src["detail"]  # e.g. "loadingMixin.data"
-        sibling_stem = detail.split(".")[0]
-        sibling_composable = mixin_stem_to_composable_name(sibling_stem)
-        return [
-            f"{indent}// ⚠ MIGRATION: '{name}' — external dep (source: {detail} → {sibling_composable}).",
-            f"{indent}// this.{name} is unavailable in setup(). Use return value from {sibling_composable}() instead.",
-        ]
-    elif src["kind"] == "component":
-        detail = src["detail"]
-        return [
-            f"{indent}// ⚠ MIGRATION: '{name}' — external dep (source: {detail}).",
-            f"{indent}// this.{name} is unavailable in setup(). Replace with local ref.",
-        ]
-    elif src["kind"] == "ambiguous":
-        sources_str = ", ".join(src["sources"])
-        return [
-            f"{indent}// ⚠ MIGRATION: '{name}' — external dep (sources: {sources_str}).",
-            f"{indent}// Ambiguous origin — verify correct source before replacing this.{name}.",
-        ]
-    else:
-        return [
-            f"{indent}// ⚠ MIGRATION: '{name}' — external dep, source not found in component or sibling mixins.",
-            f"{indent}// May come from props, inject, or a parent component. Replace this.{name} manually.",
-        ]
+    for hook in hooks:
+        vue3_fn = HOOK_MAP.get(hook)
+        if vue3_fn is None:
+            # beforeCreate/created → inlined directly, no wrapper to detect
+            continue
+        if f"{vue3_fn}(" not in composable_src:
+            return False
+    return True
 
 
 def plan_component_injections(
@@ -332,7 +283,12 @@ def plan_component_injections(
     composable_patches: list[FileChange],
     config: MigrationConfig,
 ) -> list[FileChange]:
-    """Plan all component setup() injections, including lifecycle hook conversion.
+    """Plan all component setup() injections.
+
+    Lifecycle hooks belong in the composable. If a newly generated composable
+    already contains them, they are NOT duplicated into setup(). For pre-existing
+    composables that lack lifecycle hooks, the hooks are still injected into
+    setup() as a fallback.
 
     Re-classifies entries whose composables were patched to account for
     the updated return_keys and identifiers.
@@ -355,7 +311,6 @@ def plan_component_injections(
         # R-7: normalize CRLF
         comp_source = comp_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
         own_members = extract_own_members(comp_source)
-        comp_members_by_section = extract_mixin_members(comp_source)
         ready_entries = []
 
         for entry in entries:
@@ -430,6 +385,7 @@ def plan_component_injections(
         for entry in ready_entries:
             injectable = list(entry.classification.injectable if entry.classification else entry.used_members)
             mixin_content = None
+            lifecycle_members: list[str] = []
 
             # Augment injectable with members referenced in lifecycle hook bodies
             if entry.lifecycle_hooks and entry.composable:
@@ -455,33 +411,29 @@ def plan_component_injections(
             if injectable and entry.composable:
                 composable_calls.append((entry.composable.fn_name, injectable))
 
-            if entry.lifecycle_hooks:
-                if mixin_content is None:
-                    mixin_content = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
-                ref_m = entry.members.data + entry.members.computed + entry.members.watch
-                plain_m = entry.members.methods
-                inline, wrapped = convert_lifecycle_hooks(
-                    mixin_content, entry.lifecycle_hooks, ref_m, plain_m,
-                    config.indent + config.indent,  # double indent to match setup() body level
+            # Lifecycle hooks: only inject into setup() if the composable does
+            # NOT already contain them (e.g. pre-existing composable without hooks).
+            # Newly generated composables include hooks, so we skip for those.
+            if entry.lifecycle_hooks and entry.composable:
+                composable_src = _get_composable_content(
+                    entry.composable, patched_content, generated_by_fn_name,
                 )
-
-                # Inject source-resolved warnings for external deps in lifecycle code
-                comp_name = comp_path.stem
-                setup_indent = config.indent + config.indent
-                inline = _inject_setup_external_dep_warnings(
-                    inline, entry, entries, own_members, comp_name, setup_indent,
-                    component_members_by_section=comp_members_by_section,
+                hooks_in_composable = composable_src is not None and _composable_has_hooks(
+                    composable_src, entry.lifecycle_hooks,
                 )
-                wrapped = _inject_setup_external_dep_warnings(
-                    wrapped, entry, entries, own_members, comp_name, setup_indent,
-                    component_members_by_section=comp_members_by_section,
-                )
-
-                all_inline_lines.extend(inline)
-                all_lifecycle_calls.extend(wrapped)
-
-                for hook_import in get_required_imports(entry.lifecycle_hooks):
-                    content = add_vue_import(content, hook_import)
+                if not hooks_in_composable:
+                    if mixin_content is None:
+                        mixin_content = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+                    ref_m = entry.members.data + entry.members.computed + entry.members.watch
+                    plain_m = entry.members.methods
+                    inline, wrapped = convert_lifecycle_hooks(
+                        mixin_content, entry.lifecycle_hooks, ref_m, plain_m,
+                        config.indent + config.indent,
+                    )
+                    all_inline_lines.extend(inline)
+                    all_lifecycle_calls.extend(wrapped)
+                    for hook_import in get_required_imports(entry.lifecycle_hooks):
+                        content = add_vue_import(content, hook_import)
 
         if composable_calls or all_inline_lines or all_lifecycle_calls:
             new = inject_setup(

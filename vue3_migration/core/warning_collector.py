@@ -321,7 +321,8 @@ def inject_inline_warnings(
         for line in lines:
             if not injected and w.line_hint in line:
                 indent = line[: len(line) - len(line.lstrip())]
-                new_lines.append(f"{indent}// ⚠ MIGRATION: {w.message}\n")
+                for msg_line in f"// ⚠ MIGRATION: {w.message}".splitlines():
+                    new_lines.append(f"{indent}{msg_line}\n")
                 injected = True
             new_lines.append(line)
         if injected:
@@ -331,9 +332,11 @@ def inject_inline_warnings(
 
     # Place unmatched warnings as a block after the confidence header
     if unplaced:
-        block = "".join(
-            f"// ⚠ MIGRATION: {w.message}\n" for w in unplaced
-        )
+        block_lines: list[str] = []
+        for w in unplaced:
+            for msg_line in f"// ⚠ MIGRATION: {w.message}".splitlines():
+                block_lines.append(f"{msg_line}\n")
+        block = "".join(block_lines)
         if confidence is not None:
             # Insert right after the first line (confidence header)
             idx = source.index('\n') + 1
