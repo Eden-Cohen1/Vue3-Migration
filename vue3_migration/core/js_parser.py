@@ -115,6 +115,37 @@ def skip_non_code(source: str, pos: int) -> tuple[int, bool]:
     return pos, False
 
 
+def extract_value_at(source: str, pos: int) -> str:
+    """Extract a full JS value expression starting at pos.
+
+    Walks forward from pos, tracking [], {}, () depth and skipping
+    strings/comments. Stops at a , or } only when depth is 0 and not
+    inside a string/comment. Returns the extracted value, stripped.
+    """
+    # Skip leading whitespace
+    while pos < len(source) and source[pos] in " \t\n\r":
+        pos += 1
+    start = pos
+    depth = 0
+    while pos < len(source):
+        new_pos, skipped = skip_non_code(source, pos)
+        if skipped:
+            pos = new_pos
+            continue
+        ch = source[pos]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            if depth == 0:
+                # Closing brace of the outer object — stop before it
+                break
+            depth -= 1
+        elif ch == "," and depth == 0:
+            break
+        pos += 1
+    return source[start:pos].strip()
+
+
 def extract_brace_block(source: str, open_brace_pos: int) -> str:
     """Extract content between matching { } braces, skipping strings/comments/regex.
 

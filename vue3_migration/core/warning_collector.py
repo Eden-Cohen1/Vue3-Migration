@@ -163,6 +163,45 @@ def collect_mixin_warnings(
                 severity="warning",
             ))
 
+    # this-aliasing (const self = this)
+    warnings.extend(detect_this_aliasing(mixin_source, ""))
+
+    # Mixin options that can't be auto-migrated (props, inject, filters, etc.)
+    warnings.extend(detect_mixin_options(mixin_source, ""))
+
+    # Structural patterns (factory functions, nested mixins, render, etc.)
+    warnings.extend(detect_structural_patterns(mixin_source, ""))
+
+    return warnings
+
+
+def detect_this_aliasing(
+    mixin_source: str, mixin_stem: str
+) -> list[MigrationWarning]:
+    """Detect `const self = this` and similar aliasing patterns.
+
+    Auto-rewriting alias.x is too complex (requires scope tracking), so
+    this is warn-only. Returns warnings for each alias found.
+    """
+    pattern = re.compile(
+        r"\b(?:const|let|var)\s+(self|that|vm|_this|_self)\s*=\s*this\b"
+    )
+    warnings: list[MigrationWarning] = []
+    for m in pattern.finditer(mixin_source):
+        alias = m.group(1)
+        line_start = mixin_source.rfind("\n", 0, m.start()) + 1
+        line_end = mixin_source.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(mixin_source)
+        line_hint = mixin_source[line_start:line_end].strip()
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="this-alias",
+            message=f"'this' is aliased as '{alias}' — references via {alias}.x won't be auto-rewritten",
+            action_required=f"Manually replace {alias}.x with composable equivalents",
+            line_hint=line_hint,
+            severity="warning",
+        ))
     return warnings
 
 
@@ -289,6 +328,159 @@ def post_generation_check(composable_source: str) -> list[MigrationWarning]:
             line_hint=None,
             severity="info",
         ))
+
+    return warnings
+
+
+# Mixin option patterns: (option key, message, action_required, severity)
+_MIXIN_OPTION_PATTERNS: list[tuple[str, str, str, str]] = [
+    ("props", "Mixin defines props — not migrated to composable",
+     "Use defineProps() in component or pass as composable params", "warning"),
+    ("inject", "Mixin uses inject — not auto-migrated",
+     "Use inject() from 'vue' in composable", "warning"),
+    ("provide", "Mixin uses provide — not auto-migrated",
+     "Use provide() from 'vue' in composable", "warning"),
+    ("filters", "Mixin uses filters — REMOVED in Vue 3",
+     "Convert to methods or standalone functions", "error"),
+    ("directives", "Mixin registers local directives",
+     "Register in component or globally instead", "warning"),
+    ("components", "Mixin registers local components",
+     "Move registration to component", "warning"),
+    ("extends", "Mixin uses extends — complex inheritance",
+     "Flatten into composable manually", "warning"),
+    ("model", "Mixin uses custom v-model — API changed in Vue 3",
+     "Use modelValue prop + update:modelValue emit", "warning"),
+]
+
+
+def detect_mixin_options(
+    mixin_source: str, mixin_stem: str
+) -> list[MigrationWarning]:
+    """Detect mixin option keys that can't be auto-migrated to composables."""
+    from .js_parser import skip_non_code
+
+    warnings: list[MigrationWarning] = []
+    for option, message, action, severity in _MIXIN_OPTION_PATTERNS:
+        # Scan for `option:` at top level, skipping strings/comments
+        pattern = re.compile(rf'\b{option}\s*(?::\s*|\()')
+        for m in pattern.finditer(mixin_source):
+            # Check if this match is inside a string or comment
+            # by walking from last known safe position
+            pos = 0
+            in_non_code = False
+            check_pos = m.start()
+            while pos < check_pos:
+                new_pos, skipped = skip_non_code(mixin_source, pos)
+                if skipped:
+                    if new_pos > check_pos:
+                        in_non_code = True
+                        break
+                    pos = new_pos
+                else:
+                    pos += 1
+            if in_non_code:
+                continue
+            warnings.append(MigrationWarning(
+                mixin_stem=mixin_stem,
+                category=f"mixin-option:{option}",
+                message=message,
+                action_required=action,
+                line_hint=None,
+                severity=severity,
+            ))
+            break  # one warning per option is enough
+    return warnings
+
+
+def detect_structural_patterns(
+    mixin_source: str, mixin_stem: str
+) -> list[MigrationWarning]:
+    """Detect structural patterns the tool can't auto-migrate."""
+    warnings: list[MigrationWarning] = []
+
+    # Mixin factory function: export default function
+    if re.search(r'\bexport\s+default\s+function\b', mixin_source):
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="structural:factory-function",
+            message="Mixin factory function — cannot auto-convert",
+            action_required="Manually convert factory function to composable",
+            line_hint=None,
+            severity="warning",
+        ))
+
+    # Nested mixins: mixins: [...] inside the mixin source
+    if re.search(r'\bmixins\s*:', mixin_source):
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="structural:nested-mixins",
+            message="Mixin uses nested mixins — transitive members may be missed",
+            action_required="Ensure all transitive mixin members are accounted for",
+            line_hint=None,
+            severity="warning",
+        ))
+
+    # render() in mixin
+    if re.search(r'\brender\s*\(', mixin_source):
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="structural:render-function",
+            message="Mixin defines render function — not supported in composable",
+            action_required="Move render logic to component template or setup",
+            line_hint=None,
+            severity="warning",
+        ))
+
+    # serverPrefetch hook
+    if re.search(r'\bserverPrefetch\b', mixin_source):
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="structural:serverPrefetch",
+            message="serverPrefetch not auto-converted",
+            action_required="Manually add onServerPrefetch() in composable",
+            line_hint=None,
+            severity="warning",
+        ))
+
+    # Class-component decorators: @Component or @Prop
+    if re.search(r'@(?:Component|Prop)\b', mixin_source):
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="structural:class-component",
+            message="Class-component syntax not supported",
+            action_required="Convert from class-component to Options API first, then migrate",
+            line_hint=None,
+            severity="warning",
+        ))
+
+    return warnings
+
+
+def detect_name_collisions(
+    composable_members: dict[str, list[str]],
+) -> list[MigrationWarning]:
+    """Detect member name collisions across composables for the same component.
+
+    Args:
+        composable_members: mapping of composable fn name → list of member names
+    """
+    warnings: list[MigrationWarning] = []
+    # Build reverse map: member_name → list of composable names
+    member_to_composables: dict[str, list[str]] = {}
+    for fn_name, members in composable_members.items():
+        for member in members:
+            member_to_composables.setdefault(member, []).append(fn_name)
+
+    for member, sources in member_to_composables.items():
+        if len(sources) > 1:
+            warnings.append(MigrationWarning(
+                mixin_stem="",
+                category="name-collision",
+                message=f"Member '{member}' provided by both {' and '.join(sources)} — name collision",
+                action_required=f"Rename '{member}' in one of the composables to avoid conflict",
+                line_hint=None,
+                severity="warning",
+            ))
 
     return warnings
 

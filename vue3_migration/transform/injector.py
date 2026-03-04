@@ -55,9 +55,20 @@ def add_composable_import(content: str, fn_name: str, import_path: str) -> str:
 
 
 def remove_import_line(content: str, mixin_stem: str) -> str:
-    """Delete the import line for a specific mixin."""
-    pattern = rf"""^[ \t]*import\s+\w+\s+from\s+['"].*?{re.escape(mixin_stem)}(?:\.(?:js|ts))?['"].*\n?"""
-    return re.sub(pattern, "", content, count=1, flags=re.MULTILINE)
+    """Delete the import line for a specific mixin.
+
+    Handles both default imports (import X from 'path') and named imports
+    (import { X } from 'path').
+    """
+    escaped = re.escape(mixin_stem)
+    # Default import: import X from '...stem...'
+    default_pat = rf"""^[ \t]*import\s+\w+\s+from\s+['"].*?{escaped}(?:\.(?:js|ts))?['"].*\n?"""
+    result = re.sub(default_pat, "", content, count=1, flags=re.MULTILINE)
+    if result != content:
+        return result
+    # Named import: import { X } from '...stem...'
+    named_pat = rf"""^[ \t]*import\s+\{{[^}}]+\}}\s+from\s+['"].*?{escaped}(?:\.(?:js|ts))?['"].*\n?"""
+    return re.sub(named_pat, "", content, count=1, flags=re.MULTILINE)
 
 
 def remove_mixin_from_array(content: str, local_name: str) -> str:

@@ -186,7 +186,7 @@ class TestExtractMixinMembers:
 
     def test_all_keys_present(self):
         result = extract_mixin_members('export default {}')
-        assert set(result.keys()) == {'data', 'computed', 'methods'}
+        assert set(result.keys()) == {'data', 'computed', 'methods', 'watch'}
 
 
 # ---------------------------------------------------------------------------
