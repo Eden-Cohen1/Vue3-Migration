@@ -244,7 +244,13 @@ def generate_watch_call(
         opts = ", ".join(f"{k}: {v}" for k, v in options.items())
         options_str = f", {{ {opts} }}"
 
-    return f"{indent}watch({name}, ({params}) => {{ {rewritten} }}{options_str})"
+    lines = rewritten.splitlines()
+    if len(lines) <= 1:
+        return f"{indent}watch({name}, ({params}) => {{ {rewritten} }}{options_str})"
+
+    inner = indent + indent
+    body_lines = "\n".join(f"{inner}{line}" for line in lines)
+    return f"{indent}watch({name}, ({params}) => {{\n{body_lines}\n{indent}}}{options_str})"
 
 
 def generate_member_declaration(

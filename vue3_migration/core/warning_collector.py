@@ -163,6 +163,15 @@ def collect_mixin_warnings(
                 severity="warning",
             ))
 
+    # this-aliasing (const self = this)
+    warnings.extend(detect_this_aliasing(mixin_source, ""))
+
+    # Mixin options that can't be auto-migrated (props, inject, filters, etc.)
+    warnings.extend(detect_mixin_options(mixin_source, ""))
+
+    # Structural patterns (factory functions, nested mixins, render, etc.)
+    warnings.extend(detect_structural_patterns(mixin_source, ""))
+
     return warnings
 
 
