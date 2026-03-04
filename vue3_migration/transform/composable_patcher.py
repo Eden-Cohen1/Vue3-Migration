@@ -8,7 +8,9 @@ from ..core.warning_collector import (
 )
 from ..models import MixinMembers
 from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs
-from .lifecycle_converter import extract_hook_body
+from .lifecycle_converter import (
+    extract_hook_body, convert_lifecycle_hooks, get_required_imports, HOOK_MAP,
+)
 
 
 def _add_vue_import(content: str, name: str) -> str:
@@ -314,12 +316,31 @@ def generate_member_declaration(
     return f"{indent}// {name} — could not classify, migrate manually"
 
 
+def _missing_hooks(composable_src: str, hooks: list[str]) -> list[str]:
+    """Return lifecycle hooks not yet present in the composable source.
+
+    For wrapped hooks (onMounted etc.), checks for ``fnName(`` to detect calls.
+    Inline hooks (beforeCreate/created) are always considered missing since
+    there's no reliable wrapper to detect.
+    """
+    missing: list[str] = []
+    for hook in hooks:
+        vue3_fn = HOOK_MAP.get(hook)
+        if vue3_fn is None:
+            # beforeCreate/created — inline, always treat as missing
+            missing.append(hook)
+        elif f"{vue3_fn}(" not in composable_src:
+            missing.append(hook)
+    return missing
+
+
 def patch_composable(
     composable_content: str,
     mixin_content: str,
     not_returned: list[str],
     missing: list[str],
     mixin_members: MixinMembers,
+    lifecycle_hooks: list[str] | None = None,
     indent: str = "  ",
 ) -> str:
     """Orchestrate composable patching for both blocked cases.
@@ -329,6 +350,8 @@ def patch_composable(
     Step 1 (not_returned): Add keys to the return statement.
     Step 2 (missing): Generate declarations and insert before return,
                       then add the names to the return statement.
+    Step 3 (lifecycle_hooks): Convert and insert lifecycle hooks that the
+                              composable doesn't already contain.
 
     Returns modified composable content (unchanged if reactive() guard triggered).
     """
@@ -359,13 +382,26 @@ def patch_composable(
         content = add_members_to_composable(content, declarations)
         content = add_keys_to_return(content, missing)
 
+    # Step 3: add lifecycle hooks not yet present in the composable
+    if lifecycle_hooks:
+        hooks_to_add = _missing_hooks(content, lifecycle_hooks)
+        if hooks_to_add:
+            inline_lines, wrapped_lines = convert_lifecycle_hooks(
+                mixin_content, hooks_to_add, ref_members, plain_members, indent,
+            )
+            hook_lines = inline_lines + wrapped_lines
+            if hook_lines:
+                content = add_members_to_composable(content, hook_lines)
+            for imp in get_required_imports(hooks_to_add):
+                content = _add_vue_import(content, imp)
+
     # Apply this.$ auto-rewrites ($nextTick, $set, $delete)
     content, dollar_imports = rewrite_this_dollar_refs(content)
     for imp in dollar_imports:
         content = _add_vue_import(content, imp)
 
     # Collect warnings and inject inline comments + confidence header
-    warnings = collect_mixin_warnings(mixin_content, mixin_members, [])
+    warnings = collect_mixin_warnings(mixin_content, mixin_members, lifecycle_hooks or [])
     confidence = compute_confidence(content, warnings)
     content = inject_inline_warnings(content, warnings, confidence, len(warnings))
 

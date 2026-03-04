@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..models import FileChange, MigrationPlan
+from .markdown import build_warning_summary
 from .terminal import bold, dim, green
 
 
@@ -187,6 +188,13 @@ def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
         f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
         "",
     ]
+
+    # Prepend warning summary before diffs
+    if plan.entries_by_component:
+        summary = build_warning_summary(plan.entries_by_component, plan.composable_changes)
+        if summary:
+            sections.append(summary)
+            sections.append("")
 
     all_changes = [c for c in (plan.composable_changes + plan.component_changes) if c.has_changes]
 

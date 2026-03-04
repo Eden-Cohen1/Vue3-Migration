@@ -118,3 +118,99 @@ def test_generate_member_declaration_method_not_double_indented():
         assert indent_len == 4, (
             f"Expected 4-space indent, got {indent_len}: {repr(line)}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle hook patching
+# ---------------------------------------------------------------------------
+
+LOGGING_COMPOSABLE = (
+    "import { ref } from 'vue'\n\n"
+    "export function useLogging() {\n"
+    "  const logs = ref([])\n"
+    "\n"
+    "  function log(message) {\n"
+    "    logs.value.push({ message, time: Date.now() })\n"
+    "  }\n"
+    "\n"
+    "  return {\n"
+    "    logs,\n"
+    "    log,\n"
+    "  }\n"
+    "}\n"
+)
+
+LOGGING_MIXIN = (
+    "export default {\n"
+    "  data() { return { logs: [] } },\n"
+    "  methods: {\n"
+    "    log(message) { this.logs.push({ message, time: Date.now() }) },\n"
+    "  },\n"
+    "  created() {\n"
+    "    this.log('Component created')\n"
+    "  },\n"
+    "  mounted() {\n"
+    "    this.log('Component mounted')\n"
+    "  },\n"
+    "  beforeDestroy() {\n"
+    "    this.log('Component will be destroyed')\n"
+    "  },\n"
+    "}\n"
+)
+
+
+def test_patch_adds_lifecycle_hooks():
+    """patch_composable should add lifecycle hooks when lifecycle_hooks is passed."""
+    members = MixinMembers(data=["logs"], methods=["log"])
+    result = patch_composable(
+        LOGGING_COMPOSABLE, LOGGING_MIXIN,
+        not_returned=[], missing=[],
+        mixin_members=members,
+        lifecycle_hooks=["created", "mounted", "beforeDestroy"],
+    )
+    # Inline hook (created) body should be present
+    assert "log('Component created')" in result
+    # Wrapped hooks
+    assert "onMounted(" in result
+    assert "onBeforeUnmount(" in result
+    # Hooks before return
+    assert result.index("onMounted(") < result.index("return {")
+    # Vue imports added
+    assert "onMounted" in result.splitlines()[0] or any(
+        "onMounted" in l for l in result.splitlines() if "import" in l
+    )
+
+
+def test_patch_skips_existing_hooks():
+    """patch_composable should not duplicate hooks already in the composable."""
+    src = (
+        "import { ref, onMounted } from 'vue'\n\n"
+        "export function useX() {\n"
+        "  const a = ref(1)\n"
+        "\n"
+        "  onMounted(() => {\n"
+        "    console.log('already here')\n"
+        "  })\n"
+        "\n"
+        "  return { a }\n"
+        "}\n"
+    )
+    mixin = "export default { data() { return { a: 1 } }, mounted() { console.log('hi') } }"
+    members = MixinMembers(data=["a"])
+    result = patch_composable(
+        src, mixin,
+        not_returned=[], missing=[],
+        mixin_members=members,
+        lifecycle_hooks=["mounted"],
+    )
+    assert result.count("onMounted(") == 1
+
+
+def test_patch_no_hooks_param_unchanged():
+    """Without lifecycle_hooks param, patch_composable behaves as before."""
+    result = patch_composable(
+        LOGGING_COMPOSABLE, LOGGING_MIXIN,
+        not_returned=[], missing=[],
+        mixin_members=MixinMembers(data=["logs"], methods=["log"]),
+    )
+    assert "onMounted" not in result

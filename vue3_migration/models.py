@@ -178,6 +178,7 @@ class MigrationPlan:
     """All planned file changes for a project-wide auto-migrate run."""
     component_changes: list["FileChange"] = field(default_factory=list)
     composable_changes: list["FileChange"] = field(default_factory=list)
+    entries_by_component: list[tuple[Path, list["MixinEntry"]]] = field(default_factory=list)
 
     @property
     def all_changes(self) -> list["FileChange"]:

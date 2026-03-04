@@ -74,14 +74,26 @@ def test_no_composable_component_gets_generated_composable(project):
     assert no_comp is not None and no_comp.has_changes
     assert "useNotification" in no_comp.new_content
 
-def test_lifecycle_hooks_converted(project):
+def test_lifecycle_hooks_patched_into_composable(project):
+    """Lifecycle hooks are patched into the composable, not injected into setup()."""
     with patch("builtins.print"):
         plan = run(project, _make_config(project))
+    # useLogging composable should have lifecycle hooks patched in
+    logging = next(
+        (c for c in plan.composable_changes if "useLogging" in str(c.file_path)), None
+    )
+    assert logging is not None
+    assert logging.has_changes
+    assert "onMounted(" in logging.new_content
+    assert "onBeforeUnmount(" in logging.new_content
+    # LifecycleHooks.vue component should NOT have lifecycle hooks in setup
     lh = next(
-        (c for c in plan.component_changes if "LifecycleHooks" in str(c.file_path)), None
+        (c for c in plan.component_changes
+         if str(c.file_path).endswith("LifecycleHooks.vue")
+         and "All" not in str(c.file_path)), None
     )
     assert lh is not None
-    assert "onMounted" in lh.new_content
+    assert "onMounted" not in lh.new_content
 
 def test_no_file_io_during_run(project):
     """run() must not write any files."""

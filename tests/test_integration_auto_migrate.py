@@ -48,11 +48,20 @@ def test_fully_covered_component_migrated(project):
     assert "selectionMixin" not in fc.new_content
 
 
-def test_lifecycle_hooks_component_has_on_mounted(project):
+def test_lifecycle_hooks_patched_into_composable(project):
+    """Lifecycle hooks are patched into the composable, not in the component."""
     plan = _run(project)
-    lh = next((c for c in plan.component_changes if "LifecycleHooks" in str(c.file_path)), None)
+    logging = next((c for c in plan.composable_changes if "useLogging" in str(c.file_path)), None)
+    assert logging is not None
+    assert logging.has_changes
+    assert "onMounted(" in logging.new_content
+    assert "onBeforeUnmount(" in logging.new_content
+    # Component should NOT have lifecycle hooks
+    lh = next((c for c in plan.component_changes
+               if str(c.file_path).endswith("LifecycleHooks.vue")
+               and "All" not in str(c.file_path)), None)
     assert lh is not None
-    assert "onMounted" in lh.new_content
+    assert "onMounted" not in lh.new_content
 
 
 def test_no_composable_component_gets_generated_composable(project):
@@ -70,10 +79,10 @@ def test_write_all_changes_removes_mixins(project):
     plan = _run(project)
     for change in plan.all_changes:
         if change.has_changes:
-            change.file_path.write_text(change.new_content)
+            change.file_path.write_text(change.new_content, encoding="utf-8")
     fc_content = next(
         f for f in (project / "src" / "components").rglob("FullyCovered.vue")
-    ).read_text()
+    ).read_text(encoding="utf-8")
     assert "mixins:" not in fc_content
     assert "useSelection" in fc_content
 
@@ -114,15 +123,15 @@ def test_multi_mixin_has_all_composable_imports(project):
         assert f"import {{ {fn_name} }}" in mm.new_content, f"Missing import for {fn_name}"
 
 
-def test_vue_lifecycle_imports_consolidated(project):
-    """Components with multiple lifecycle hooks should have a single `from 'vue'` import."""
+def test_lifecycle_hooks_not_in_component_vue_imports(project):
+    """LifecycleHooks.vue should not import lifecycle hooks from vue (they're in the composable)."""
     plan = _run(project)
     lh = next((c for c in plan.component_changes
                if str(c.file_path).endswith("LifecycleHooks.vue")
                and "All" not in str(c.file_path)), None)
     assert lh is not None
-    vue_imports = [l for l in lh.new_content.splitlines() if "from 'vue'" in l]
-    assert len(vue_imports) == 1, f"Expected 1 vue import line, got {len(vue_imports)}: {vue_imports}"
+    for hook_import in ["onMounted", "onBeforeUnmount", "onBeforeMount"]:
+        assert hook_import not in lh.new_content, f"{hook_import} should not be in component"
 
 
 def test_overridden_members_excluded_from_setup_destructure(project):
@@ -140,3 +149,12 @@ def test_overridden_members_excluded_from_setup_destructure(project):
     assert setup_line is not None, "Expected const { ... } = useSelection() in setup()"
     assert "selectionMode" not in setup_line, "selectionMode is overridden, should not be destructured"
     assert "clearSelection" not in setup_line, "clearSelection is overridden, should not be destructured"
+
+
+def test_entries_by_component_populated(project):
+    """MigrationPlan.entries_by_component should be populated with mixin entries."""
+    plan = _run(project)
+    assert plan.entries_by_component, "entries_by_component should not be empty"
+    for comp_path, entries in plan.entries_by_component:
+        assert comp_path.suffix == ".vue"
+        assert len(entries) > 0

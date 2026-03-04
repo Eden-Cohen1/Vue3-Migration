@@ -4,7 +4,7 @@ Markdown report generation for migration analysis results.
 
 from pathlib import Path
 
-from ..models import ConfidenceLevel, MixinEntry
+from ..models import ConfidenceLevel, FileChange, MixinEntry
 from .terminal import md_green, md_yellow
 
 
@@ -344,37 +344,97 @@ def build_audit_report(
     return "\n".join(lines)
 
 
-def build_warnings_section(
-    entries: list[MixinEntry],
-    confidence_map: dict[str, ConfidenceLevel],
+def build_warning_summary(
+    entries_by_component: "list[tuple[Path, list[MixinEntry]]]",
+    composable_changes: "list[FileChange] | None" = None,
 ) -> str:
-    """Build a markdown Migration Warnings section.
+    """Build a markdown Migration Summary checklist for the diff report.
 
-    Groups warnings by mixin, shows confidence per composable,
-    and a table of Issue | Action Required for each warning.
+    Groups warnings by mixin/composable with confidence levels, severity
+    icons, and actionable checkboxes. De-duplicates entries that share the
+    same mixin_stem (a mixin used by multiple components).
     """
-    if not entries:
+    from ..core.warning_collector import compute_confidence
+
+    # De-duplicate entries by mixin_stem (keep first occurrence)
+    seen_stems: set[str] = set()
+    unique_entries: list[MixinEntry] = []
+    for _comp_path, entry_list in entries_by_component:
+        for entry in entry_list:
+            if entry.mixin_stem not in seen_stems:
+                seen_stems.add(entry.mixin_stem)
+                unique_entries.append(entry)
+
+    if not unique_entries:
         return ""
 
-    lines: list[str] = []
-    w = lines.append
+    # Build a lookup of composable content by file path
+    composable_content_map: dict[Path, str] = {}
+    if composable_changes:
+        for change in composable_changes:
+            if change.has_changes:
+                composable_content_map[change.file_path] = change.new_content
 
-    w("## Migration Warnings\n")
-
-    for entry in entries:
-        stem = entry.mixin_stem
-        confidence = confidence_map.get(stem)
-        conf_str = confidence.value if confidence else "?"
-
-        w(f"### {stem} — Confidence: **{conf_str}**\n")
-
-        if entry.warnings:
-            w("| Issue | Action Required |")
-            w("|-------|----------------|")
-            for warning in entry.warnings:
-                w(f"| {warning.category}: {warning.message} | {warning.action_required} |")
-            w("")
+    # Compute confidence for each entry
+    confidence_map: dict[str, ConfidenceLevel] = {}
+    for entry in unique_entries:
+        comp_source = ""
+        if entry.composable and entry.composable.file_path in composable_content_map:
+            comp_source = composable_content_map[entry.composable.file_path]
+        if comp_source:
+            confidence_map[entry.mixin_stem] = compute_confidence(comp_source, entry.warnings)
+        elif any(w.severity == "error" for w in entry.warnings):
+            confidence_map[entry.mixin_stem] = ConfidenceLevel.LOW
+        elif entry.warnings:
+            confidence_map[entry.mixin_stem] = ConfidenceLevel.MEDIUM
         else:
-            w("No warnings detected.\n")
+            confidence_map[entry.mixin_stem] = ConfidenceLevel.HIGH
+
+    # Sort: LOW first, then MEDIUM, then HIGH (most urgent at top)
+    _CONF_ORDER = {ConfidenceLevel.LOW: 0, ConfidenceLevel.MEDIUM: 1, ConfidenceLevel.HIGH: 2}
+    unique_entries.sort(key=lambda e: _CONF_ORDER.get(confidence_map[e.mixin_stem], 2))
+
+    # Count totals
+    all_warnings = [w for e in unique_entries for w in e.warnings]
+    error_count = sum(1 for w in all_warnings if w.severity == "error")
+    warning_count = sum(1 for w in all_warnings if w.severity == "warning")
+    info_count = sum(1 for w in all_warnings if w.severity == "info")
+
+    lines: list[str] = []
+    a = lines.append
+
+    a("## Migration Summary\n")
+
+    # Overview line
+    parts = [f"**{len(unique_entries)} composable{'s' if len(unique_entries) != 1 else ''}**"]
+    if error_count:
+        parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
+    if warning_count:
+        parts.append(f"{warning_count} warning{'s' if warning_count != 1 else ''}")
+    if info_count:
+        parts.append(f"{info_count} info")
+    a(" | ".join(parts))
+    a("")
+    a("---\n")
+
+    # Per-mixin sections
+    _SEVERITY_ICON = {"error": "\u274c", "warning": "\u26a0\ufe0f", "info": "\u2139\ufe0f"}
+    _CONF_ICON = {ConfidenceLevel.LOW: "\u274c", ConfidenceLevel.MEDIUM: "\u26a0\ufe0f", ConfidenceLevel.HIGH: "\u2705"}
+
+    for entry in unique_entries:
+        conf = confidence_map[entry.mixin_stem]
+        icon = _CONF_ICON.get(conf, "\u2753")
+
+        a(f"### {icon} {entry.mixin_stem} \u2014 {conf.value} confidence\n")
+
+        if not entry.warnings:
+            a("No manual changes needed.\n")
+            continue
+
+        for warning in entry.warnings:
+            sev_icon = _SEVERITY_ICON.get(warning.severity, "\u2753")
+            a(f"- [ ] **{warning.category}** ({warning.severity}): {warning.message}")
+            a(f"  \u2192 {warning.action_required}")
+        a("")
 
     return "\n".join(lines)

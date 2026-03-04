@@ -787,10 +787,10 @@ export default {
 # Step 6: Markdown report warnings section tests
 # ---------------------------------------------------------------------------
 
-from vue3_migration.reporting.markdown import build_warnings_section
+from vue3_migration.reporting.markdown import build_warning_summary
 
 
-class TestBuildWarningsSection:
+class TestBuildWarningSummary:
     def _make_entry(self, stem, warnings=None):
         entry = MixinEntry(
             local_name=stem,
@@ -802,19 +802,20 @@ class TestBuildWarningsSection:
             entry.warnings = warnings
         return entry
 
+    def _wrap(self, *entries):
+        """Wrap entries as entries_by_component format: list of (Path, [entries])."""
+        from pathlib import Path
+        return [(Path("fake/Comp.vue"), list(entries))]
+
     def test_renders_section_header(self):
         w = MigrationWarning("auth", "this.$router", "msg", "action", None, "warning")
         entry = self._make_entry("authMixin", [w])
-        result = build_warnings_section(
-            [entry], {"authMixin": ConfidenceLevel.MEDIUM}
-        )
-        assert "## Migration Warnings" in result
+        result = build_warning_summary(self._wrap(entry))
+        assert "## Migration Summary" in result
 
     def test_shows_confidence_per_mixin(self):
         entry = self._make_entry("authMixin")
-        result = build_warnings_section(
-            [entry], {"authMixin": ConfidenceLevel.HIGH}
-        )
+        result = build_warning_summary(self._wrap(entry))
         assert "HIGH" in result
         assert "authMixin" in result
 
@@ -826,22 +827,59 @@ class TestBuildWarningsSection:
             "this.$router.push('/')", "warning",
         )
         entry = self._make_entry("authMixin", [w])
-        result = build_warnings_section(
-            [entry], {"authMixin": ConfidenceLevel.MEDIUM}
-        )
+        result = build_warning_summary(self._wrap(entry))
         assert "this.$router" in result
         assert "Use useRouter()" in result
 
     def test_empty_entries_returns_empty(self):
-        result = build_warnings_section([], {})
+        result = build_warning_summary([])
         assert result == ""
 
-    def test_no_warnings_still_shows_confidence(self):
+    def test_no_warnings_shows_high_confidence(self):
         entry = self._make_entry("authMixin")
-        result = build_warnings_section(
-            [entry], {"authMixin": ConfidenceLevel.HIGH}
-        )
+        result = build_warning_summary(self._wrap(entry))
         assert "HIGH" in result
+        assert "No manual changes needed" in result
+
+    def test_checklist_format(self):
+        w = MigrationWarning("auth", "this.$router", "msg", "action", None, "warning")
+        entry = self._make_entry("authMixin", [w])
+        result = build_warning_summary(self._wrap(entry))
+        assert "- [ ]" in result
+        assert "\u2192" in result
+
+    def test_overview_counts(self):
+        w1 = MigrationWarning("auth", "this.$router", "msg", "act", None, "error")
+        w2 = MigrationWarning("auth", "this.$store", "msg", "act", None, "warning")
+        entry = self._make_entry("authMixin", [w1, w2])
+        result = build_warning_summary(self._wrap(entry))
+        assert "1 error" in result
+        assert "1 warning" in result
+
+    def test_low_confidence_before_high(self):
+        w = MigrationWarning("low", "remaining-this", "msg", "act", None, "error")
+        low_entry = self._make_entry("lowMixin", [w])
+        high_entry = self._make_entry("highMixin")
+        result = build_warning_summary(self._wrap(low_entry, high_entry))
+        low_pos = result.index("lowMixin")
+        high_pos = result.index("highMixin")
+        assert low_pos < high_pos
+
+    def test_deduplication_by_mixin_stem(self):
+        from pathlib import Path
+        entry = self._make_entry("sharedMixin")
+        entries_by_component = [
+            (Path("fake/A.vue"), [entry]),
+            (Path("fake/B.vue"), [self._make_entry("sharedMixin")]),
+        ]
+        result = build_warning_summary(entries_by_component)
+        assert result.count("sharedMixin") == 1  # header appears once
+
+    def test_severity_icons(self):
+        w = MigrationWarning("auth", "ext", "msg", "act", None, "error")
+        entry = self._make_entry("authMixin", [w])
+        result = build_warning_summary(self._wrap(entry))
+        assert "\u274c" in result  # error icon
 
 
 # ---------------------------------------------------------------------------

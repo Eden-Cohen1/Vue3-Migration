@@ -28,13 +28,10 @@ from ..transform.composable_generator import (
 )
 from ..transform.composable_patcher import patch_composable
 from ..transform.injector import (
-    add_composable_import, add_vue_import, inject_setup,
+    add_composable_import, inject_setup,
     remove_import_line, remove_mixin_from_array,
 )
-from ..transform.lifecycle_converter import (
-    convert_lifecycle_hooks, find_lifecycle_referenced_members,
-    get_required_imports, HOOK_MAP,
-)
+from ..transform.lifecycle_converter import find_lifecycle_referenced_members
 
 
 def _analyze_mixin_silent(
@@ -155,12 +152,17 @@ def plan_composable_patches(
 
     for _comp_path, entries in entries_by_component:
         for entry in entries:
-            if entry.status not in (
-                MigrationStatus.BLOCKED_NOT_RETURNED,
-                MigrationStatus.BLOCKED_MISSING_MEMBERS,
-            ):
+            if not entry.composable:
                 continue
-            if not entry.composable or not entry.classification:
+            has_blocked = (
+                entry.status in (
+                    MigrationStatus.BLOCKED_NOT_RETURNED,
+                    MigrationStatus.BLOCKED_MISSING_MEMBERS,
+                )
+                and entry.classification
+            )
+            has_hooks = bool(entry.lifecycle_hooks)
+            if not has_blocked and not has_hooks:
                 continue
             comp_path = entry.composable.file_path
             if comp_path not in patch_map:
@@ -168,12 +170,18 @@ def plan_composable_patches(
                     "content": comp_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n'),
                     "not_returned": set(),
                     "missing": set(),
+                    "lifecycle_hooks": [],
                     "mixin_members": entry.members,
                     "mixin_content": entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n'),
                 }
             rec = patch_map[comp_path]
-            rec["not_returned"].update(entry.classification.truly_not_returned)
-            rec["missing"].update(entry.classification.truly_missing)
+            if has_blocked:
+                rec["not_returned"].update(entry.classification.truly_not_returned)
+                rec["missing"].update(entry.classification.truly_missing)
+            if has_hooks:
+                for h in entry.lifecycle_hooks:
+                    if h not in rec["lifecycle_hooks"]:
+                        rec["lifecycle_hooks"].append(h)
 
     changes = []
     for comp_path, rec in patch_map.items():
@@ -184,12 +192,15 @@ def plan_composable_patches(
             not_returned=list(rec["not_returned"]),
             missing=list(rec["missing"]),
             mixin_members=rec["mixin_members"],
+            lifecycle_hooks=rec["lifecycle_hooks"] or None,
         )
         change_descs = []
         if rec["not_returned"]:
             change_descs.append(f"Added to return: {', '.join(sorted(rec['not_returned']))}")
         if rec["missing"]:
             change_descs.append(f"Added declarations: {', '.join(sorted(rec['missing']))}")
+        if rec["lifecycle_hooks"]:
+            change_descs.append(f"Added lifecycle hooks: {', '.join(rec['lifecycle_hooks'])}")
         changes.append(FileChange(
             file_path=comp_path,
             original_content=original,
@@ -247,37 +258,6 @@ def plan_new_composables(
     return changes
 
 
-def _get_composable_content(
-    composable: ComposableCoverage,
-    patched_content: dict[Path, str],
-    generated_by_fn_name: dict[str, FileChange],
-) -> str | None:
-    """Get the final composable source (patched, generated, or from disk)."""
-    if composable.file_path in patched_content:
-        return patched_content[composable.file_path]
-    if composable.fn_name in generated_by_fn_name:
-        return generated_by_fn_name[composable.fn_name].new_content
-    if composable.file_path.exists():
-        return composable.file_path.read_text(errors="ignore")
-    return None
-
-
-def _composable_has_hooks(composable_src: str, hooks: list[str]) -> bool:
-    """Check if the composable already contains Vue 3 lifecycle calls for the given hooks.
-
-    Looks for actual calls like ``onMounted(`` rather than just the name,
-    to avoid false positives from import lines.
-    """
-    for hook in hooks:
-        vue3_fn = HOOK_MAP.get(hook)
-        if vue3_fn is None:
-            # beforeCreate/created → inlined directly, no wrapper to detect
-            continue
-        if f"{vue3_fn}(" not in composable_src:
-            return False
-    return True
-
-
 def plan_component_injections(
     entries_by_component: list[tuple[Path, list[MixinEntry]]],
     composable_patches: list[FileChange],
@@ -285,10 +265,9 @@ def plan_component_injections(
 ) -> list[FileChange]:
     """Plan all component setup() injections.
 
-    Lifecycle hooks belong in the composable. If a newly generated composable
-    already contains them, they are NOT duplicated into setup(). For pre-existing
-    composables that lack lifecycle hooks, the hooks are still injected into
-    setup() as a fallback.
+    Lifecycle hooks live in the composable (generated or patched), never in
+    setup(). Members referenced in lifecycle hook bodies are included in the
+    composable destructure so the hooks can access them.
 
     Re-classifies entries whose composables were patched to account for
     the updated return_keys and identifiers.
@@ -379,15 +358,13 @@ def plan_component_injections(
                 content = new
 
         composable_calls = []
-        all_inline_lines: list[str] = []
-        all_lifecycle_calls: list[str] = []
 
         for entry in ready_entries:
             injectable = list(entry.classification.injectable if entry.classification else entry.used_members)
-            mixin_content = None
-            lifecycle_members: list[str] = []
 
-            # Augment injectable with members referenced in lifecycle hook bodies
+            # Augment injectable with members referenced in lifecycle hook bodies —
+            # the composable contains the hooks and needs these members destructured.
+            lifecycle_members: list[str] = []
             if entry.lifecycle_hooks and entry.composable:
                 mixin_content = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
                 lifecycle_members = find_lifecycle_referenced_members(
@@ -411,37 +388,11 @@ def plan_component_injections(
             if injectable and entry.composable:
                 composable_calls.append((entry.composable.fn_name, injectable))
 
-            # Lifecycle hooks: only inject into setup() if the composable does
-            # NOT already contain them (e.g. pre-existing composable without hooks).
-            # Newly generated composables include hooks, so we skip for those.
-            if entry.lifecycle_hooks and entry.composable:
-                composable_src = _get_composable_content(
-                    entry.composable, patched_content, generated_by_fn_name,
-                )
-                hooks_in_composable = composable_src is not None and _composable_has_hooks(
-                    composable_src, entry.lifecycle_hooks,
-                )
-                if not hooks_in_composable:
-                    if mixin_content is None:
-                        mixin_content = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
-                    ref_m = entry.members.data + entry.members.computed + entry.members.watch
-                    plain_m = entry.members.methods
-                    inline, wrapped = convert_lifecycle_hooks(
-                        mixin_content, entry.lifecycle_hooks, ref_m, plain_m,
-                        config.indent + config.indent,
-                    )
-                    all_inline_lines.extend(inline)
-                    all_lifecycle_calls.extend(wrapped)
-                    for hook_import in get_required_imports(entry.lifecycle_hooks):
-                        content = add_vue_import(content, hook_import)
-
-        if composable_calls or all_inline_lines or all_lifecycle_calls:
+        if composable_calls:
             new = inject_setup(
                 content,
                 composable_calls,
                 config.indent,
-                lifecycle_calls=all_lifecycle_calls or None,
-                inline_setup_lines=all_inline_lines or None,
             )
             if new != content:
                 fn_names = [c[0] for c in composable_calls]
@@ -482,6 +433,7 @@ def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     return MigrationPlan(
         component_changes=component_changes,
         composable_changes=composable_changes,
+        entries_by_component=entries,
     )
 
 
@@ -515,4 +467,5 @@ def run_scoped(
     return MigrationPlan(
         component_changes=component_changes,
         composable_changes=composable_changes,
+        entries_by_component=entries,
     )
