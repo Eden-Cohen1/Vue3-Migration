@@ -18,13 +18,13 @@ VUE_LIFECYCLE_HOOKS = [
 
 
 def extract_mixin_members(source: str) -> dict[str, list[str]]:
-    """Extract data, computed, and methods property names from a mixin.
+    """Extract data, computed, methods, and watch property names from a mixin.
 
     Returns:
-        Dict with keys 'data', 'computed', 'methods', each mapping to
+        Dict with keys 'data', 'computed', 'methods', 'watch', each mapping to
         a list of property name strings.
     """
-    members: dict[str, list[str]] = {"data": [], "computed": [], "methods": []}
+    members: dict[str, list[str]] = {"data": [], "computed": [], "methods": [], "watch": []}
 
     # data() { return { ... } }
     data_match = re.search(r"\bdata\s*\(\s*\)\s*(?::\s*\w+(?:<[^>]*>)?\s*)?\{", source)
@@ -35,8 +35,8 @@ def extract_mixin_members(source: str) -> dict[str, list[str]]:
             brace_pos = ret.start() + ret.group().index("{")
             members["data"] = extract_property_names(extract_brace_block(body, brace_pos))
 
-    # computed: { ... } and methods: { ... }
-    for section in ("computed", "methods"):
+    # computed: { ... }, methods: { ... }, watch: { ... }
+    for section in ("computed", "methods", "watch"):
         match = re.search(rf"\b{section}\s*:\s*\{{", source)
         if match:
             members[section] = extract_property_names(
