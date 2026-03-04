@@ -48,7 +48,7 @@ class MixinMembers:
 
     @property
     def all_names(self) -> list[str]:
-        return self.data + self.computed + self.methods + self.watch
+        return list(dict.fromkeys(self.data + self.computed + self.methods + self.watch))
 
 
 @dataclass
