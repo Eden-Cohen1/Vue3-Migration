@@ -560,6 +560,45 @@ def detect_name_collisions(
     return warnings
 
 
+def detect_missing_cleanup(composable_source: str) -> list[str]:
+    """Detect addEventListener without matching removeEventListener cleanup.
+
+    Also detects setInterval/setTimeout without corresponding clear calls.
+    Returns a list of warning message strings.
+    """
+    warnings: list[str] = []
+
+    # Check for addEventListener in onMounted without removeEventListener in onBeforeUnmount
+    has_add_listener = bool(re.search(r'addEventListener\s*\(', composable_source))
+    has_remove_listener = bool(re.search(r'removeEventListener\s*\(', composable_source))
+    has_on_mounted = bool(re.search(r'onMounted\s*\(', composable_source))
+    has_on_before_unmount = bool(re.search(r'onBeforeUnmount\s*\(', composable_source))
+
+    if has_add_listener and has_on_mounted:
+        if not has_remove_listener or not has_on_before_unmount:
+            warnings.append(
+                "MIGRATION: onMounted adds event listener but no corresponding "
+                "onBeforeUnmount cleanup was generated."
+            )
+
+    # Check for setInterval/setTimeout without cleanup
+    has_set_interval = bool(re.search(r'setInterval\s*\(', composable_source))
+    has_clear_interval = bool(re.search(r'clearInterval\s*\(', composable_source))
+    if has_set_interval and not has_clear_interval:
+        warnings.append(
+            "MIGRATION: setInterval used but no clearInterval cleanup detected."
+        )
+
+    has_set_timeout = bool(re.search(r'setTimeout\s*\(', composable_source))
+    has_clear_timeout = bool(re.search(r'clearTimeout\s*\(', composable_source))
+    if has_set_timeout and not has_clear_timeout:
+        warnings.append(
+            "MIGRATION: setTimeout used but no clearTimeout cleanup detected."
+        )
+
+    return warnings
+
+
 def _has_unbalanced_braces(source: str) -> bool:
     """Check if braces {} are unbalanced in the source."""
     depth = 0
