@@ -423,3 +423,189 @@ def test_add_keys_multiline_produces_valid_syntax():
         stripped = line.strip()
         if stripped:
             assert stripped.endswith(','), f"Line missing comma: '{stripped}'"
+
+
+# ---------------------------------------------------------------------------
+# Bug 1: add_keys_to_return destroys closing braces
+# ---------------------------------------------------------------------------
+
+COMPOSABLE_TWO_CLOSING_BRACES = (
+    "export function usePermission() {\n"
+    "  const userPermissions = ref([])\n"
+    "\n"
+    "  function requestPermission(action) {\n"
+    "    userPermissions.value.push(action)\n"
+    "  }\n"
+    "\n"
+    "  return {\n"
+    "    userPermissions,\n"
+    "    requestPermission\n"
+    "  }\n"
+    "}\n"
+)
+
+
+def test_add_keys_preserves_both_closing_braces():
+    """Adding keys must preserve both the return } and the function }."""
+    result = add_keys_to_return(COMPOSABLE_TWO_CLOSING_BRACES, ["canDelete"])
+    lines = result.strip().splitlines()
+    # Must have exactly 2 closing-brace-only lines at the end
+    tail = [l.strip() for l in lines[-2:]]
+    assert tail == ["}", "}"], f"Expected ['}}', '}}'], got {tail}"
+
+
+def test_add_keys_correct_indentation():
+    """New keys must have the same indentation as existing members (4 spaces)."""
+    result = add_keys_to_return(COMPOSABLE_TWO_CLOSING_BRACES, ["canDelete"])
+    cd_line = next(l for l in result.splitlines() if "canDelete" in l)
+    indent = len(cd_line) - len(cd_line.lstrip())
+    assert indent == 4, f"Expected 4-space indent, got {indent}: {repr(cd_line)}"
+
+
+def test_add_keys_no_blank_line_before_close():
+    """There should be no blank line between last member and closing }."""
+    result = add_keys_to_return(COMPOSABLE_TWO_CLOSING_BRACES, ["canDelete"])
+    lines = result.splitlines()
+    close_idx = next(i for i in range(len(lines) - 1, -1, -1) if lines[i].strip() == "}")
+    prev_line = lines[close_idx - 1].strip()
+    assert prev_line != "", f"Blank line before closing brace: {lines[close_idx-2:close_idx+1]}"
+
+
+# ---------------------------------------------------------------------------
+# Bug 2: add_members_to_composable inserts at nested return
+# ---------------------------------------------------------------------------
+
+COMPOSABLE_WITH_NESTED_RETURN = (
+    "import { ref, computed } from 'vue'\n"
+    "\n"
+    "export function useChart() {\n"
+    "  const chartData = ref(null)\n"
+    "  const isChartReady = ref(false)\n"
+    "\n"
+    "  const formattedChartData = computed(() => {\n"
+    "    if (!chartData.value) return null\n"
+    "    return {\n"
+    "      labels: chartData.value.labels || [],\n"
+    "      datasets: chartData.value.datasets || []\n"
+    "    }\n"
+    "  })\n"
+    "\n"
+    "  function updateChart() {\n"
+    "    isChartReady.value = true\n"
+    "  }\n"
+    "\n"
+    "  return {\n"
+    "    chartData,\n"
+    "    isChartReady,\n"
+    "    formattedChartData,\n"
+    "    updateChart,\n"
+    "  }\n"
+    "}\n"
+)
+
+
+def test_add_members_uses_last_return_not_nested():
+    """Members must be inserted before the top-level return, not a nested one."""
+    hook = "  onMounted(() => {\n    resizeChart()\n  })"
+    result = add_members_to_composable(COMPOSABLE_WITH_NESTED_RETURN, [hook])
+    # onMounted must come AFTER the computed block, before the final return
+    assert "onMounted" in result
+    computed_end = result.index("})")  # end of computed(() => { ... })
+    onmounted_pos = result.index("onMounted")
+    last_return_pos = result.rfind("return {")
+    assert onmounted_pos > computed_end, "onMounted should be after computed block"
+    assert onmounted_pos < last_return_pos, "onMounted should be before final return"
+
+
+# ---------------------------------------------------------------------------
+# Bug 3: Lifecycle hooks reference undefined methods
+# ---------------------------------------------------------------------------
+
+MODAL_COMPOSABLE = (
+    "import { ref, computed } from 'vue'\n\n"
+    "export function useModal() {\n"
+    "  const isOpen = ref(false)\n"
+    "  const modalData = ref(null)\n"
+    "  const modalOptions = ref({})\n\n"
+    "  const modalTitle = computed(() => modalOptions.value.title || 'Modal')\n"
+    "  const hasData = computed(() => modalData.value !== null)\n\n"
+    "  function openModal(data, options) {\n"
+    "    modalData.value = data\n"
+    "    modalOptions.value = options || {}\n"
+    "    isOpen.value = true\n"
+    "  }\n\n"
+    "  function closeModal() {\n"
+    "    isOpen.value = false\n"
+    "    modalData.value = null\n"
+    "    modalOptions.value = {}\n"
+    "  }\n\n"
+    "  function confirmModal() {\n"
+    "    const callback = modalOptions.value.onConfirm\n"
+    "    if (typeof callback === 'function') {\n"
+    "      callback(modalData.value)\n"
+    "    }\n"
+    "    closeModal()\n"
+    "  }\n\n"
+    "  return {\n"
+    "    isOpen,\n"
+    "    modalData,\n"
+    "    modalOptions,\n"
+    "    modalTitle,\n"
+    "    hasData,\n"
+    "    openModal,\n"
+    "    closeModal,\n"
+    "    confirmModal,\n"
+    "  }\n"
+    "}\n"
+)
+
+MODAL_MIXIN = (
+    "export default {\n"
+    "  data() {\n"
+    "    return { isOpen: false, modalData: null, modalOptions: {} }\n"
+    "  },\n"
+    "  computed: {\n"
+    "    modalTitle() { return this.modalOptions.title || 'Modal' },\n"
+    "    hasData() { return !!this.modalData },\n"
+    "  },\n"
+    "  methods: {\n"
+    "    openModal(data, options) { this.modalData = data; this.isOpen = true },\n"
+    "    closeModal() { this.isOpen = false; this.modalData = null },\n"
+    "    confirmModal() { this.closeModal() },\n"
+    "    _handleEscapeKey(event) {\n"
+    "      if (event.key === 'Escape' && this.isOpen) {\n"
+    "        this.closeModal()\n"
+    "      }\n"
+    "    },\n"
+    "  },\n"
+    "  mounted() {\n"
+    "    document.addEventListener('keydown', this._handleEscapeKey)\n"
+    "  },\n"
+    "  beforeUnmount() {\n"
+    "    document.removeEventListener('keydown', this._handleEscapeKey)\n"
+    "  },\n"
+    "}\n"
+)
+
+
+def test_patch_generates_methods_referenced_by_lifecycle_hooks():
+    """When lifecycle hooks reference a mixin method not in the composable,
+    the patcher must generate that method before adding the hooks."""
+    members = MixinMembers(
+        data=["isOpen", "modalData", "modalOptions"],
+        computed=["modalTitle", "hasData"],
+        methods=["openModal", "closeModal", "confirmModal", "_handleEscapeKey"],
+    )
+    result = patch_composable(
+        MODAL_COMPOSABLE, MODAL_MIXIN,
+        not_returned=[], missing=[],
+        mixin_members=members,
+        lifecycle_hooks=["mounted", "beforeUnmount"],
+    )
+    assert "function _handleEscapeKey" in result, (
+        "_handleEscapeKey should be generated since lifecycle hooks reference it"
+    )
+    assert "onMounted(" in result
+    assert "onBeforeUnmount(" in result
+    # _handleEscapeKey must be defined BEFORE onMounted uses it
+    assert result.index("function _handleEscapeKey") < result.index("onMounted(")

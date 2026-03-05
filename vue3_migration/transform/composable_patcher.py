@@ -10,6 +10,7 @@ from ..models import MixinMembers
 from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs
 from .lifecycle_converter import (
     extract_hook_body, convert_lifecycle_hooks, get_required_imports, HOOK_MAP,
+    find_lifecycle_referenced_members,
 )
 
 
@@ -138,16 +139,22 @@ def add_keys_to_return(content: str, keys: list[str]) -> str:
             if stripped and not stripped.startswith('}'):
                 member_indent = line[:len(line) - len(stripped)]
                 break
-        # Ensure the last existing member has a trailing comma
-        before_close = content[:close_pos]
-        temp = before_close.rstrip()
-        if temp and temp[-1] not in (',', '{'):
-            before_close = temp + ',' + before_close[len(temp):]
-            close_pos += 1
 
-        # Insert new keys before the closing }
-        new_key_lines = "".join(f"{member_indent}{k},\n" for k in new_keys)
-        return before_close + new_key_lines + content[close_pos:]
+        # Strip trailing whitespace before closing }, add comma if needed
+        before_close = content[:close_pos].rstrip()
+        if before_close and before_close[-1] not in (',', '{'):
+            before_close += ','
+
+        # Detect the closing brace's indentation from the original content
+        line_start_of_close = content.rfind('\n', 0, close_pos)
+        if line_start_of_close >= 0:
+            close_indent = content[line_start_of_close + 1:close_pos]
+        else:
+            close_indent = ''
+
+        # Insert new keys between last member and closing }
+        new_key_lines = "\n".join(f"{member_indent}{k}," for k in new_keys)
+        return before_close + "\n" + new_key_lines + "\n" + close_indent + content[close_pos:]
     else:
         # Single-line return: check if adding keys would make it too long
         # Extract existing keys from the return block content
@@ -178,9 +185,10 @@ def add_members_to_composable(content: str, member_lines: list[str]) -> str:
     """
     # Normalize CRLF (R-7)
     content = content.replace('\r\n', '\n').replace('\r', '\n')
-    m = re.search(r'\n([ \t]*)\breturn\s*\{', content)
-    if not m:
+    matches = list(re.finditer(r'\n([ \t]*)\breturn\s*\{', content))
+    if not matches:
         return content
+    m = matches[-1]
     existing_ids = set(extract_all_identifiers(content))
     lines_to_add = []
     for line in member_lines:
@@ -538,6 +546,35 @@ def patch_composable(
     if lifecycle_hooks:
         hooks_to_add = _missing_hooks(content, lifecycle_hooks)
         if hooks_to_add:
+            # Step 3a: Find mixin members referenced inside lifecycle hook bodies
+            # that are not yet in the composable (e.g. _handleEscapeKey).
+            all_member_names = (
+                mixin_members.data + mixin_members.computed
+                + mixin_members.methods + mixin_members.watch
+            )
+            lifecycle_deps = find_lifecycle_referenced_members(
+                mixin_content, hooks_to_add, all_member_names,
+            )
+            existing_ids = set(extract_all_identifiers(content))
+            missing_deps = [m for m in lifecycle_deps if m not in existing_ids]
+            if missing_deps:
+                dep_decls = [
+                    generate_member_declaration(
+                        name, mixin_content, mixin_members,
+                        ref_members, plain_members, indent,
+                    )
+                    for name in missing_deps
+                ]
+                content = add_members_to_composable(content, dep_decls)
+                content = add_keys_to_return(content, missing_deps)
+                if any("watch(" in d for d in dep_decls):
+                    content = _add_vue_import(content, "watch")
+                if any("ref(" in d for d in dep_decls):
+                    content = _add_vue_import(content, "ref")
+                if any("computed(" in d for d in dep_decls):
+                    content = _add_vue_import(content, "computed")
+
+            # Step 3b: Convert and insert lifecycle hooks
             inline_lines, wrapped_lines = convert_lifecycle_hooks(
                 mixin_content, hooks_to_add, ref_members, plain_members, indent,
             )
