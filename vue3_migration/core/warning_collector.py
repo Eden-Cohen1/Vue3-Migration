@@ -215,6 +215,13 @@ def compute_confidence(
     return ConfidenceLevel.HIGH
 
 
+_INLINE_SEVERITY_PREFIX = {
+    "error": "\u274c MIGRATION [error]",
+    "warning": "\u26a0 MIGRATION [warning]",
+    "info": "\u2139 MIGRATION [info]",
+}
+
+
 def inject_inline_warnings(
     source: str,
     warnings: list[MigrationWarning],
@@ -223,7 +230,7 @@ def inject_inline_warnings(
 ) -> str:
     """Inject inline warning comments into generated composable source.
 
-    For each warning with a line_hint, inserts ``// ⚠ MIGRATION: {message}``
+    For each warning with a line_hint, inserts a severity-prefixed comment
     above the first line that contains the hint text.
 
     Warnings that cannot be placed inline (no line_hint or no matching line)
@@ -238,6 +245,7 @@ def inject_inline_warnings(
     unplaced: list[MigrationWarning] = []
 
     for w in warnings:
+        prefix = _INLINE_SEVERITY_PREFIX.get(w.severity, "\u26a0 MIGRATION")
         if not w.line_hint:
             unplaced.append(w)
             continue
@@ -248,7 +256,7 @@ def inject_inline_warnings(
         for line in lines:
             if not injected and w.line_hint in line:
                 indent = line[: len(line) - len(line.lstrip())]
-                for msg_line in f"// ⚠ MIGRATION: {w.message}".splitlines():
+                for msg_line in f"// {prefix}: {w.message}".splitlines():
                     new_lines.append(f"{indent}{msg_line}\n")
                 injected = True
             new_lines.append(line)
@@ -261,7 +269,8 @@ def inject_inline_warnings(
     if unplaced:
         block_lines: list[str] = []
         for w in unplaced:
-            for msg_line in f"// ⚠ MIGRATION: {w.message}".splitlines():
+            prefix = _INLINE_SEVERITY_PREFIX.get(w.severity, "\u26a0 MIGRATION")
+            for msg_line in f"// {prefix}: {w.message}".splitlines():
                 block_lines.append(f"{msg_line}\n")
         block = "".join(block_lines)
         if confidence is not None:

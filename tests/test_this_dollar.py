@@ -393,7 +393,7 @@ export default {
         # $nextTick rewritten in code, $router warned
         code_lines = [l for l in result.splitlines() if not l.lstrip().startswith("//")]
         assert not any("this.$nextTick" in l for l in code_lines)
-        assert "// ⚠ MIGRATION:" in result
+        assert "MIGRATION [" in result
         assert "$router" in result
 
     def test_nextTick_import_added_to_vue_imports(self):

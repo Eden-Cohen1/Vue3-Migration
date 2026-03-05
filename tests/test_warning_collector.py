@@ -383,10 +383,10 @@ class TestInjectInlineWarnings:
         ]
         result = inject_inline_warnings(source, warnings)
         lines = result.splitlines()
-        assert any("// ⚠ MIGRATION:" in line for line in lines)
+        assert any("MIGRATION [warning]:" in line for line in lines)
         # The warning comment should appear before the line with the match
         for i, line in enumerate(lines):
-            if "// ⚠ MIGRATION:" in line:
+            if "MIGRATION [warning]:" in line:
                 assert i + 1 < len(lines)
                 assert "this.$router" in lines[i + 1]
                 break
@@ -397,9 +397,9 @@ class TestInjectInlineWarnings:
             MigrationWarning("auth", "test", "msg", "act", None, "warning"),
         ]
         result = inject_inline_warnings(source, warnings)
-        assert "// ⚠ MIGRATION: msg" in result
+        assert "// \u26a0 MIGRATION [warning]: msg" in result
         # Should be at the very top (no confidence header)
-        assert result.startswith("// ⚠ MIGRATION: msg\n")
+        assert result.startswith("// \u26a0 MIGRATION [warning]: msg\n")
 
     def test_no_injection_when_no_warnings(self):
         source = "  const x = ref(0)\n"
@@ -416,7 +416,7 @@ class TestInjectInlineWarnings:
         ]
         result = inject_inline_warnings(source, warnings)
         for line in result.splitlines():
-            if "// ⚠ MIGRATION:" in line:
+            if "MIGRATION [warning]:" in line:
                 # Should have same leading whitespace as the code line
                 assert line.startswith("    //")
                 break
@@ -446,7 +446,7 @@ class TestInjectInlineWarnings:
         )
         lines = result.splitlines()
         assert "Transformation confidence: MEDIUM" in lines[0]
-        assert "// ⚠ MIGRATION: Mixin uses nested mixins" in lines[1]
+        assert "MIGRATION [warning]: Mixin uses nested mixins" in lines[1]
         assert "import { ref }" in lines[2]
 
     def test_unmatched_line_hint_falls_back_to_block(self):
@@ -463,7 +463,7 @@ class TestInjectInlineWarnings:
         )
         lines = result.splitlines()
         assert "Transformation confidence: MEDIUM" in lines[0]
-        assert "// ⚠ MIGRATION: this.$refs not available" in lines[1]
+        assert "MIGRATION [warning]: this.$refs not available" in lines[1]
 
     def test_mix_of_placed_and_unplaced_warnings(self):
         """Inline-placed + fallback-block warnings both appear."""
@@ -490,15 +490,42 @@ class TestInjectInlineWarnings:
         # Header line
         assert "Transformation confidence: MEDIUM" in lines[0]
         # Unplaced warning right after header
-        assert "// ⚠ MIGRATION: Nested mixins" in lines[1]
+        assert "MIGRATION [warning]: Nested mixins" in lines[1]
         # Inline warning above matching line somewhere in the body
         inline_found = False
         for i, line in enumerate(lines):
-            if "// ⚠ MIGRATION: this.$router not available" in line:
+            if "MIGRATION [warning]: this.$router not available" in line:
                 inline_found = True
                 assert "this.$router.push" in lines[i + 1]
                 break
         assert inline_found, "Inline warning not found"
+
+    def test_error_severity_uses_error_prefix(self):
+        source = "  function submit() { this.$emit('done') }\n"
+        warnings = [
+            MigrationWarning("x", "this.$emit", "not available", "Use defineEmits",
+                             "this.$emit('done')", "error"),
+        ]
+        result = inject_inline_warnings(source, warnings)
+        assert "// \u274c MIGRATION [error]:" in result
+
+    def test_warning_severity_uses_warning_prefix(self):
+        source = "  function go() { this.$router.push('/') }\n"
+        warnings = [
+            MigrationWarning("x", "this.$router", "not available", "Use useRouter()",
+                             "this.$router.push('/')", "warning"),
+        ]
+        result = inject_inline_warnings(source, warnings)
+        assert "// \u26a0 MIGRATION [warning]:" in result
+
+    def test_info_severity_uses_info_prefix(self):
+        source = "  function refresh() { this.$forceUpdate() }\n"
+        warnings = [
+            MigrationWarning("x", "this.$forceUpdate", "rarely needed", "Review logic",
+                             "this.$forceUpdate()", "info"),
+        ]
+        result = inject_inline_warnings(source, warnings)
+        assert "// \u2139 MIGRATION [info]:" in result
 
     def test_multiple_unplaced_warnings_all_appear(self):
         """All unplaced warnings appear in the block."""
@@ -512,9 +539,9 @@ class TestInjectInlineWarnings:
         result = inject_inline_warnings(
             source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=3,
         )
-        assert "// ⚠ MIGRATION: Warning A" in result
-        assert "// ⚠ MIGRATION: Warning B" in result
-        assert "// ⚠ MIGRATION: Warning C" in result
+        assert "MIGRATION [warning]: Warning A" in result
+        assert "MIGRATION [warning]: Warning B" in result
+        assert "MIGRATION [warning]: Warning C" in result
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +581,7 @@ export default {
 """
         members = MixinMembers(methods=["go"])
         result = generate_composable_from_mixin(source, "authMixin", members, [])
-        assert "// ⚠ MIGRATION:" in result
+        assert "MIGRATION [" in result
 
     def test_clean_mixin_generates_high_confidence(self):
         source = """
