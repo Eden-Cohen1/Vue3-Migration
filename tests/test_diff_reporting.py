@@ -117,6 +117,53 @@ def test_no_false_positive_for_existing_ref():
     assert "tableData" not in out  # already existed, should not appear
 
 
+def test_diff_report_has_checklist_at_end(tmp_path):
+    """Diff report should include a checklist section at the bottom."""
+    change = _change(str(tmp_path / "useAuth.js"), "", "export function useAuth() { return {} }")
+    w = MigrationWarning("authMixin", "this.$emit", "not available", "Fix it", None, "error")
+    entry = MixinEntry(
+        local_name="authMixin",
+        mixin_path="fake/authMixin.js",
+        mixin_stem="authMixin",
+        members=MixinMembers(),
+    )
+    entry.warnings = [w]
+    plan = MigrationPlan(
+        composable_changes=[change],
+        component_changes=[],
+        entries_by_component=[(Path("fake/Comp.vue"), [entry])],
+    )
+    report_path = write_diff_report(plan, tmp_path)
+    content = report_path.read_text(encoding="utf-8")
+    assert "Migration Checklist" in content
+    # Checklist should be AFTER the diffs
+    if "```diff" in content or "```javascript" in content:
+        last_code_block = max(content.rfind("```diff"), content.rfind("```javascript"))
+        checklist_pos = content.index("Migration Checklist")
+        assert checklist_pos > last_code_block
+
+
+def test_diff_report_has_per_component_index(tmp_path):
+    """Diff report should include a per-component index section."""
+    change = _change(str(tmp_path / "useAuth.js"), "", "export function useAuth() { return {} }")
+    w = MigrationWarning("authMixin", "this.$router", "not available", "Use useRouter()", None, "warning")
+    entry = MixinEntry(
+        local_name="authMixin",
+        mixin_path="fake/authMixin.js",
+        mixin_stem="authMixin",
+        members=MixinMembers(),
+    )
+    entry.warnings = [w]
+    plan = MigrationPlan(
+        composable_changes=[change],
+        component_changes=[],
+        entries_by_component=[(Path("fake/Comp.vue"), [entry])],
+    )
+    report_path = write_diff_report(plan, tmp_path)
+    content = report_path.read_text(encoding="utf-8")
+    assert "Per-Component Guide" in content
+
+
 def test_write_diff_report_includes_warning_summary(tmp_path):
     """When entries_by_component has warnings, the summary appears before diffs."""
     change = _change(str(tmp_path / "useAuth.js"), "", "export function useAuth() { return {} }")

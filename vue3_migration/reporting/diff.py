@@ -6,8 +6,9 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from ..models import FileChange, MigrationPlan
-from .markdown import build_warning_summary
+from ..models import ConfidenceLevel, FileChange, MigrationPlan
+from .markdown import build_checklist, build_per_component_index, build_warning_summary
+from ..core.warning_collector import compute_confidence
 from .terminal import bold, dim, green
 
 
@@ -189,13 +190,51 @@ def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
         "",
     ]
 
+    # Build confidence map for per-component index
+    confidence_map: dict[str, ConfidenceLevel] = {}
+
     # Prepend warning summary before diffs
     if plan.entries_by_component:
+        # Build composable content map for confidence computation
+        composable_content_map: dict = {}
+        if plan.composable_changes:
+            for change in plan.composable_changes:
+                if change.has_changes:
+                    composable_content_map[change.file_path] = change.new_content
+
+        # Compute confidence for per-component index
+        seen: set[str] = set()
+        for _cp, entry_list in plan.entries_by_component:
+            for entry in entry_list:
+                if entry.mixin_stem in seen:
+                    continue
+                seen.add(entry.mixin_stem)
+                comp_source = ""
+                if entry.composable and entry.composable.file_path in composable_content_map:
+                    comp_source = composable_content_map[entry.composable.file_path]
+                if comp_source:
+                    confidence_map[entry.mixin_stem] = compute_confidence(comp_source, entry.warnings)
+                elif any(w.severity == "error" for w in entry.warnings):
+                    confidence_map[entry.mixin_stem] = ConfidenceLevel.LOW
+                elif entry.warnings:
+                    confidence_map[entry.mixin_stem] = ConfidenceLevel.MEDIUM
+                else:
+                    confidence_map[entry.mixin_stem] = ConfidenceLevel.HIGH
+
         summary = build_warning_summary(plan.entries_by_component, plan.composable_changes)
         if summary:
             sections.append(summary)
             sections.append("")
 
+        # Per-component index
+        comp_index = build_per_component_index(
+            plan.entries_by_component, confidence_map, project_root
+        )
+        if comp_index:
+            sections.append(comp_index)
+            sections.append("")
+
+    # Diffs
     all_changes = [c for c in (plan.composable_changes + plan.component_changes) if c.has_changes]
 
     for change in all_changes:
@@ -219,6 +258,12 @@ def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
             sections.append("".join(diff_lines).rstrip())
             sections.append("```")
         sections.append("")
+
+    # Actionable checklist at the end
+    if plan.entries_by_component:
+        checklist = build_checklist(plan.entries_by_component)
+        if checklist:
+            sections.append(checklist)
 
     report_path.write_text("\n".join(sections), encoding="utf-8")
     return report_path
