@@ -296,6 +296,19 @@ class TestBuildComponentReport:
         assert isinstance(report, str)
         assert len(report) > 0
 
+    def test_warnings_with_severity_icons(self):
+        """Component report should show severity icons for warnings."""
+        entry = _make_ready_entry()
+        w = MigrationWarning(
+            "selectionMixin", "this.$emit", "not available", "Fix it", None, "error",
+        )
+        entry.warnings = [w]
+        component = FIXTURES / "src/components/FullyCovered.vue"
+        report = build_component_report(component, [entry], PROJECT_ROOT)
+        assert "this.$emit" in report
+        # Should show severity in some form
+        assert "error" in report.lower() or "❌" in report
+
 
 class TestBuildPerComponentIndex:
     def test_renders_component_heading(self):

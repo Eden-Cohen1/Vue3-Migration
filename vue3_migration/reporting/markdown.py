@@ -94,6 +94,15 @@ def build_component_report(
             else:
                 blocked_entries.append(entry)
 
+        # Warnings for this mixin
+        if entry.warnings:
+            _SEV_ICON = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}
+            w(f"\n**Warnings ({len(entry.warnings)}):**\n")
+            for warning in entry.warnings:
+                icon = _SEV_ICON.get(warning.severity, "❓")
+                w(f"- {icon} **{warning.category}** ({warning.severity}): {warning.message}")
+                w(f"    → {warning.action_required}\n")
+
         w("---\n")
 
     # --- Actionable Summary ---
