@@ -8,106 +8,45 @@ import re
 from ..models import ConfidenceLevel, MigrationWarning, MixinMembers
 
 
-# Patterns: (regex, category, message, action_required)
-_THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str]] = [
-    (
-        r"this\.\$router\b",
-        "this.$router",
-        "this.$router is not available in composables",
-        "Import and use useRouter() from vue-router",
-    ),
-    (
-        r"this\.\$route\b",
-        "this.$route",
-        "this.$route is not available in composables",
-        "Import and use useRoute() from vue-router",
-    ),
-    (
-        r"this\.\$store\b",
-        "this.$store",
-        "this.$store is not available in composables",
-        "Import and use the Pinia/Vuex store directly",
-    ),
-    (
-        r"this\.\$emit\b",
-        "this.$emit",
-        "this.$emit is not available in composables",
-        "Accept an emit function parameter or use defineEmits",
-    ),
-    (
-        r"this\.\$refs\b",
-        "this.$refs",
-        "this.$refs is not available in composables",
-        "Use template refs with ref() instead",
-    ),
+# Patterns: (regex, category, message, action_required, severity)
+_THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str, str]] = [
+    # --- error: will crash, requires architectural change ---
+    (r"this\.\$emit\b", "this.$emit", "this.$emit is not available in composables",
+     "Accept an emit function parameter or use defineEmits", "error"),
+    (r"this\.\$refs\b", "this.$refs", "this.$refs is not available in composables",
+     "Use template refs with ref() instead", "error"),
+    (r"this\.\$on\b", "this.$on", "this.$on is removed in Vue 3",
+     "Use an external event bus library or provide/inject", "error"),
+    (r"this\.\$off\b", "this.$off", "this.$off is removed in Vue 3",
+     "Use an external event bus library or provide/inject", "error"),
+    (r"this\.\$once\b", "this.$once", "this.$once is removed in Vue 3",
+     "Use an external event bus library or provide/inject", "error"),
+    (r"this\.\$el\b", "this.$el", "this.$el has no composable equivalent",
+     "Use a template ref on the root element instead", "error"),
+    (r"this\.\$parent\b", "this.$parent", "this.$parent — avoid in composables",
+     "Use provide/inject or props/emit instead", "error"),
+    (r"this\.\$children\b", "this.$children", "this.$children is removed in Vue 3",
+     "Use template refs or provide/inject", "error"),
+    (r"this\.\$listeners\b", "this.$listeners", "$listeners is removed in Vue 3",
+     "Listeners are merged into $attrs in Vue 3", "error"),
+    # --- warning: will crash but has known drop-in replacement ---
+    (r"this\.\$router\b", "this.$router", "this.$router is not available in composables",
+     "Import and use useRouter() from vue-router", "warning"),
+    (r"this\.\$route\b", "this.$route", "this.$route is not available in composables",
+     "Import and use useRoute() from vue-router", "warning"),
+    (r"this\.\$store\b", "this.$store", "this.$store is not available in composables",
+     "Import and use the Pinia/Vuex store directly", "warning"),
+    (r"this\.\$attrs\b", "this.$attrs", "this.$attrs used — needs useAttrs()",
+     "Add const attrs = useAttrs() and import from 'vue'", "warning"),
+    (r"this\.\$slots\b", "this.$slots", "this.$slots used — needs useSlots()",
+     "Add const slots = useSlots() and import from 'vue'", "warning"),
+    (r"this\.\$watch\b", "this.$watch", "this.$watch — use watch() from vue instead",
+     "Import watch from 'vue' and use watch() directly", "warning"),
     # $nextTick, $set, $delete are auto-migrated by rewrite_this_dollar_refs()
     # in this_rewriter.py — no warning needed.
-    (
-        r"this\.\$on\b",
-        "this.$on",
-        "this.$on is removed in Vue 3",
-        "Use an external event bus library or provide/inject",
-    ),
-    (
-        r"this\.\$off\b",
-        "this.$off",
-        "this.$off is removed in Vue 3",
-        "Use an external event bus library or provide/inject",
-    ),
-    (
-        r"this\.\$once\b",
-        "this.$once",
-        "this.$once is removed in Vue 3",
-        "Use an external event bus library or provide/inject",
-    ),
-    (
-        r"this\.\$el\b",
-        "this.$el",
-        "this.$el has no composable equivalent",
-        "Use a template ref on the root element instead",
-    ),
-    (
-        r"this\.\$parent\b",
-        "this.$parent",
-        "this.$parent — avoid in composables",
-        "Use provide/inject or props/emit instead",
-    ),
-    (
-        r"this\.\$children\b",
-        "this.$children",
-        "this.$children is removed in Vue 3",
-        "Use template refs or provide/inject",
-    ),
-    (
-        r"this\.\$listeners\b",
-        "this.$listeners",
-        "$listeners is removed in Vue 3",
-        "Listeners are merged into $attrs in Vue 3",
-    ),
-    (
-        r"this\.\$attrs\b",
-        "this.$attrs",
-        "this.$attrs used — needs useAttrs()",
-        "Add const attrs = useAttrs() and import from 'vue'",
-    ),
-    (
-        r"this\.\$slots\b",
-        "this.$slots",
-        "this.$slots used — needs useSlots()",
-        "Add const slots = useSlots() and import from 'vue'",
-    ),
-    (
-        r"this\.\$forceUpdate\b",
-        "this.$forceUpdate",
-        "$forceUpdate — rarely needed in Vue 3",
-        "Reactive system usually handles it; review logic",
-    ),
-    (
-        r"this\.\$watch\b",
-        "this.$watch",
-        "this.$watch — use watch() from vue instead",
-        "Import watch from 'vue' and use watch() directly",
-    ),
+    # --- info: probably removable, low urgency ---
+    (r"this\.\$forceUpdate\b", "this.$forceUpdate", "$forceUpdate — rarely needed in Vue 3",
+     "Reactive system usually handles it; review logic", "info"),
 ]
 
 
@@ -125,7 +64,7 @@ def collect_mixin_warnings(
     warnings: list[MigrationWarning] = []
     seen_categories: set[str] = set()
 
-    for pattern, category, message, action in _THIS_DOLLAR_PATTERNS:
+    for pattern, category, message, action, severity in _THIS_DOLLAR_PATTERNS:
         if category in seen_categories:
             continue
         match = re.search(pattern, mixin_source)
@@ -144,7 +83,7 @@ def collect_mixin_warnings(
                 message=message,
                 action_required=action,
                 line_hint=line_hint,
-                severity="warning",
+                severity=severity,
             ))
 
     # External dependencies (this.X where X is not in this mixin)

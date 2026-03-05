@@ -199,6 +199,72 @@ class TestCollectMixinWarnings:
         assert not any(w.category == "this.$nextTick" for w in warnings)
 
 
+class TestThisDollarSeverityClassification:
+    """Verify that this.$ patterns have correct severity levels."""
+
+    @pytest.mark.parametrize("pattern,expected_severity", [
+        ("this.$emit('done')", "error"),
+        ("this.$refs.input.focus()", "error"),
+        ("this.$on('event', handler)", "error"),
+        ("this.$off('event', handler)", "error"),
+        ("this.$once('event', handler)", "error"),
+        ("this.$children[0]", "error"),
+        ("this.$listeners", "error"),
+        ("this.$el.querySelector('div')", "error"),
+        ("this.$parent.doSomething()", "error"),
+    ])
+    def test_error_severity_patterns(self, pattern, expected_severity):
+        source = f"""
+        export default {{
+            methods: {{
+                doIt() {{ {pattern} }}
+            }}
+        }}
+        """
+        warnings = collect_mixin_warnings(source, MixinMembers(methods=["doIt"]), [])
+        this_dollar_warnings = [w for w in warnings if w.category.startswith("this.$")]
+        assert len(this_dollar_warnings) >= 1, f"No this.$ warning for {pattern}"
+        assert this_dollar_warnings[0].severity == expected_severity, (
+            f"Expected {expected_severity} for {pattern}, got {this_dollar_warnings[0].severity}"
+        )
+
+    @pytest.mark.parametrize("pattern,expected_severity", [
+        ("this.$router.push('/')", "warning"),
+        ("this.$route.params.id", "warning"),
+        ("this.$store.state.user", "warning"),
+        ("this.$attrs.class", "warning"),
+        ("this.$slots.default", "warning"),
+        ("this.$watch('x', handler)", "warning"),
+    ])
+    def test_warning_severity_patterns(self, pattern, expected_severity):
+        source = f"""
+        export default {{
+            methods: {{
+                doIt() {{ {pattern} }}
+            }}
+        }}
+        """
+        warnings = collect_mixin_warnings(source, MixinMembers(methods=["doIt"]), [])
+        this_dollar_warnings = [w for w in warnings if w.category.startswith("this.$")]
+        assert len(this_dollar_warnings) >= 1, f"No this.$ warning for {pattern}"
+        assert this_dollar_warnings[0].severity == expected_severity, (
+            f"Expected {expected_severity} for {pattern}, got {this_dollar_warnings[0].severity}"
+        )
+
+    def test_force_update_is_info(self):
+        source = """
+        export default {
+            methods: {
+                refresh() { this.$forceUpdate() }
+            }
+        }
+        """
+        warnings = collect_mixin_warnings(source, MixinMembers(methods=["refresh"]), [])
+        fu_warnings = [w for w in warnings if w.category == "this.$forceUpdate"]
+        assert len(fu_warnings) == 1
+        assert fu_warnings[0].severity == "info"
+
+
 class TestComputeConfidence:
     def test_high_confidence_clean_composable(self):
         source = """
