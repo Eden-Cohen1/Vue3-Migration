@@ -166,6 +166,29 @@ class TestFindUsedMembers:
         assert 'clearSelection' in result
         assert 'nope' not in result
 
+    def test_nested_template_tags(self):
+        """Bug 4: Nested <template v-if> must not cut off the outer template."""
+        src = '''\
+<template>
+  <div>
+    <template v-if="isLoading">
+      <p>Loading...</p>
+    </template>
+    <div v-else-if="hasError">
+      <p>{{ error }}</p>
+      <button v-if="canRetry" @click="retry()">Retry</button>
+    </div>
+  </div>
+</template>
+<script>
+export default {}
+</script>
+'''
+        members = ['isLoading', 'hasError', 'error', 'canRetry', 'retry']
+        result = find_used_members(src, members)
+        for m in members:
+            assert m in result, f"'{m}' should be found despite nested <template> tags"
+
 
 # ---------------------------------------------------------------------------
 # extract_own_members

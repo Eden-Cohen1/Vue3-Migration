@@ -1,13 +1,16 @@
 <template>
   <div>
-    <div v-if="isLoading">{{ loadingMessage }}</div>
+    <!-- Nested <template> tags: the first </template> is NOT the end of the SFC -->
+    <template v-if="isLoading">
+      <div>{{ loadingMessage }}</div>
+    </template>
     <div v-else-if="hasError">
       <p>{{ error }}</p>
       <button v-if="canRetry" @click="retry(loadData)">Retry</button>
     </div>
-    <div v-else>
+    <template v-else>
       <p>Content loaded</p>
-    </div>
+    </template>
   </div>
 </template>
 

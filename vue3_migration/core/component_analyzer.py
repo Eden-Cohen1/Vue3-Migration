@@ -49,7 +49,7 @@ def find_used_members(component_source: str, member_names: list[str]) -> list[st
     """
     sections = []
     for tag in ("script", "template"):
-        tag_match = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", component_source, re.DOTALL)
+        tag_match = re.search(rf"<{tag}[^>]*>(.*)</{tag}>", component_source, re.DOTALL)
         if tag_match:
             sections.append(tag_match.group(1))
     search_text = "\n".join(sections) if sections else component_source
