@@ -844,6 +844,21 @@ class TestFormatWarningSummary:
         assert "authMixin" in result
         assert "selectionMixin" in result
 
+    def test_severity_icon_per_warning(self):
+        """Each warning should show its own severity icon, not a generic one."""
+        w_error = MigrationWarning(
+            "authMixin", "this.$emit", "not available", "Fix it", None, "error",
+        )
+        w_warning = MigrationWarning(
+            "authMixin", "this.$router", "not available", "Use useRouter()", None, "warning",
+        )
+        entry = self._make_entry("authMixin", warnings=[w_error, w_warning])
+        result = format_warning_summary(
+            [entry], {"authMixin": ConfidenceLevel.LOW}
+        )
+        assert "this.$emit" in result
+        assert "this.$router" in result
+
 
 # ---------------------------------------------------------------------------
 # Step 5 (cont): Workflow populates warnings on MixinEntry

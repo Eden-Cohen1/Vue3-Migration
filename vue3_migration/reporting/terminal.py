@@ -79,6 +79,8 @@ def format_warning_summary(
     if not entries:
         return ""
 
+    _SEV_ICON = {"error": red("✗"), "warning": yellow("⚠"), "info": dim("ℹ")}
+
     lines: list[str] = []
     for entry in entries:
         stem = entry.mixin_stem
@@ -99,7 +101,8 @@ def format_warning_summary(
         if warning_count:
             lines.append(f"  {prefix} {stem} — {conf_display} confidence ({warning_count} warnings)")
             for w in entry.warnings:
-                lines.append(f"    {yellow('⚠')} {w.category}: {w.message}")
+                sev_icon = _SEV_ICON.get(w.severity, yellow("⚠"))
+                lines.append(f"    {sev_icon} {w.category}: {w.message}")
         else:
             lines.append(f"  {prefix} {stem} — {conf_display} confidence")
 
