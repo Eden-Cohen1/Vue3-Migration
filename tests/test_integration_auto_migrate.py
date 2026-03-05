@@ -158,3 +158,37 @@ def test_entries_by_component_populated(project):
     for comp_path, entries in plan.entries_by_component:
         assert comp_path.suffix == ".vue"
         assert len(entries) > 0
+
+
+def test_template_members_all_in_setup_destructure(project):
+    """TemplateMemberTest.vue — all mixin members used in template must appear
+    in setup() destructuring and return. Reproduces Bug 4.
+
+    The composable (useLoading.js) defines all members but only returns 4 of 10,
+    so the entry starts as BLOCKED_NOT_RETURNED. The patcher adds the missing
+    return keys. Re-classification must then make ALL template-used members
+    injectable. (Bug 4 was caused by Bug 1 corrupting the composable output,
+    which cascaded into incomplete re-classification.)
+    """
+    plan = _run(project)
+    # Verify the composable was patched (not_returned members added)
+    loading_patch = next(
+        (c for c in plan.composable_changes if "useLoading" in str(c.file_path)), None
+    )
+    assert loading_patch is not None and loading_patch.has_changes, \
+        "useLoading should be patched to add missing return keys"
+
+    tm = next((c for c in plan.component_changes if "TemplateMemberTest" in str(c.file_path)), None)
+    assert tm is not None and tm.has_changes
+    content = tm.new_content
+    # All these members are used in the template and exist in useLoading
+    for member in ["isLoading", "loadingMessage", "hasError", "error", "canRetry", "retry"]:
+        assert member in content, f"'{member}' should be in migrated component"
+    # Check they're in the destructure line specifically
+    setup_line = next(
+        (l for l in content.splitlines() if "useLoading" in l and "const {" in l),
+        None
+    )
+    assert setup_line is not None, "Expected const { ... } = useLoading() in setup()"
+    for member in ["isLoading", "hasError", "error", "canRetry", "retry"]:
+        assert member in setup_line, f"'{member}' missing from useLoading() destructure"
