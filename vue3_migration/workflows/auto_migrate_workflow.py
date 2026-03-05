@@ -378,27 +378,11 @@ def plan_component_injections(
                             severity="warning",
                         ))
 
-        content = comp_source
-        changes_desc = []
-
-        for entry in ready_entries:
-            new = remove_import_line(content, entry.mixin_stem)
-            if new != content:
-                changes_desc.append(f"Removed import {entry.mixin_stem}")
-                content = new
-            injectable = entry.classification.injectable if entry.classification else entry.used_members
-            if injectable and entry.composable:
-                new = add_composable_import(content, entry.composable.fn_name, entry.composable.import_path)
-                if new != content:
-                    changes_desc.append(f"Added import {{{entry.composable.fn_name}}}")
-                    content = new
-
-        for entry in ready_entries:
-            new = remove_mixin_from_array(content, entry.local_name)
-            if new != content:
-                changes_desc.append(f"Removed {entry.local_name} from mixins")
-                content = new
-
+        # Pre-compute which entries will produce a composable call.
+        # Only migratable entries (those with injectable members) get their
+        # mixin removed.  Entries that won't produce a composable call are
+        # skipped and flagged for manual review.
+        migratable_entries = []
         composable_calls = []
 
         for entry in ready_entries:
@@ -420,15 +404,114 @@ def plan_component_injections(
             # precedence over setup() returns, so injecting them is redundant.
             # Keep lifecycle-referenced members even if overridden, since the
             # composable's lifecycle wrapper closure may depend on them.
+            overridden_in_injectable: list[str] = []
             if injectable and entry.composable:
                 lifecycle_members_set = set(lifecycle_members) if entry.lifecycle_hooks else set()
+                overridden_in_injectable = [
+                    m for m in injectable
+                    if m in own_members and m not in lifecycle_members_set
+                ]
                 injectable = [
                     m for m in injectable
                     if m not in own_members or m in lifecycle_members_set
                 ]
 
             if injectable and entry.composable:
+                migratable_entries.append(entry)
                 composable_calls.append((entry.composable.fn_name, injectable))
+                # Warn about overridden members that won't be destructured
+                if overridden_in_injectable:
+                    from ..models import MigrationWarning
+                    names = ", ".join(overridden_in_injectable)
+                    entry.warnings.append(MigrationWarning(
+                        mixin_stem=entry.mixin_stem,
+                        category="overridden-member",
+                        message=(
+                            f"Component overrides mixin member(s): {names}. "
+                            "These are NOT destructured from the composable."
+                        ),
+                        action_required=(
+                            f"Verify that the component's own {names} "
+                            "implementation does not depend on other mixin members."
+                        ),
+                        line_hint=None,
+                        severity="info",
+                    ))
+            else:
+                # Entry won't produce a composable call — keep the mixin.
+                from ..models import MigrationWarning
+                if not entry.used_members:
+                    if entry.lifecycle_hooks:
+                        hooks_str = ", ".join(entry.lifecycle_hooks)
+                        entry.warnings.append(MigrationWarning(
+                            mixin_stem=entry.mixin_stem,
+                            category="skipped-lifecycle-only",
+                            message=(
+                                f"Mixin '{entry.mixin_stem}' was NOT migrated: "
+                                f"it provides lifecycle hooks ({hooks_str}) but "
+                                "no members are directly referenced by the component."
+                            ),
+                            action_required=(
+                                "Manually convert lifecycle hooks to the composable, "
+                                "or remove the mixin if unused."
+                            ),
+                            line_hint=None,
+                            severity="warning",
+                        ))
+                    else:
+                        entry.warnings.append(MigrationWarning(
+                            mixin_stem=entry.mixin_stem,
+                            category="skipped-no-usage",
+                            message=(
+                                f"Mixin '{entry.mixin_stem}' was NOT migrated: "
+                                "no members are referenced by the component."
+                            ),
+                            action_required=(
+                                "Remove the mixin if unused, or manually convert "
+                                "if it provides side-effect functionality."
+                            ),
+                            line_hint=None,
+                            severity="warning",
+                        ))
+                else:
+                    overridden_names = ", ".join(
+                        entry.classification.overridden + entry.classification.overridden_not_returned
+                    ) if entry.classification else ""
+                    entry.warnings.append(MigrationWarning(
+                        mixin_stem=entry.mixin_stem,
+                        category="skipped-all-overridden",
+                        message=(
+                            f"Mixin '{entry.mixin_stem}' was NOT migrated: "
+                            f"all used members ({overridden_names}) are overridden "
+                            "by the component."
+                        ),
+                        action_required=(
+                            "Remove the mixin if the component's overrides are "
+                            "self-contained, or keep it if they depend on mixin internals."
+                        ),
+                        line_hint=None,
+                        severity="info",
+                    ))
+
+        content = comp_source
+        changes_desc = []
+
+        for entry in migratable_entries:
+            new = remove_import_line(content, entry.mixin_stem)
+            if new != content:
+                changes_desc.append(f"Removed import {entry.mixin_stem}")
+                content = new
+            if entry.composable:
+                new = add_composable_import(content, entry.composable.fn_name, entry.composable.import_path)
+                if new != content:
+                    changes_desc.append(f"Added import {{{entry.composable.fn_name}}}")
+                    content = new
+
+        for entry in migratable_entries:
+            new = remove_mixin_from_array(content, entry.local_name)
+            if new != content:
+                changes_desc.append(f"Removed {entry.local_name} from mixins")
+                content = new
 
         if composable_calls:
             new = inject_setup(
