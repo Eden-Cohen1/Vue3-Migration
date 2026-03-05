@@ -197,6 +197,10 @@ def compute_confidence(
     if _has_unbalanced_braces(composable_source):
         return ConfidenceLevel.LOW
 
+    # Check for error-severity warnings (LOW)
+    if any(w.severity == "error" for w in warnings):
+        return ConfidenceLevel.LOW
+
     # Check for TODO or MIGRATION markers (MEDIUM)
     if re.search(r"//\s*TODO\b", composable_source):
         return ConfidenceLevel.MEDIUM

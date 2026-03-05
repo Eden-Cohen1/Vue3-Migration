@@ -318,14 +318,37 @@ export function useAuth() {
 """
         assert compute_confidence(source, []) == ConfidenceLevel.LOW
 
-    def test_warnings_downgrade_to_medium(self):
+    def test_error_severity_warning_produces_low_confidence(self):
+        """A warning with severity='error' should produce LOW confidence even without this. in source."""
         source = """
 export function useAuth() {
   const token = ref(null)
   return { token }
 }
 """
-        warnings = [MigrationWarning("auth", "this.$emit", "msg", "act", None, "warning")]
+        warnings = [MigrationWarning("auth", "this.$emit", "msg", "act", None, "error")]
+        assert compute_confidence(source, warnings) == ConfidenceLevel.LOW
+
+    def test_warning_severity_still_medium(self):
+        """A warning with severity='warning' should produce MEDIUM (not LOW)."""
+        source = """
+export function useAuth() {
+  const token = ref(null)
+  return { token }
+}
+"""
+        warnings = [MigrationWarning("auth", "this.$router", "msg", "act", None, "warning")]
+        assert compute_confidence(source, warnings) == ConfidenceLevel.MEDIUM
+
+    def test_info_severity_still_medium(self):
+        """A warning with severity='info' should produce MEDIUM (has warnings, none are errors)."""
+        source = """
+export function useAuth() {
+  const token = ref(null)
+  return { token }
+}
+"""
+        warnings = [MigrationWarning("auth", "todo-marker", "msg", "act", None, "info")]
         assert compute_confidence(source, warnings) == ConfidenceLevel.MEDIUM
 
     def test_remaining_this_overrides_warnings_to_low(self):
