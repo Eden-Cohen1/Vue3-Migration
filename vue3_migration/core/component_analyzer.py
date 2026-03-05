@@ -114,8 +114,10 @@ def extract_own_members(component_source: str) -> set[str]:
             brace_pos = ret.start() + ret.group().index("{")
             own_members.update(extract_property_names(extract_brace_block(body, brace_pos)))
 
-    # computed, methods, watch sections
-    for section in ("computed", "methods", "watch"):
+    # computed, methods sections (NOT watch — watch keys observe properties,
+    # they don't define/override them; a component watching a mixin property
+    # still needs the composable to provide that property)
+    for section in ("computed", "methods"):
         match = re.search(rf"\b{section}\s*:\s*\{{", source)
         if match:
             own_members.update(

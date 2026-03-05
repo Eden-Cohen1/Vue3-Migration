@@ -217,10 +217,11 @@ class TestExtractOwnMembers:
         result = extract_own_members(src)
         assert 'myProp' in result
 
-    def test_watch_section(self):
-        src = '<script>\nexport default { watch: { someVal(v) {} } }\n</script>'
+    def test_watch_keys_are_not_own_members(self):
+        """Watch keys observe properties, they don't define/override them."""
+        src = '<script>\nexport default { watch: { isOpen(v) {} } }\n</script>'
         result = extract_own_members(src)
-        assert 'someVal' in result
+        assert 'isOpen' not in result, "Watch keys should not be treated as overrides"
 
     def test_multiple_sections(self):
         src = (
