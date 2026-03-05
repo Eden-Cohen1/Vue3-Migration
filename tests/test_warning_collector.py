@@ -1,4 +1,6 @@
 """Tests for the warning infrastructure: models, collection, and confidence scoring."""
+from pathlib import Path
+
 import pytest
 from vue3_migration.models import (
     ConfidenceLevel,
@@ -996,6 +998,56 @@ class TestBuildWarningSummary:
         entry = self._make_entry("authMixin", [w])
         result = build_warning_summary(self._wrap(entry))
         assert "\u274c" in result  # error icon
+
+    def test_skipped_entries_in_separate_section(self):
+        """Skipped mixins should appear in their own section, not mixed with warnings."""
+        w = MigrationWarning(
+            "permMixin", "skipped-all-overridden",
+            "Mixin 'permMixin' was NOT migrated: all used members (canDelete) are overridden",
+            "Safe to remove mixin import manually",
+            None, "info",
+        )
+        entry = self._make_entry("permMixin", [w])
+        result = build_warning_summary(
+            [(Path("fake/StatusBadge.vue"), [entry])]
+        )
+        assert "Skipped Mixins" in result
+        assert "permMixin" in result
+
+    def test_skipped_entries_not_in_main_warnings(self):
+        """Skipped entries should not appear in the per-mixin warning sections."""
+        skip_w = MigrationWarning(
+            "permMixin", "skipped-all-overridden",
+            "Mixin 'permMixin' was NOT migrated",
+            "Safe to remove", None, "info",
+        )
+        real_w = MigrationWarning(
+            "authMixin", "this.$emit", "not available",
+            "Use defineEmits", None, "error",
+        )
+        skip_entry = self._make_entry("permMixin", [skip_w])
+        real_entry = self._make_entry("authMixin", [real_w])
+        result = build_warning_summary(
+            [(Path("fake/Comp.vue"), [skip_entry, real_entry])]
+        )
+        # authMixin should be in the main warnings section
+        assert "authMixin" in result
+        # permMixin should be in the Skipped section
+        assert "Skipped Mixins" in result
+
+    def test_skipped_table_shows_component_and_reason(self):
+        """Skipped section should show component name, mixin, and reason."""
+        w = MigrationWarning(
+            "permMixin", "skipped-all-overridden",
+            "Mixin 'permMixin' was NOT migrated: all used members (canDelete) are overridden",
+            "Safe to remove", None, "info",
+        )
+        entry = self._make_entry("permMixin", [w])
+        result = build_warning_summary(
+            [(Path("fake/StatusBadge.vue"), [entry])]
+        )
+        assert "StatusBadge.vue" in result
+        assert "overridden" in result.lower()
 
 
 # ---------------------------------------------------------------------------

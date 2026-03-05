@@ -4,8 +4,14 @@ Markdown report generation for migration analysis results.
 
 from pathlib import Path
 
-from ..models import ConfidenceLevel, FileChange, MixinEntry
+from ..models import ConfidenceLevel, FileChange, MigrationWarning, MixinEntry
 from .terminal import md_green, md_yellow
+
+_SKIPPED_CATEGORIES = frozenset({
+    "skipped-all-overridden",
+    "skipped-lifecycle-only",
+    "skipped-no-usage",
+})
 
 
 def build_component_report(
@@ -368,6 +374,23 @@ def build_warning_summary(
     if not unique_entries:
         return ""
 
+    # Separate skipped entries from active entries
+    skipped_rows: list[tuple[str, str, str]] = []  # (component, mixin, reason)
+    active_entries: list[MixinEntry] = []
+
+    for entry in unique_entries:
+        entry_cats = {w.category for w in entry.warnings}
+        if entry_cats and entry_cats <= _SKIPPED_CATEGORIES:
+            # Find which component(s) this mixin was used in
+            for comp_path, entry_list in entries_by_component:
+                for e in entry_list:
+                    if e.mixin_stem == entry.mixin_stem:
+                        reason = entry.warnings[0].message.split(":", 1)[-1].strip() if entry.warnings else "unknown"
+                        comp_name = comp_path.name
+                        skipped_rows.append((comp_name, entry.mixin_stem, reason))
+        else:
+            active_entries.append(entry)
+
     # Build a lookup of composable content by file path
     composable_content_map: dict[Path, str] = {}
     if composable_changes:
@@ -375,9 +398,9 @@ def build_warning_summary(
             if change.has_changes:
                 composable_content_map[change.file_path] = change.new_content
 
-    # Compute confidence for each entry
+    # Compute confidence for each active entry
     confidence_map: dict[str, ConfidenceLevel] = {}
-    for entry in unique_entries:
+    for entry in active_entries:
         comp_source = ""
         if entry.composable and entry.composable.file_path in composable_content_map:
             comp_source = composable_content_map[entry.composable.file_path]
@@ -392,10 +415,13 @@ def build_warning_summary(
 
     # Sort: LOW first, then MEDIUM, then HIGH (most urgent at top)
     _CONF_ORDER = {ConfidenceLevel.LOW: 0, ConfidenceLevel.MEDIUM: 1, ConfidenceLevel.HIGH: 2}
-    unique_entries.sort(key=lambda e: _CONF_ORDER.get(confidence_map[e.mixin_stem], 2))
+    active_entries.sort(key=lambda e: _CONF_ORDER.get(confidence_map[e.mixin_stem], 2))
+
+    if not active_entries and not skipped_rows:
+        return ""
 
     # Count totals
-    all_warnings = [w for e in unique_entries for w in e.warnings]
+    all_warnings = [w for e in active_entries for w in e.warnings]
     error_count = sum(1 for w in all_warnings if w.severity == "error")
     warning_count = sum(1 for w in all_warnings if w.severity == "warning")
     info_count = sum(1 for w in all_warnings if w.severity == "info")
@@ -406,7 +432,8 @@ def build_warning_summary(
     a("## Migration Summary\n")
 
     # Overview line
-    parts = [f"**{len(unique_entries)} composable{'s' if len(unique_entries) != 1 else ''}**"]
+    total_count = len(active_entries) + len(skipped_rows)
+    parts = [f"**{total_count} composable{'s' if total_count != 1 else ''}**"]
     if error_count:
         parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
     if warning_count:
@@ -421,7 +448,7 @@ def build_warning_summary(
     _SEVERITY_ICON = {"error": "\u274c", "warning": "\u26a0\ufe0f", "info": "\u2139\ufe0f"}
     _CONF_ICON = {ConfidenceLevel.LOW: "\u274c", ConfidenceLevel.MEDIUM: "\u26a0\ufe0f", ConfidenceLevel.HIGH: "\u2705"}
 
-    for entry in unique_entries:
+    for entry in active_entries:
         conf = confidence_map[entry.mixin_stem]
         icon = _CONF_ICON.get(conf, "\u2753")
 
@@ -451,5 +478,14 @@ def build_warning_summary(
             a(f"- {sev_icon} **{warning.category}** ({warning.severity}): {warning.message}")
             a(f"")
             a(f"    **\u2192 {warning.action_required}**\n")
+
+    # Skipped mixins table
+    if skipped_rows:
+        a("\n## Skipped Mixins (not migrated)\n")
+        a("| Component | Mixin | Reason |")
+        a("|---|---|---|")
+        for comp_name, mixin_stem, reason in skipped_rows:
+            a(f"| {comp_name} | {mixin_stem} | {reason} |")
+        a("")
 
     return "\n".join(lines)
