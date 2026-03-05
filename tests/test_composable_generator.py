@@ -212,3 +212,131 @@ class TestExternalDepWarningsInComposable:
             extract_lifecycle_hooks(AUTH_MIXIN),
         )
         assert "external dep" not in result
+
+
+# ---------------------------------------------------------------------------
+# Bug fix regression: Issue #4 — underscore-prefixed methods
+# ---------------------------------------------------------------------------
+
+class TestUnderscorePrefixedMethods:
+    def test_underscore_prefixed_method_included(self):
+        """Methods starting with _ should be included in the composable."""
+        mixin = '''
+    export default {
+        methods: {
+            _handleEscapeKey(event) {
+                if (event.key === 'Escape') {
+                    this.closeModal()
+                }
+            },
+            closeModal() {
+                this.isOpen = false
+            }
+        }
+    }
+    '''
+        members = MixinMembers(data=['isOpen'], computed=[], methods=['_handleEscapeKey', 'closeModal'], watch=[])
+        result = generate_composable_from_mixin(mixin, 'modalMixin', members, [])
+        assert 'function _handleEscapeKey' in result
+        assert 'function closeModal' in result
+
+    def test_underscore_method_in_lifecycle_hook(self):
+        """Underscore methods referenced in lifecycle hooks should be generated."""
+        mixin = '''
+    export default {
+        methods: {
+            _handleEscapeKey(event) {
+                if (event.key === 'Escape') {
+                    this.closeModal()
+                }
+            },
+            closeModal() {
+                this.isOpen = false
+            }
+        },
+        mounted() {
+            document.addEventListener('keydown', this._handleEscapeKey)
+        },
+        beforeDestroy() {
+            document.removeEventListener('keydown', this._handleEscapeKey)
+        }
+    }
+    '''
+        members = MixinMembers(
+            data=['isOpen'],
+            methods=['_handleEscapeKey', 'closeModal'],
+        )
+        hooks = ['mounted', 'beforeDestroy']
+        result = generate_composable_from_mixin(mixin, 'modalMixin', members, hooks)
+        assert 'function _handleEscapeKey' in result
+        assert 'onMounted' in result
+        assert 'onBeforeUnmount' in result
+
+
+# ---------------------------------------------------------------------------
+# Bug fix regression: Issue #2 — lifecycle hooks not nested in computed
+# ---------------------------------------------------------------------------
+
+class TestLifecycleHookScope:
+    def test_on_mounted_not_inside_computed_block(self):
+        """onMounted must be at top-level scope, not nested inside a computed block."""
+        mixin = '''
+    export default {
+        computed: {
+            fullName() {
+                return this.firstName + ' ' + this.lastName
+            }
+        },
+        mounted() {
+            console.log('component mounted')
+        }
+    }
+    '''
+        members = MixinMembers(computed=['fullName'])
+        result = generate_composable_from_mixin(mixin, 'nameMixin', members, ['mounted'])
+        assert 'onMounted' in result
+        # The onMounted call should not appear within a computed(() => { ... }) block
+        # Verify that 'onMounted' does not appear between 'computed(' and matching ')'
+        import re
+        computed_blocks = re.findall(r'computed\(\(\)\s*=>\s*\{[^}]*\}', result)
+        for block in computed_blocks:
+            assert 'onMounted' not in block
+
+
+# ---------------------------------------------------------------------------
+# Bug fix regression: Issue #3 — mounted + beforeDestroy both converted
+# ---------------------------------------------------------------------------
+
+class TestMountedAndBeforeDestroy:
+    def test_both_hooks_generated(self):
+        """Both onMounted and onBeforeUnmount should appear in the composable."""
+        mixin = '''
+    export default {
+        data() {
+            return { handler: null }
+        },
+        methods: {
+            onResize() {
+                console.log('resized')
+            }
+        },
+        mounted() {
+            window.addEventListener('resize', this.onResize)
+        },
+        beforeDestroy() {
+            window.removeEventListener('resize', this.onResize)
+        }
+    }
+    '''
+        members = MixinMembers(
+            data=['handler'],
+            methods=['onResize'],
+        )
+        hooks = ['mounted', 'beforeDestroy']
+        result = generate_composable_from_mixin(mixin, 'resizeMixin', members, hooks)
+        assert 'onMounted' in result
+        assert 'onBeforeUnmount' in result
+        # Both should be in the imports
+        import_line = result.split('\n')[0] if 'import' in result.split('\n')[0] else result.split('\n')[1]
+        assert 'onMounted' in result.split("from 'vue'")[0]
+        assert 'onBeforeUnmount' in result.split("from 'vue'")[0]

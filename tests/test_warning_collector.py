@@ -957,3 +957,104 @@ export default {
         assert len(warnings) == 1
         assert warnings[0].line_hint is not None
         assert "externalProp" in warnings[0].line_hint
+
+
+# ---------------------------------------------------------------------------
+# Bug fix regression: Issue #21 — Missing cleanup detection
+# ---------------------------------------------------------------------------
+
+from vue3_migration.core.warning_collector import detect_missing_cleanup
+
+
+class TestDetectMissingCleanup:
+    def test_missing_cleanup_warning(self):
+        """addEventListener without removeEventListener should trigger warning."""
+        source = '''
+    onMounted(() => {
+        window.addEventListener('keydown', handleKey)
+    })
+    '''
+        warnings = detect_missing_cleanup(source)
+        assert any('cleanup' in w.lower() or 'removeEventListener' in w.lower() for w in warnings)
+
+    def test_no_warning_when_cleanup_present(self):
+        """addEventListener with matching removeEventListener should not warn."""
+        source = '''
+    onMounted(() => {
+        window.addEventListener('keydown', handleKey)
+    })
+
+    onBeforeUnmount(() => {
+        window.removeEventListener('keydown', handleKey)
+    })
+    '''
+        warnings = detect_missing_cleanup(source)
+        listener_warnings = [w for w in warnings if 'addEventListener' in w.lower() or 'cleanup' in w.lower()]
+        assert len(listener_warnings) == 0
+
+    def test_set_interval_without_clear(self):
+        """setInterval without clearInterval should trigger warning."""
+        source = '''
+    onMounted(() => {
+        const id = setInterval(() => { tick() }, 1000)
+    })
+    '''
+        warnings = detect_missing_cleanup(source)
+        assert any('setInterval' in w for w in warnings)
+
+    def test_set_interval_with_clear(self):
+        """setInterval with clearInterval should not warn."""
+        source = '''
+    let intervalId = null
+    onMounted(() => {
+        intervalId = setInterval(() => { tick() }, 1000)
+    })
+    onBeforeUnmount(() => {
+        clearInterval(intervalId)
+    })
+    '''
+        warnings = detect_missing_cleanup(source)
+        interval_warnings = [w for w in warnings if 'setInterval' in w]
+        assert len(interval_warnings) == 0
+
+    def test_set_timeout_without_clear(self):
+        """setTimeout without clearTimeout should trigger warning."""
+        source = '''
+    onMounted(() => {
+        setTimeout(() => { doLater() }, 500)
+    })
+    '''
+        warnings = detect_missing_cleanup(source)
+        assert any('setTimeout' in w for w in warnings)
+
+    def test_set_timeout_with_clear(self):
+        """setTimeout with clearTimeout should not warn."""
+        source = '''
+    let timerId = null
+    timerId = setTimeout(() => { doLater() }, 500)
+    clearTimeout(timerId)
+    '''
+        warnings = detect_missing_cleanup(source)
+        timeout_warnings = [w for w in warnings if 'setTimeout' in w]
+        assert len(timeout_warnings) == 0
+
+    def test_no_event_listener_no_warning(self):
+        """Source without addEventListener should have no listener warnings."""
+        source = '''
+    onMounted(() => {
+        console.log('mounted')
+    })
+    '''
+        warnings = detect_missing_cleanup(source)
+        assert len(warnings) == 0
+
+    def test_add_listener_without_on_mounted(self):
+        """addEventListener without onMounted should not trigger the cleanup warning."""
+        source = '''
+    function setup() {
+        window.addEventListener('resize', handleResize)
+    }
+    '''
+        warnings = detect_missing_cleanup(source)
+        listener_warnings = [w for w in warnings if 'addEventListener' in w.lower() or 'cleanup' in w.lower()]
+        assert len(listener_warnings) == 0

@@ -14,11 +14,16 @@ HOOK_MAP: dict[str, str | None] = {
     "beforeUpdate": "onBeforeUpdate",
     "updated":      "onUpdated",
     "beforeDestroy": "onBeforeUnmount",
+    "beforeUnmount": "onBeforeUnmount",
     "destroyed":    "onUnmounted",
+    "unmounted":    "onUnmounted",
     "activated":    "onActivated",
     "deactivated":  "onDeactivated",
     "errorCaptured": "onErrorCaptured",
 }
+
+# Vue 2 destroy hook names (used for fallback scanning)
+_DESTROY_HOOKS = {"beforeDestroy", "destroyed", "beforeUnmount", "unmounted"}
 
 
 def extract_hook_body(mixin_source: str, hook_name: str, exclude_sections: bool = True) -> str | None:
@@ -61,7 +66,7 @@ def extract_hook_body(mixin_source: str, hook_name: str, exclude_sections: bool 
             obj_body = extract_brace_block(mixin_source, obj_start)
             content_start = obj_start + 1  # first char inside {}
 
-            for section in ('methods', 'computed'):
+            for section in ('methods', 'computed', 'watch'):
                 sm = re.search(rf'\b{section}\s*:\s*\{{', mixin_source[content_start:content_start + len(obj_body)])
                 if sm:
                     abs_brace = content_start + sm.end() - 1
@@ -158,6 +163,7 @@ def convert_lifecycle_hooks(
     inner = indent + indent
     inline_lines: list[str] = []
     wrapped_lines: list[str] = []
+    converted_hooks: set[str] = set()
 
     for hook in hooks:
         if hook not in HOOK_MAP:
@@ -184,6 +190,33 @@ def convert_lifecycle_hooks(
             wrapped_lines.append(f"{indent}{vue3_fn}({param_str} => {{")
             wrapped_lines.extend(body_lines)
             wrapped_lines.append(f"{indent}}})")
+        converted_hooks.add(hook)
+
+    # Fallback: if mounted was converted but no destroy/unmount hook was in the
+    # list, do a direct scan of the mixin source and convert any found.
+    has_mount = "mounted" in converted_hooks or "beforeMount" in converted_hooks
+    has_destroy = bool(converted_hooks & _DESTROY_HOOKS)
+    if has_mount and not has_destroy:
+        for dh in ("beforeDestroy", "destroyed", "beforeUnmount", "unmounted"):
+            if dh in converted_hooks:
+                continue
+            body = extract_hook_body(mixin_source, dh)
+            if body is None or not body.strip():
+                continue
+            body_clean = textwrap.dedent(body).strip()
+            rewritten = rewrite_this_refs(body_clean, ref_members, plain_members)
+            vue3_fn = HOOK_MAP[dh]
+            if vue3_fn is not None:
+                params = extract_hook_params(mixin_source, dh)
+                param_str = f"({params})" if params else "()"
+                body_lines = [
+                    f"{inner}{line}" if line.strip() else ""
+                    for line in rewritten.splitlines()
+                ]
+                wrapped_lines.append(f"{indent}{vue3_fn}({param_str} => {{")
+                wrapped_lines.extend(body_lines)
+                wrapped_lines.append(f"{indent}}})")
+                converted_hooks.add(dh)
 
     return inline_lines, wrapped_lines
 
@@ -212,14 +245,31 @@ def find_lifecycle_referenced_members(
     return referenced
 
 
-def get_required_imports(hooks: list[str]) -> list[str]:
+def get_required_imports(hooks: list[str], mixin_source: str | None = None) -> list[str]:
     """Return Vue composition API import names needed for the given hooks.
 
     Excludes beforeCreate and created (they inline directly in setup()).
+
+    When *mixin_source* is provided, performs a fallback scan for destroy/unmount
+    hooks that might not appear in the *hooks* list but are present in the source.
     """
     result = []
     for hook in hooks:
         vue3_fn = HOOK_MAP.get(hook)
         if vue3_fn is not None:
             result.append(vue3_fn)
+
+    # Fallback: if mounted is in the list but no destroy hook, scan source
+    if mixin_source is not None:
+        has_mount = any(h in ("mounted", "beforeMount") for h in hooks)
+        has_destroy = any(h in _DESTROY_HOOKS for h in hooks)
+        if has_mount and not has_destroy:
+            for dh in ("beforeDestroy", "destroyed", "beforeUnmount", "unmounted"):
+                body = extract_hook_body(mixin_source, dh)
+                if body and body.strip():
+                    vue3_fn = HOOK_MAP.get(dh)
+                    if vue3_fn is not None:
+                        result.append(vue3_fn)
+                    break  # one destroy hook is enough
+
     return list(dict.fromkeys(result))

@@ -144,3 +144,106 @@ def test_wrapped_hook_body_dedented():
     for line in body_lines:
         assert line.startswith("    "), f"Expected 4-space indent, got: {repr(line)}"
         assert not line.startswith("      "), f"Over-indented (6+ spaces): {repr(line)}"
+
+
+# --- Bug fix regression: Issue #2 — lifecycle hooks not inside computed ---
+
+def test_lifecycle_hooks_not_inside_computed():
+    """Lifecycle hooks must be at top-level scope, not nested inside computed."""
+    mixin = '''
+    export default {
+        computed: {
+            fullName() {
+                return this.firstName + ' ' + this.lastName
+            }
+        },
+        mounted() {
+            console.log('mounted')
+        }
+    }
+    '''
+    hooks = ['mounted']
+    inline_lines, wrapped_lines = convert_lifecycle_hooks(mixin, hooks, [], [], "  ")
+    output = "\n".join(wrapped_lines)
+    assert "onMounted" in output
+    # onMounted should not be inside computed(() =>
+    assert "computed" not in output
+
+
+# --- Bug fix regression: Issue #3 — beforeDestroy hook converted ---
+
+def test_before_destroy_hook_converted():
+    """Both mounted and beforeDestroy should be converted."""
+    mixin = '''
+    export default {
+        mounted() {
+            window.addEventListener('resize', this.onResize)
+        },
+        beforeDestroy() {
+            window.removeEventListener('resize', this.onResize)
+        }
+    }
+    '''
+    hooks = ['mounted', 'beforeDestroy']
+    inline_lines, wrapped_lines = convert_lifecycle_hooks(mixin, hooks, [], ['onResize'], "  ")
+    output = "\n".join(wrapped_lines)
+    assert "onMounted" in output
+    assert "onBeforeUnmount" in output
+
+
+def test_before_destroy_fallback_when_missing_from_hooks_list():
+    """If mounted is listed but beforeDestroy is not, fallback scan should find it."""
+    mixin = '''
+    export default {
+        mounted() {
+            window.addEventListener('resize', this.onResize)
+        },
+        beforeDestroy() {
+            window.removeEventListener('resize', this.onResize)
+        }
+    }
+    '''
+    # Only mounted in the hooks list — beforeDestroy is "missing" from detection
+    hooks = ['mounted']
+    inline_lines, wrapped_lines = convert_lifecycle_hooks(mixin, hooks, [], ['onResize'], "  ")
+    output = "\n".join(wrapped_lines)
+    assert "onMounted" in output
+    assert "onBeforeUnmount" in output, "Fallback should have found beforeDestroy"
+
+
+def test_only_before_destroy_without_mounted():
+    """beforeDestroy alone (without mounted) should still convert."""
+    mixin = '''
+    export default {
+        beforeDestroy() {
+            clearInterval(this.timer)
+        }
+    }
+    '''
+    hooks = ['beforeDestroy']
+    inline_lines, wrapped_lines = convert_lifecycle_hooks(mixin, hooks, [], ['timer'], "  ")
+    output = "\n".join(wrapped_lines)
+    assert "onBeforeUnmount" in output
+
+
+def test_get_required_imports_with_fallback():
+    """get_required_imports should find destroy hook imports via fallback scan."""
+    mixin = '''
+    export default {
+        mounted() {
+            window.addEventListener('resize', this.onResize)
+        },
+        beforeDestroy() {
+            window.removeEventListener('resize', this.onResize)
+        }
+    }
+    '''
+    # Only mounted in hooks list
+    imports = get_required_imports(['mounted'], mixin)
+    assert "onMounted" in imports
+    assert "onBeforeUnmount" in imports
+
+
+def test_before_unmount_maps_correctly():
+    """Vue 3's beforeUnmount should also map to onBeforeUnmount."""
+    assert HOOK_MAP.get("beforeUnmount") == "onBeforeUnmount"

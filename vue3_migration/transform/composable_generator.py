@@ -5,7 +5,7 @@ from ..core.js_parser import extract_brace_block
 from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
 )
-from ..models import MixinMembers
+from ..models import MigrationWarning, MixinMembers
 from .composable_patcher import (
     _extract_data_default,
     _extract_watch_section_body,
@@ -148,6 +148,27 @@ def generate_composable_from_mixin(
         mixin_source, lifecycle_hooks, ref_members, plain_members, indent
     )
 
+    # Reference check: scan lifecycle hook bodies for method references
+    # that are in mixin_members.methods. Verify they were generated.
+    from .lifecycle_converter import extract_hook_body
+    _generated_method_names = set(mixin_members.methods)
+    _lifecycle_ref_warnings: list[str] = []
+    for hook in lifecycle_hooks:
+        hook_body = extract_hook_body(mixin_source, hook)
+        if not hook_body:
+            continue
+        for method_name in mixin_members.methods:
+            if re.search(rf"(?<!\w){re.escape(method_name)}(?!\w)", hook_body):
+                # Check if method was actually generated (has body in decl_lines)
+                method_generated = any(
+                    f"function {method_name}(" in line for line in decl_lines
+                )
+                if not method_generated:
+                    _lifecycle_ref_warnings.append(
+                        f"Lifecycle hook '{hook}' references method '{method_name}' "
+                        f"but it was not generated in the composable."
+                    )
+
     # Determine Vue imports needed
     vue_imports: list[str] = []
     if mixin_members.data or mixin_members.watch:
@@ -156,7 +177,7 @@ def generate_composable_from_mixin(
         vue_imports.append("computed")
     if has_auto_watch:
         vue_imports.append("watch")
-    for hook_fn in get_required_imports(lifecycle_hooks):
+    for hook_fn in get_required_imports(lifecycle_hooks, mixin_source):
         if hook_fn not in vue_imports:
             vue_imports.append(hook_fn)
 
@@ -181,6 +202,31 @@ def generate_composable_from_mixin(
 
     body = "\n".join(body_parts)
 
+    # Post-generation validation: check lifecycle hooks are not nested inside
+    # computed/method blocks (brace depth > 0 relative to function body)
+    _lifecycle_calls = (
+        "onMounted(", "onBeforeUnmount(", "onActivated(", "onDeactivated(",
+        "onUpdated(", "onBeforeMount(", "onUnmounted(", "onBeforeUpdate(",
+        "onErrorCaptured(",
+    )
+    _nested_lifecycle_warnings: list[str] = []
+    depth = 0
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+        else:
+            for lc in _lifecycle_calls:
+                if body[i:i + len(lc)] == lc and depth > 0:
+                    _nested_lifecycle_warnings.append(
+                        f"MIGRATION: {lc[:-1]}) appears nested at brace depth {depth} "
+                        f"— it should be at top-level scope of the composable."
+                    )
+        i += 1
+
     # Apply this.$ auto-rewrites ($nextTick, $set, $delete)
     body, dollar_imports = rewrite_this_dollar_refs(body)
     for imp in dollar_imports:
@@ -196,6 +242,42 @@ def generate_composable_from_mixin(
 
     # Collect warnings and inject inline comments + confidence header
     warnings = collect_mixin_warnings(mixin_source, mixin_members, lifecycle_hooks)
+
+    # Add nested-lifecycle warnings from post-generation validation
+    for msg in _nested_lifecycle_warnings:
+        warnings.append(MigrationWarning(
+            mixin_stem="",
+            category="nested-lifecycle",
+            message=msg,
+            action_required="Move lifecycle hook call to top-level scope of composable",
+            line_hint=None,
+            severity="warning",
+        ))
+
+    # Add lifecycle method reference warnings
+    for msg in _lifecycle_ref_warnings:
+        warnings.append(MigrationWarning(
+            mixin_stem="",
+            category="missing-lifecycle-method",
+            message=msg,
+            action_required="Ensure the referenced method is included in the composable",
+            line_hint=None,
+            severity="warning",
+        ))
+
+    # Add missing cleanup warnings
+    from ..core.warning_collector import detect_missing_cleanup
+    cleanup_warnings = detect_missing_cleanup(result)
+    for msg in cleanup_warnings:
+        warnings.append(MigrationWarning(
+            mixin_stem="",
+            category="missing-cleanup",
+            message=msg,
+            action_required="Add cleanup code in onBeforeUnmount",
+            line_hint=None,
+            severity="warning",
+        ))
+
     confidence = compute_confidence(result, warnings)
     result = inject_inline_warnings(result, warnings, confidence, len(warnings))
 
