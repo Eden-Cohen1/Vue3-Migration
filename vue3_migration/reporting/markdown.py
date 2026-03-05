@@ -402,6 +402,89 @@ def build_per_component_index(
     return "\n".join(lines)
 
 
+def build_checklist(
+    entries_by_component: list[tuple[Path, list[MixinEntry]]],
+) -> str:
+    """Build an actionable checklist grouped by severity tier."""
+    from collections import Counter
+
+    # Collect all warnings from all unique entries
+    seen_stems: set[str] = set()
+    all_warnings: list[MigrationWarning] = []
+    skipped_count = 0
+    for _comp_path, entry_list in entries_by_component:
+        for entry in entry_list:
+            if entry.mixin_stem in seen_stems:
+                continue
+            seen_stems.add(entry.mixin_stem)
+            entry_cats = {w.category for w in entry.warnings}
+            if entry_cats and entry_cats <= _SKIPPED_CATEGORIES:
+                skipped_count += 1
+                continue
+            all_warnings.extend(entry.warnings)
+
+    if not all_warnings:
+        return ""
+
+    # Group by severity, then aggregate by category
+    errors: Counter[str] = Counter()
+    warns: Counter[str] = Counter()
+    infos: Counter[str] = Counter()
+    error_actions: dict[str, str] = {}
+    warn_actions: dict[str, str] = {}
+    info_actions: dict[str, str] = {}
+
+    for w in all_warnings:
+        if w.category in _SKIPPED_CATEGORIES:
+            continue
+        if w.severity == "error":
+            errors[w.category] += 1
+            error_actions.setdefault(w.category, w.action_required)
+        elif w.severity == "warning":
+            warns[w.category] += 1
+            warn_actions.setdefault(w.category, w.action_required)
+        else:
+            infos[w.category] += 1
+            info_actions.setdefault(w.category, w.action_required)
+
+    lines: list[str] = []
+    a = lines.append
+    a("---\n")
+    a("## Migration Checklist\n")
+
+    if errors:
+        a("### Blockers (must fix before code runs)\n")
+        for cat, count in errors.most_common():
+            a(f"- [ ] {count} `{cat}` \u2192 {error_actions[cat]}")
+        a("")
+
+    if warns:
+        a("### Manual Fixes (has known replacement)\n")
+        for cat, count in warns.most_common():
+            a(f"- [ ] {count} `{cat}` \u2192 {warn_actions[cat]}")
+        a("")
+
+    if infos:
+        a("### Advisory (review when convenient)\n")
+        for cat, count in infos.most_common():
+            a(f"- [ ] {count} `{cat}` \u2192 {info_actions[cat]}")
+        a("")
+
+    # Summary line
+    a("### Summary\n")
+    total_errors = sum(errors.values())
+    total_warns = sum(warns.values())
+    if total_errors:
+        a(f"- **{total_errors}** blocker(s) must be fixed before code will run")
+    if total_warns:
+        a(f"- **{total_warns}** this.$ reference(s) need known replacements")
+    if skipped_count:
+        a(f"- **{skipped_count}** mixin(s) were skipped ([see why](#skipped-mixins-not-migrated))")
+    a("")
+
+    return "\n".join(lines)
+
+
 def build_warning_summary(
     entries_by_component: "list[tuple[Path, list[MixinEntry]]]",
     composable_changes: "list[FileChange] | None" = None,

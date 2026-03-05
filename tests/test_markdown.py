@@ -10,7 +10,7 @@ from vue3_migration.models import (
     MixinMembers,
 )
 from vue3_migration.models import ConfidenceLevel, MigrationWarning
-from vue3_migration.reporting.markdown import build_component_report, build_per_component_index
+from vue3_migration.reporting.markdown import build_checklist, build_component_report, build_per_component_index
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dummy_project"
 PROJECT_ROOT = FIXTURES
@@ -337,3 +337,52 @@ class TestBuildPerComponentIndex:
         result = build_per_component_index(entries, {}, PROJECT_ROOT)
         assert "A.vue" in result
         assert "B.vue" in result
+
+
+class TestBuildChecklist:
+    def test_renders_section_header(self):
+        w = MigrationWarning("auth", "this.$emit", "not available", "Fix it", None, "error")
+        entry = MixinEntry(
+            local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            mixin_stem="authMixin", members=MixinMembers(),
+        )
+        entry.warnings = [w]
+        result = build_checklist([(Path("fake/Comp.vue"), [entry])])
+        assert "## Migration Checklist" in result
+
+    def test_groups_by_severity(self):
+        w1 = MigrationWarning("auth", "this.$emit", "msg", "act", None, "error")
+        w2 = MigrationWarning("auth", "this.$router", "msg", "act", None, "warning")
+        w3 = MigrationWarning("auth", "this.$forceUpdate", "msg", "act", None, "info")
+        entry = MixinEntry(
+            local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            mixin_stem="authMixin", members=MixinMembers(),
+        )
+        entry.warnings = [w1, w2, w3]
+        result = build_checklist([(Path("fake/Comp.vue"), [entry])])
+        assert "Blockers" in result
+        assert "Manual Fixes" in result or "manual" in result.lower()
+        assert "Advisory" in result or "advisory" in result.lower()
+
+    def test_empty_entries_returns_empty(self):
+        result = build_checklist([])
+        assert result == ""
+
+    def test_summary_tallies(self):
+        w1 = MigrationWarning("auth", "this.$emit", "msg", "act", None, "error")
+        w2 = MigrationWarning("auth", "this.$refs", "msg", "act", None, "error")
+        entry = MixinEntry(
+            local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            mixin_stem="authMixin", members=MixinMembers(),
+        )
+        entry.warnings = [w1, w2]
+        result = build_checklist([(Path("fake/Comp.vue"), [entry])])
+        assert "2" in result or "this.$" in result
+
+    def test_no_warnings_no_checklist(self):
+        entry = MixinEntry(
+            local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            mixin_stem="authMixin", members=MixinMembers(),
+        )
+        result = build_checklist([(Path("fake/Comp.vue"), [entry])])
+        assert result == ""
