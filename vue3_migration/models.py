@@ -204,3 +204,4 @@ class MigrationConfig:
     dry_run: bool = False
     auto_confirm: bool = False
     indent: str = "  "
+    regenerate: bool = False

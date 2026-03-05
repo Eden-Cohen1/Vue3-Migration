@@ -4,6 +4,7 @@ from vue3_migration.models import MixinMembers
 from vue3_migration.transform.composable_generator import (
     mixin_stem_to_composable_name,
     generate_composable_from_mixin,
+    _extract_func_params,
 )
 
 AUTH_MIXIN = """
@@ -539,3 +540,50 @@ class TestIndentationNormalization:
         body_start = result.index('function doWork()')
         body_section = result[body_start:result.index('}', body_start) + 1]
         assert '\t' not in body_section
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: _extract_func_params should match definitions, not call sites
+# ---------------------------------------------------------------------------
+
+METHODS_BODY_CALL_BEFORE_DEF = """\
+    exportToCSV(data) {
+        const blob = new Blob([data])
+        this.downloadFile(blob, this.exportFileName)
+    },
+    exportToPDF(data) {
+        const pdfBlob = createPDF(data)
+        this.downloadFile(pdfBlob, this.exportFileName)
+    },
+    downloadFile(blob, name) {
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = name
+        a.click()
+    },
+"""
+
+def test_extract_func_params_prefers_definition_over_call_site():
+    result = _extract_func_params(METHODS_BODY_CALL_BEFORE_DEF, "downloadFile")
+    assert result.strip() == "blob, name"
+
+def test_extract_func_params_no_this_in_params():
+    result = _extract_func_params(METHODS_BODY_CALL_BEFORE_DEF, "downloadFile")
+    assert "this." not in result
+
+def test_extract_func_params_shorthand_still_works():
+    body = "    myMethod(a, b) {\n      return a + b\n    },"
+    assert _extract_func_params(body, "myMethod").strip() == "a, b"
+
+def test_extract_func_params_function_expression():
+    body = "    myMethod: function(x, y) {\n      return x * y\n    },"
+    assert _extract_func_params(body, "myMethod").strip() == "x, y"
+
+def test_extract_func_params_arrow_function():
+    body = "    myMethod: (a) => {\n      return a\n    },"
+    assert _extract_func_params(body, "myMethod").strip() == "a"
+
+def test_extract_func_params_no_match():
+    body = "    someOtherMethod(x) {\n      return x\n    },"
+    assert _extract_func_params(body, "nonExistent") == ""

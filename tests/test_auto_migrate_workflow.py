@@ -178,3 +178,17 @@ def test_run_generates_composable_when_no_composables_dir(tmp_path):
 
     assert plan.has_changes
     assert any("useAuth" in str(c.file_path) for c in plan.composable_changes)
+
+
+# ---------------------------------------------------------------------------
+# MigrationConfig.regenerate flag
+# ---------------------------------------------------------------------------
+
+def test_migration_config_has_regenerate_flag():
+    config = MigrationConfig()
+    assert hasattr(config, 'regenerate')
+    assert config.regenerate is False
+
+def test_migration_config_regenerate_true():
+    config = MigrationConfig(regenerate=True)
+    assert config.regenerate is True

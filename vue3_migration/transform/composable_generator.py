@@ -56,15 +56,19 @@ def _extract_func_body(section_body: str, name: str) -> str | None:
 
 def _extract_func_params(section_body: str, name: str) -> str:
     """Extract the parameter list of a named function inside a section body."""
-    # Standard: name(params)
-    m = re.search(rf'\b{re.escape(name)}\s*\(([^)]*)\)', section_body)
+    # Standard shorthand: name(params) {
+    m = re.search(rf'\b{re.escape(name)}\s*\(([^)]*)\)\s*\{{', section_body)
     if m:
         return m.group(1)
-    # name: function(params)
-    m = re.search(rf'\b{re.escape(name)}\s*:\s*function\s*\(([^)]*)\)', section_body)
+    # name: function(params) {
+    m = re.search(rf'\b{re.escape(name)}\s*:\s*function\s*\(([^)]*)\)\s*\{{', section_body)
     if m:
         return m.group(1)
-    # name: (params) =>
+    # name: (params) => {
+    m = re.search(rf'\b{re.escape(name)}\s*:\s*\(([^)]*)\)\s*=>\s*\{{', section_body)
+    if m:
+        return m.group(1)
+    # name: (params) => expr  (single-expression arrow without braces)
     m = re.search(rf'\b{re.escape(name)}\s*:\s*\(([^)]*)\)\s*=>', section_body)
     if m:
         return m.group(1)

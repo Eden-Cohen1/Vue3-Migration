@@ -264,6 +264,51 @@ return { count, increment }'''
     assert 'return { count, increment }' in result
 
 
+def test_remove_stale_comment_are_not_pattern():
+    """Comments with 'X and Y are NOT defined' should be removed when both are defined."""
+    src = (
+        "const canDelete = ref(false)\n"
+        "const hasRole = ref(false)\n"
+        "// NOTE: canDelete and hasRole are NOT defined in this composable\n"
+        "return { canDelete, hasRole }\n"
+    )
+    result = _remove_stale_comments(src)
+    assert "are NOT defined" not in result
+
+
+def test_remove_stale_comment_is_not_still_works():
+    """Single-member 'X is NOT defined' pattern should still be removed when defined."""
+    src = (
+        "const count = ref(0)\n"
+        "// NOTE: count is NOT defined in this composable\n"
+        "return { count }\n"
+    )
+    result = _remove_stale_comments(src)
+    assert "is NOT defined" not in result
+
+
+def test_keep_stale_comment_when_not_defined():
+    """Comment should be kept when the member is genuinely NOT defined."""
+    src = (
+        "const a = ref(1)\n"
+        "// NOTE: missingThing is NOT defined in this composable\n"
+        "return { a }\n"
+    )
+    result = _remove_stale_comments(src)
+    assert "missingThing is NOT defined" in result
+
+
+def test_remove_stale_comment_not_returned_pattern():
+    """'X is NOT returned' comments should also be removed when X is returned."""
+    src = (
+        "const foo = ref(1)\n"
+        "// NOTE: foo is NOT returned from this composable\n"
+        "return { foo }\n"
+    )
+    result = _remove_stale_comments(src)
+    assert "is NOT returned" not in result
+
+
 # ---------------------------------------------------------------------------
 # Phase 6: Return formatting improvements (Issue #27)
 # ---------------------------------------------------------------------------
@@ -328,3 +373,53 @@ def test_generate_member_declaration_computed_arrow_shorthand():
     decl = generate_member_declaration("double", mixin, members, ["count"], [])
     assert "computed(() => count.value * 2)" in decl
     assert "{ return" not in decl
+
+
+# ---------------------------------------------------------------------------
+# Task 2: Trailing comma fix in add_keys_to_return (multi-line)
+# ---------------------------------------------------------------------------
+
+COMPOSABLE_MULTILINE_NO_TRAILING_COMMA = (
+    "export function useX() {\n"
+    "  const a = ref(1)\n"
+    "  const b = ref(2)\n"
+    "  return {\n"
+    "    a,\n"
+    "    b\n"
+    "  }\n"
+    "}\n"
+)
+
+def test_add_keys_multiline_adds_comma_to_last_member():
+    """When appending to multi-line return, a comma must be added after the last existing member."""
+    result = add_keys_to_return(COMPOSABLE_MULTILINE_NO_TRAILING_COMMA, ["c"])
+    lines = result.split('\n')
+    b_line = [l for l in lines if l.strip().startswith('b') and 'ref' not in l][0]
+    assert b_line.rstrip().endswith(','), f"Expected trailing comma on b line: '{b_line}'"
+
+def test_add_keys_multiline_no_duplicate_comma():
+    """When last member already has a trailing comma, don't add another."""
+    src = (
+        "export function useX() {\n"
+        "  const a = ref(1)\n"
+        "  return {\n"
+        "    a,\n"
+        "  }\n"
+        "}\n"
+    )
+    result = add_keys_to_return(src, ["b"])
+    lines = result.split('\n')
+    a_line = [l for l in lines if l.strip().startswith('a') and 'ref' not in l][0]
+    assert a_line.strip() == 'a,', f"Expected exactly one comma: '{a_line.strip()}'"
+
+def test_add_keys_multiline_produces_valid_syntax():
+    """Every member line in the return block should end with a comma."""
+    result = add_keys_to_return(COMPOSABLE_MULTILINE_NO_TRAILING_COMMA, ["c", "d"])
+    ret_start = result.index("return {")
+    ret_end = result.index("}", ret_start + len("return {")) + 1
+    ret_block = result[ret_start:ret_end]
+    inner_lines = ret_block.split('\n')[1:-1]
+    for line in inner_lines:
+        stripped = line.strip()
+        if stripped:
+            assert stripped.endswith(','), f"Line missing comma: '{stripped}'"

@@ -454,11 +454,57 @@ def plan_component_injections(
     return component_changes
 
 
+def plan_regenerated_composables(
+    entries_by_component: list[tuple[Path, list[MixinEntry]]],
+    project_root: Path,
+) -> list[FileChange]:
+    """Regenerate existing composables from their mixin source.
+
+    For each mixin that HAS an existing composable on disk, generates
+    fresh content using the generator instead of just patching.
+    """
+    seen_stems: set[str] = set()
+    changes = []
+
+    for _comp_path, entries in entries_by_component:
+        for entry in entries:
+            if entry.mixin_stem in seen_stems:
+                continue
+            # Only regenerate if composable already exists (not BLOCKED_NO_COMPOSABLE)
+            if entry.status == MigrationStatus.BLOCKED_NO_COMPOSABLE:
+                continue
+            if not entry.composable:
+                continue
+            seen_stems.add(entry.mixin_stem)
+
+            mixin_source = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+            content = generate_composable_from_mixin(
+                mixin_source=mixin_source,
+                mixin_stem=entry.mixin_stem,
+                mixin_members=entry.members,
+                lifecycle_hooks=entry.lifecycle_hooks,
+            )
+            original = entry.composable.file_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+            if content != original:
+                changes.append(FileChange(
+                    file_path=entry.composable.file_path,
+                    original_content=original,
+                    new_content=content,
+                    changes=[f"Regenerated composable from {entry.mixin_stem}"],
+                ))
+    return changes
+
+
 def _build_all_composable_changes(
     entries: list[tuple[Path, list[MixinEntry]]],
     project_root: Path,
+    config: MigrationConfig | None = None,
 ) -> list[FileChange]:
     """Combine patched-existing + newly-generated composable changes."""
+    if config and config.regenerate:
+        regenerated = plan_regenerated_composables(entries, project_root)
+        generated = plan_new_composables(entries, project_root)
+        return regenerated + generated
     patched = plan_composable_patches(entries)
     generated = plan_new_composables(entries, project_root)
     return patched + generated
@@ -470,7 +516,7 @@ def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     No file I/O. Returns a MigrationPlan the CLI can show as a diff and write.
     """
     entries = collect_all_mixin_entries(project_root, config)
-    composable_changes = _build_all_composable_changes(entries, project_root)
+    composable_changes = _build_all_composable_changes(entries, project_root, config)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
         component_changes=component_changes,
@@ -509,7 +555,7 @@ def run_scoped(
             if any(e.mixin_stem == mixin_stem for e in es)
         ]
 
-    composable_changes = _build_all_composable_changes(entries, project_root)
+    composable_changes = _build_all_composable_changes(entries, project_root, config)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
         component_changes=component_changes,

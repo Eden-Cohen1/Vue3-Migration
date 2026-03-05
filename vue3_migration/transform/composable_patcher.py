@@ -25,22 +25,41 @@ def _remove_stale_comments(source: str) -> str:
 
     for line in lines:
         # Check for "NOT defined" or "NOT returned" comments
-        # Match patterns like: "count is NOT defined", "count NOT returned", "count is NOT returned"
-        not_match = re.search(r'//.*?\b(\w+)\s+(?:is\s+)?NOT\s+(?:defined|returned)', line)
+        # Match patterns like: "count is NOT defined", "count NOT returned",
+        # "count is NOT returned", "canDelete and hasRole are NOT defined"
+        not_match = re.search(r'//.*?\b(\w+)\s+(?:(?:is|are)\s+)?NOT\s+(?:defined|returned)', line)
         if not_match:
-            member_name = not_match.group(1)
-            # Skip non-identifiers that might be matched (e.g. "MIGRATION")
-            if member_name.upper() == member_name and len(member_name) > 2:
-                result_lines.append(line)
-                continue
-            # Check if the member IS actually defined or returned elsewhere in the source
-            is_defined = (
-                re.search(rf'\b(?:const|let|var|function)\s+{re.escape(member_name)}\b', source)
-                or re.search(rf'\breturn\s*\{{[^}}]*\b{re.escape(member_name)}\b', source)
-            )
-            if is_defined:
-                # Skip this stale comment line
-                continue
+            # Extract all lowercase-starting identifiers before "NOT" in the comment
+            comment_start = line.index('//')
+            comment_text = line[comment_start:]
+            not_word = re.search(r'\bNOT\b', comment_text)
+            not_pos = not_word.start() if not_word else comment_text.index('NOT')
+            before_not = comment_text[:not_pos]
+            noise = {'is', 'are', 'and', 'or', 'not', 'in', 'this', 'composable', 'the', 'from'}
+            identifiers = [m for m in re.findall(r'\b([a-z]\w*)\b', before_not) if m not in noise]
+
+            if identifiers:
+                # All mentioned identifiers must be defined for the comment to be stale
+                all_defined = all(
+                    re.search(rf'\b(?:const|let|var|function)\s+{re.escape(name)}\b', source)
+                    or re.search(rf'\breturn\s*\{{[^}}]*\b{re.escape(name)}\b', source, re.DOTALL)
+                    for name in identifiers
+                )
+                if all_defined:
+                    continue  # Remove stale comment
+            else:
+                # Fallback to single-member logic
+                member_name = not_match.group(1)
+                if member_name.upper() == member_name and len(member_name) > 2:
+                    result_lines.append(line)
+                    continue
+                is_defined = (
+                    re.search(rf'\b(?:const|let|var|function)\s+{re.escape(member_name)}\b', source)
+                    or re.search(rf'\breturn\s*\{{[^}}]*\b{re.escape(member_name)}\b', source, re.DOTALL)
+                )
+                if is_defined:
+                    continue
+
         result_lines.append(line)
 
     return '\n'.join(result_lines)
@@ -119,9 +138,16 @@ def add_keys_to_return(content: str, keys: list[str]) -> str:
             if stripped and not stripped.startswith('}'):
                 member_indent = line[:len(line) - len(stripped)]
                 break
+        # Ensure the last existing member has a trailing comma
+        before_close = content[:close_pos]
+        temp = before_close.rstrip()
+        if temp and temp[-1] not in (',', '{'):
+            before_close = temp + ',' + before_close[len(temp):]
+            close_pos += 1
+
         # Insert new keys before the closing }
         new_key_lines = "".join(f"{member_indent}{k},\n" for k in new_keys)
-        return content[:close_pos] + new_key_lines + content[close_pos:]
+        return before_close + new_key_lines + content[close_pos:]
     else:
         # Single-line return: check if adding keys would make it too long
         # Extract existing keys from the return block content

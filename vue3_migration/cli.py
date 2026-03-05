@@ -517,9 +517,10 @@ def main(argv: list[str] | None = None):
 
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--root", default=None)
+    parser.add_argument("--regenerate", "-R", action="store_true", default=False)
     known, args = parser.parse_known_args(args)
     project_root = Path(known.root).resolve() if known.root else Path.cwd()
-    config = MigrationConfig(project_root=project_root)
+    config = MigrationConfig(project_root=project_root, regenerate=known.regenerate)
 
     if not args:
         interactive_menu(config)

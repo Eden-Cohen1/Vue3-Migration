@@ -1,6 +1,6 @@
 [project]
 name = "vue3-migration"
-version = "1.4.0"
+version = "1.4.1"
 description = "Vue 2 mixin to Vue 3 composable migration tool"
 requires-python = ">=3.9"
 
