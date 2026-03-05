@@ -102,3 +102,41 @@ def test_method_call_in_template_literal():
     assert "formatValue(total.value)" in result
     assert "this.formatValue" not in result
     assert "this.total" not in result
+
+
+# -- Parameter-protection regression tests --
+
+def test_this_ref_in_function_param_not_rewritten():
+    """this.x in function parameter position must not be corrupted."""
+    code = "function downloadFile(blob, this.exportFileName) { return blob }"
+    result = rewrite_this_refs(code, ["exportFileName"], [])
+    assert "this.exportFileName" in result  # param preserved
+    assert "exportFileName.value" not in result  # NOT rewritten
+
+
+def test_this_ref_body_rewritten_params_untouched():
+    """Body refs rewritten, but param refs left alone."""
+    code = "function save(this.name) { this.name = 'test' }"
+    result = rewrite_this_refs(code, ["name"], [])
+    # param must stay as this.name
+    assert result.startswith("function save(this.name)")
+    # body must be rewritten
+    assert "name.value = 'test'" in result
+
+
+def test_arrow_function_params_protected():
+    """Arrow function params should not be rewritten."""
+    code = "(this.x) => { this.x = 1 }"
+    result = rewrite_this_refs(code, ["x"], [])
+    # param preserved
+    assert result.startswith("(this.x) =>")
+    # body rewritten
+    assert "x.value = 1" in result
+
+
+def test_method_call_params_not_confused():
+    """Regular method call params ARE code, not function declarations."""
+    code = "doSomething(this.name, this.count)"
+    result = rewrite_this_refs(code, ["name", "count"], [])
+    assert "name.value" in result
+    assert "count.value" in result
