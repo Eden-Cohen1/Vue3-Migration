@@ -250,13 +250,15 @@ def test_watch_adds_watch_import():
     assert "watch" in result.split("from 'vue'")[0]
 
 
-def test_watch_string_handler_produces_warning_comment():
-    """String handler watch → warning comment, not watch() call."""
+def test_watch_string_handler_auto_converted():
+    """String handler watch → auto-converted watch() call, not warning comment."""
     members = MixinMembers(data=["count"], methods=["handleCount"], watch=["count"])
     result = generate_composable_from_mixin(STRING_HANDLER_WATCH_MIXIN, "testMixin", members, [])
-    # Should produce a warning/TODO, not a watch() call
-    assert "watch(count" not in result
-    assert "// watch: count" in result or "migrate manually" in result.lower()
+    # Should auto-convert string shorthand to watch() call
+    assert "watch(count" in result
+    assert "handleCount()" in result
+    # Should NOT produce a warning
+    assert "// watch: count" not in result
 
 
 def test_watch_quoted_key_produces_warning_comment():
@@ -529,3 +531,196 @@ def test_collision_multiple_overlaps():
     names = [w.message for w in warnings]
     assert any("foo" in n for n in names)
     assert any("bar" in n for n in names)
+
+
+# ── Phase 3 Regression Tests: Watch conversion bugs ──────────────────────────
+
+from vue3_migration.transform.composable_patcher import (
+    parse_watch_entry,
+    _extract_watch_section_body,
+    patch_composable,
+)
+
+
+def test_parse_watch_string_handler_auto_converted():
+    """String shorthand watcher should be auto-converted, not marked complex."""
+    mixin_src = """
+export default {
+  watch: {
+    currentTheme: 'applyTheme',
+  },
+}
+"""
+    watch_body = _extract_watch_section_body(mixin_src)
+    entry = parse_watch_entry(watch_body, "currentTheme")
+    assert entry is not None
+    assert entry["complex"] is False
+    assert "applyTheme" in entry["body"]
+
+
+def test_parse_watch_handler_function_expression():
+    """handler: function(val) {...} should be recognized."""
+    mixin_src = """
+export default {
+  watch: {
+    searchQuery: {
+      handler: function(newVal) {
+        this.performSearch(newVal)
+      },
+      immediate: true,
+    },
+  },
+}
+"""
+    watch_body = _extract_watch_section_body(mixin_src)
+    entry = parse_watch_entry(watch_body, "searchQuery")
+    assert entry is not None
+    assert entry["complex"] is False
+    assert "newVal" in entry["params"]
+    assert "performSearch" in entry["body"]
+    assert entry["options"].get("immediate") == "true"
+
+
+def test_parse_watch_handler_arrow():
+    """handler: (val) => {...} should be recognized."""
+    mixin_src = """
+export default {
+  watch: {
+    count: {
+      handler: (newVal, oldVal) => {
+        console.log(newVal)
+      },
+      deep: true,
+    },
+  },
+}
+"""
+    watch_body = _extract_watch_section_body(mixin_src)
+    entry = parse_watch_entry(watch_body, "count")
+    assert entry is not None
+    assert entry["complex"] is False
+    assert "newVal" in entry["params"]
+    assert entry["options"].get("deep") == "true"
+
+
+def test_watch_import_added_when_patching():
+    """Patched composable should have watch in imports when watch calls added."""
+    composable_src = """import { ref } from 'vue'
+
+export function useTest() {
+  const count = ref(0)
+
+  function onChange() {
+    console.log('changed')
+  }
+
+  return { count, onChange }
+}
+"""
+    mixin_src = """
+export default {
+  data() {
+    return { count: 0 }
+  },
+  watch: {
+    count(val) {
+      console.log(val)
+    },
+  },
+  methods: {
+    onChange() {
+      console.log('changed')
+    },
+  },
+}
+"""
+    # count is only in watch (not data) so generate_member_declaration takes the watch path
+    mixin_members = MixinMembers(data=[], methods=["onChange"], watch=["count"])
+    result = patch_composable(
+        composable_content=composable_src,
+        mixin_content=mixin_src,
+        not_returned=[],
+        missing=["count"],  # watch member is missing from composable
+        mixin_members=mixin_members,
+    )
+    # watch should appear in the Vue import line
+    import_m = __import__('re').search(r"import\s*\{([^}]*)\}\s*from\s*['\"]vue['\"]", result)
+    assert import_m is not None, "Vue import line not found"
+    assert "watch" in import_m.group(1)
+
+
+def test_debounce_this_underscore_rewritten():
+    """this._searchTimeout should become a local let variable in generated composable."""
+    mixin_src = """
+export default {
+  data() {
+    return { query: '' }
+  },
+  methods: {
+    debouncedSearch(val) {
+      clearTimeout(this._searchTimeout)
+      this._searchTimeout = setTimeout(() => {
+        this.performSearch(val)
+      }, 300)
+    },
+    performSearch(val) {
+      console.log('searching', val)
+    },
+  },
+}
+"""
+    mixin_members = MixinMembers(
+        data=["query"],
+        methods=["debouncedSearch", "performSearch"],
+    )
+    result = generate_composable_from_mixin(mixin_src, "searchMixin", mixin_members, [])
+    # _searchTimeout should be declared as a let variable
+    assert "let _searchTimeout = null" in result
+    # this._searchTimeout should be rewritten to _searchTimeout in actual code
+    # (warning comments may still reference this._searchTimeout, so only check code lines)
+    code_lines = [line for line in result.splitlines() if not line.strip().startswith("//")]
+    code_text = "\n".join(code_lines)
+    assert "this._searchTimeout" not in code_text
+    assert "_searchTimeout" in result
+
+
+def test_string_handler_patcher_generates_watch_call():
+    """generate_member_declaration for string handler should produce watch() call."""
+    mixin_src = STRING_HANDLER_WATCH_MIXIN
+    # count only in watch (not data) so generate_member_declaration takes the watch path
+    members = MixinMembers(methods=["handleCount"], watch=["count"])
+    ref_members = ["count"]
+    plain_members = ["handleCount"]
+    result = generate_member_declaration("count", mixin_src, members, ref_members, plain_members)
+    assert "watch(count" in result
+    assert "handleCount()" in result
+    assert "migrate manually" not in result
+
+
+HANDLER_FUNC_EXPR_MIXIN = """
+export default {
+  data() {
+    return { searchQuery: '' }
+  },
+  watch: {
+    searchQuery: {
+      handler: function(newVal) {
+        this.performSearch(newVal)
+      },
+      immediate: true,
+    },
+  },
+  methods: {
+    performSearch(val) {},
+  },
+}
+"""
+
+
+def test_handler_func_expr_generates_watch_call():
+    """handler: function(val) form should generate watch() call via composable generator."""
+    members = MixinMembers(data=["searchQuery"], methods=["performSearch"], watch=["searchQuery"])
+    result = generate_composable_from_mixin(HANDLER_FUNC_EXPR_MIXIN, "searchMixin", members, [])
+    assert "watch(searchQuery" in result
+    assert "{ immediate: true }" in result
+    assert "// watch: searchQuery" not in result

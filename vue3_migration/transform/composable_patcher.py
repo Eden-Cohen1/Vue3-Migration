@@ -194,6 +194,15 @@ def parse_watch_entry(watch_body: str, name: str) -> dict | None:
 
         # String handler — name: 'methodName'
         if value_start and value_start[0] in ("'", '"'):
+            str_match = re.match(r"""^(['"])(\w+)\1""", value_start)
+            if str_match:
+                method_name = str_match.group(2)
+                return {
+                    "params": "",
+                    "body": f"{method_name}()",
+                    "options": {},
+                    "complex": False,
+                }
             return {"params": "", "body": "", "options": {}, "complex": True}
 
         # Array handler — name: [handler1, handler2]
@@ -209,13 +218,23 @@ def parse_watch_entry(watch_body: str, name: str) -> dict | None:
                 body = extract_brace_block(rest, 0)
                 return {"params": params, "body": body, "options": {}, "complex": False}
 
-        # Options object — name: { handler(params) { body }, deep: true }
+        # Options object — name: { handler(...) { body }, deep: true }
         if value_start and value_start[0] == "{":
             obj_body = extract_brace_block(value_start, 0)
-            handler_m = re.search(r'\bhandler\s*\(([^)]*)\)', obj_body)
+            # Try multiple handler forms:
+            #   handler(params) { ... }           — shorthand
+            #   handler: function(params) { ... } — function expression
+            #   handler: (params) => { ... }      — arrow function
+            handler_m = re.search(
+                r'\bhandler\s*(?::\s*(?:function\s*)?)?\(([^)]*)\)',
+                obj_body,
+            )
             if handler_m:
                 params = handler_m.group(1)
                 rest = obj_body[handler_m.end():].lstrip()
+                # Skip arrow `=>` if present
+                if rest.startswith("=>"):
+                    rest = rest[2:].lstrip()
                 if rest.startswith("{"):
                     body = extract_brace_block(rest, 0)
                     options = {}
@@ -381,6 +400,14 @@ def patch_composable(
         ]
         content = add_members_to_composable(content, declarations)
         content = add_keys_to_return(content, missing)
+
+        # Add required imports for generated declarations
+        if any("watch(" in d for d in declarations):
+            content = _add_vue_import(content, "watch")
+        if any("ref(" in d for d in declarations):
+            content = _add_vue_import(content, "ref")
+        if any("computed(" in d for d in declarations):
+            content = _add_vue_import(content, "computed")
 
     # Step 3: add lifecycle hooks not yet present in the composable
     if lifecycle_hooks:

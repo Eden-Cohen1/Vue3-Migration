@@ -181,6 +181,20 @@ def generate_composable_from_mixin(
 
     body = "\n".join(body_parts)
 
+    # Detect this._xxx internal properties (e.g. this._searchTimeout for debounce)
+    # These are non-reactive private properties that should become local variables.
+    internal_props = set(re.findall(r'this\.(_\w+)', body))
+    known = set(mixin_members.all_names)
+    internal_props = {p for p in internal_props if p not in known}
+
+    if internal_props:
+        # Rewrite this._xxx to _xxx throughout the body
+        for p in internal_props:
+            body = body.replace(f"this.{p}", p)
+        # Prepend let declarations at the beginning of the body
+        internal_decls = "\n".join(f"{indent}let {p} = null" for p in sorted(internal_props))
+        body = internal_decls + "\n\n" + body
+
     # Apply this.$ auto-rewrites ($nextTick, $set, $delete)
     body, dollar_imports = rewrite_this_dollar_refs(body)
     for imp in dollar_imports:
