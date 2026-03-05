@@ -10,7 +10,7 @@ from vue3_migration.models import (
     MixinMembers,
 )
 from vue3_migration.models import ConfidenceLevel, MigrationWarning
-from vue3_migration.reporting.markdown import build_checklist, build_component_report, build_per_component_index
+from vue3_migration.reporting.markdown import build_audit_report, build_checklist, build_component_report, build_per_component_index
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dummy_project"
 PROJECT_ROOT = FIXTURES
@@ -399,3 +399,41 @@ class TestBuildChecklist:
         )
         result = build_checklist([(Path("fake/Comp.vue"), [entry])])
         assert result == ""
+
+
+class TestBuildAuditReportWarnings:
+    def test_audit_report_shows_warnings_when_provided(self):
+        w = MigrationWarning(
+            "authMixin", "this.$emit", "not available", "Fix it", None, "error",
+        )
+        report = build_audit_report(
+            mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            members={"data": ["token"], "computed": [], "methods": ["go"]},
+            lifecycle_hooks=["mounted"],
+            importing_files=[FIXTURES / "src/components/A.vue"],
+            all_member_names=["token", "go"],
+            composable_path_arg=None,
+            composable_identifiers=[],
+            composable_exists=False,
+            project_root=PROJECT_ROOT,
+            usage_map={},
+            warnings=[w],
+        )
+        assert "this.$emit" in report
+        assert "error" in report.lower() or "❌" in report
+
+    def test_audit_report_works_without_warnings(self):
+        """Backward compatibility — no warnings param."""
+        report = build_audit_report(
+            mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            members={"data": ["token"], "computed": [], "methods": []},
+            lifecycle_hooks=[],
+            importing_files=[],
+            all_member_names=["token"],
+            composable_path_arg=None,
+            composable_identifiers=[],
+            composable_exists=False,
+            project_root=PROJECT_ROOT,
+            usage_map={},
+        )
+        assert "authMixin" in report

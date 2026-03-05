@@ -302,6 +302,7 @@ def build_audit_report(
     composable_exists: bool,
     project_root: Path,
     usage_map: dict[str, list[str]],
+    warnings: list[MigrationWarning] | None = None,
 ) -> str:
     """Build a markdown audit report for a single mixin."""
     lines: list[str] = []
@@ -357,6 +358,14 @@ def build_audit_report(
     unused_members = [m for m in all_member_names if m not in all_used_members]
     if unused_members:
         w(f"- Unused members (candidates for removal): {', '.join(unused_members)}\n")
+
+    if warnings:
+        _SEV_ICON = {"error": "❌", "warning": "⚠️", "info": "ℹ️"}
+        w(f"\n## Migration Warnings ({len(warnings)})\n")
+        for warning in warnings:
+            icon = _SEV_ICON.get(warning.severity, "❓")
+            w(f"- {icon} **{warning.category}** ({warning.severity}): {warning.message}")
+            w(f"    → {warning.action_required}\n")
 
     return "\n".join(lines)
 
