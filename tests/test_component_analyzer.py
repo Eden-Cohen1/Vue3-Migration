@@ -2,6 +2,7 @@
 import pytest
 
 from vue3_migration.core.component_analyzer import (
+    extract_data_property_names,
     extract_own_members,
     find_used_members,
     parse_imports,
@@ -210,3 +211,82 @@ class TestExtractOwnMembers:
         assert 'myData' in result
         assert 'myComputed' in result
         assert 'myMethod' in result
+
+
+# ---------------------------------------------------------------------------
+# extract_data_property_names (Phase 5, Issues #14, #20)
+# ---------------------------------------------------------------------------
+
+class TestExtractDataPropertyNames:
+    def test_basic_data_function(self):
+        src = '''
+export default {
+    data() {
+        return {
+            count: 0,
+            name: '',
+            items: []
+        }
+    }
+}
+'''
+        result = extract_data_property_names(src)
+        assert 'count' in result
+        assert 'name' in result
+        assert 'items' in result
+
+    def test_data_as_function_expression(self):
+        src = '''
+export default {
+    data: function() {
+        return {
+            loading: false,
+            error: null
+        }
+    }
+}
+'''
+        result = extract_data_property_names(src)
+        assert 'loading' in result
+        assert 'error' in result
+
+    def test_no_data_function(self):
+        src = '''
+export default {
+    computed: {
+        total() { return 0 }
+    }
+}
+'''
+        result = extract_data_property_names(src)
+        assert result == []
+
+    def test_empty_data_return(self):
+        src = '''
+export default {
+    data() {
+        return {}
+    }
+}
+'''
+        result = extract_data_property_names(src)
+        assert result == []
+
+    def test_sfc_component(self):
+        src = '''<script>
+export default {
+    data() {
+        return {
+            visible: true,
+            message: 'hello'
+        }
+    },
+    methods: {
+        toggle() { this.visible = !this.visible }
+    }
+}
+</script>
+'''
+        result = extract_data_property_names(src)
+        assert 'visible' in result
+        assert 'message' in result

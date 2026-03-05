@@ -1058,3 +1058,200 @@ class TestDetectMissingCleanup:
         warnings = detect_missing_cleanup(source)
         listener_warnings = [w for w in warnings if 'addEventListener' in w.lower() or 'cleanup' in w.lower()]
         assert len(listener_warnings) == 0
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: this. in parameter positions (Issue #19)
+# ---------------------------------------------------------------------------
+
+
+class TestPostGenThisInParams:
+    def test_catches_this_in_params(self):
+        """this. in parameter position should trigger a post-gen warning."""
+        source = '''
+    export function useTest() {
+      function downloadFile(blob, this.exportFileName) {
+        return blob
+      }
+      return { downloadFile }
+    }
+    '''
+        warnings = post_generation_check(source)
+        assert any(
+            w.category == 'this-in-params' for w in warnings
+        ), f"Expected 'this-in-params' warning, got: {[w.category for w in warnings]}"
+
+    def test_no_false_positive_for_normal_params(self):
+        """Normal function params should not trigger this-in-params warning."""
+        source = '''
+    export function useTest() {
+      function downloadFile(blob, fileName) {
+        return blob
+      }
+      return { downloadFile }
+    }
+    '''
+        warnings = post_generation_check(source)
+        assert not any(w.category == 'this-in-params' for w in warnings)
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Undefined lifecycle references (Issue #22)
+# ---------------------------------------------------------------------------
+
+
+class TestPostGenUndefinedLifecycleRefs:
+    def test_catches_undefined_ref_in_lifecycle(self):
+        """Lifecycle hooks referencing undefined functions should trigger warning."""
+        source = '''
+    export function useTest() {
+      onMounted(() => {
+        handleResize()
+        window.addEventListener('resize', handleResize)
+      })
+      return {}
+    }
+    '''
+        warnings = post_generation_check(source)
+        assert any(
+            'handleResize' in w.message for w in warnings
+        ), f"Expected warning about 'handleResize', got: {[w.message for w in warnings]}"
+
+    def test_no_warning_when_function_defined(self):
+        """No warning when lifecycle-referenced function is defined in composable."""
+        source = '''
+    export function useTest() {
+      function handleResize() { console.log('resize') }
+      onMounted(() => {
+        handleResize()
+      })
+      return { handleResize }
+    }
+    '''
+        warnings = post_generation_check(source)
+        assert not any(
+            'handleResize' in w.message for w in warnings
+        ), f"Should not warn about defined function, got: {[w.message for w in warnings]}"
+
+    def test_no_warning_for_builtins(self):
+        """Built-in functions like console, window, etc. should not trigger warning."""
+        source = '''
+    export function useTest() {
+      onMounted(() => {
+        console.log('mounted')
+        window.addEventListener('resize', () => {})
+      })
+      return {}
+    }
+    '''
+        warnings = post_generation_check(source)
+        assert not any(
+            w.category == 'undefined-in-lifecycle' for w in warnings
+        ), f"Should not warn about builtins, got: {[w.message for w in warnings]}"
+
+    def test_const_defined_function_not_flagged(self):
+        """Functions defined with const should not be flagged as undefined."""
+        source = '''
+    export function useTest() {
+      const doWork = () => { return 42 }
+      onMounted(() => {
+        doWork()
+      })
+      return { doWork }
+    }
+    '''
+        warnings = post_generation_check(source)
+        assert not any(
+            'doWork' in w.message for w in warnings
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Factory mixin warning improvements (Issue #16)
+# ---------------------------------------------------------------------------
+
+from vue3_migration.core.warning_collector import detect_structural_patterns
+
+
+class TestFactoryMixinWarnings:
+    def test_factory_mixin_includes_param_names(self):
+        """Factory mixin warning should include parameter names."""
+        source = '''
+        export default function(defaultKey) {
+            return {
+                data() { return { key: defaultKey } },
+                methods: { doSomething() {} }
+            }
+        }
+        '''
+        warnings = detect_structural_patterns(source, "factoryMixin")
+        factory_warnings = [w for w in warnings if w.category == "structural:factory-function"]
+        assert len(factory_warnings) == 1
+        assert "defaultKey" in factory_warnings[0].message
+        assert "params" in factory_warnings[0].message.lower()
+
+    def test_factory_mixin_multiple_params(self):
+        """Factory mixin warning should list all parameter names."""
+        source = '''
+        export default function createMixin(key, options) {
+            return {
+                data() { return { key } }
+            }
+        }
+        '''
+        warnings = detect_structural_patterns(source, "factoryMixin")
+        factory_warnings = [w for w in warnings if w.category == "structural:factory-function"]
+        assert len(factory_warnings) == 1
+        assert "key" in factory_warnings[0].message
+        assert "options" in factory_warnings[0].message
+
+    def test_factory_mixin_no_params(self):
+        """Factory mixin with no params should say 'no params'."""
+        source = '''
+        export default function() {
+            return {
+                data() { return { x: 1 } }
+            }
+        }
+        '''
+        warnings = detect_structural_patterns(source, "factoryMixin")
+        factory_warnings = [w for w in warnings if w.category == "structural:factory-function"]
+        assert len(factory_warnings) == 1
+        assert "no params" in factory_warnings[0].message.lower()
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Transitive mixin warning improvements (Issue #17)
+# ---------------------------------------------------------------------------
+
+
+class TestTransitiveMixinWarnings:
+    def test_nested_mixin_names_included(self):
+        """Transitive mixin warning should list the nested mixin names."""
+        source = '''
+        import validationMixin from './validationMixin'
+        import formMixin from './formMixin'
+
+        export default {
+            mixins: [validationMixin, formMixin],
+            data() { return { value: '' } }
+        }
+        '''
+        warnings = detect_structural_patterns(source, "combinedMixin")
+        nested_warnings = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert len(nested_warnings) == 1
+        assert "validationMixin" in nested_warnings[0].message
+        assert "formMixin" in nested_warnings[0].message
+
+    def test_single_nested_mixin_name_included(self):
+        """Single nested mixin name should be included in the warning."""
+        source = '''
+        export default {
+            mixins: [baseMixin],
+            data() { return { x: 1 } }
+        }
+        '''
+        warnings = detect_structural_patterns(source, "childMixin")
+        nested_warnings = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert len(nested_warnings) == 1
+        assert "baseMixin" in nested_warnings[0].message

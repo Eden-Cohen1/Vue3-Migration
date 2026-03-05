@@ -214,3 +214,117 @@ def test_patch_no_hooks_param_unchanged():
         mixin_members=MixinMembers(data=["logs"], methods=["log"]),
     )
     assert "onMounted" not in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: Stale comment removal (Issues #24, #25)
+# ---------------------------------------------------------------------------
+
+from vue3_migration.transform.composable_patcher import _remove_stale_comments
+
+
+def test_stale_not_defined_comments_removed():
+    """Stale 'NOT defined' comments should be removed when member IS defined."""
+    source = '''const count = ref(0)
+// MIGRATION: count is NOT defined in composable scope
+function increment() { count.value++ }
+return { count, increment }'''
+    result = _remove_stale_comments(source)
+    assert 'NOT defined' not in result
+    assert 'const count' in result  # actual code preserved
+
+
+def test_stale_not_returned_comments_removed():
+    """Stale 'NOT returned' comments should be removed when member IS returned."""
+    source = '''const count = ref(0)
+// MIGRATION: count is NOT returned from composable
+function increment() { count.value++ }
+return { count, increment }'''
+    result = _remove_stale_comments(source)
+    assert 'NOT returned' not in result
+    assert 'const count' in result
+
+
+def test_valid_not_defined_comment_preserved():
+    """'NOT defined' comment should be preserved when member truly is not defined."""
+    source = '''// MIGRATION: missingFunc is NOT defined in composable scope
+return { count }'''
+    result = _remove_stale_comments(source)
+    assert 'NOT defined' in result
+
+
+def test_code_lines_preserved_when_removing_stale():
+    """Non-comment lines should not be removed."""
+    source = '''const count = ref(0)
+// MIGRATION: count is NOT defined in composable scope
+function increment() { count.value++ }
+return { count, increment }'''
+    result = _remove_stale_comments(source)
+    assert 'function increment' in result
+    assert 'return { count, increment }' in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Return formatting improvements (Issue #27)
+# ---------------------------------------------------------------------------
+
+def test_return_formatting_multiline_when_long():
+    """When adding keys would exceed 80 chars, return should become multi-line."""
+    source = '''export function useTest() {
+  const a = ref(0)
+  return { a }
+}'''
+    result = add_keys_to_return(source, ['longVariableName', 'anotherLongName', 'yetAnotherName', 'extraVariable'])
+    # All members should be in the return
+    assert 'a' in result
+    assert 'longVariableName' in result
+    assert 'anotherLongName' in result
+    assert 'yetAnotherName' in result
+    assert 'extraVariable' in result
+
+
+def test_return_formatting_multiline_existing():
+    """When existing return is multi-line, new keys should be on their own lines."""
+    source = '''export function useTest() {
+  const a = ref(0)
+  return {
+    a,
+  }
+}'''
+    result = add_keys_to_return(source, ['b', 'c'])
+    # All members should be in the return
+    assert 'a' in result
+    assert 'b' in result
+    assert 'c' in result
+    # New keys should be on their own lines
+    lines = result.splitlines()
+    b_lines = [l for l in lines if l.strip() == 'b,']
+    c_lines = [l for l in lines if l.strip() == 'c,']
+    assert len(b_lines) >= 1, "b should be on its own line"
+    assert len(c_lines) >= 1, "c should be on its own line"
+
+
+def test_return_formatting_short_stays_single_line():
+    """When adding keys keeps line under 80 chars, return stays single-line."""
+    source = '''export function useTest() {
+  const a = ref(0)
+  return { a }
+}'''
+    result = add_keys_to_return(source, ['b'])
+    # Should stay on one line
+    return_line = [l for l in result.splitlines() if 'return' in l][0]
+    assert 'a' in return_line
+    assert 'b' in return_line
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Computed arrow shorthand in patcher (Issue #26)
+# ---------------------------------------------------------------------------
+
+def test_generate_member_declaration_computed_arrow_shorthand():
+    """Computed with single return should use arrow shorthand in patcher too."""
+    mixin = "export default { computed: { double() { return this.count * 2 } } }"
+    members = MixinMembers(data=["count"], computed=["double"])
+    decl = generate_member_declaration("double", mixin, members, ["count"], [])
+    assert "computed(() => count.value * 2)" in decl
+    assert "{ return" not in decl

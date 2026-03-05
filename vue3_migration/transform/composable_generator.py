@@ -32,20 +32,83 @@ def _extract_func_body(section_body: str, name: str) -> str | None:
     Works by calling extract_hook_body on just the section content so the
     R-2 exclusion (which excludes methods/computed blocks when parsing the
     full mixin source) does not fire.
+
+    Falls back to explicit pattern matching for function expressions and
+    arrow functions if extract_hook_body returns None.
     """
     from .lifecycle_converter import extract_hook_body
-    return extract_hook_body(section_body, name)
+    result = extract_hook_body(section_body, name)
+    if result is not None:
+        return result
+
+    # Fallback: try name: function(...) { ... } pattern
+    m = re.search(rf'\b{re.escape(name)}\s*:\s*function\s*\([^)]*\)\s*\{{', section_body)
+    if m:
+        return extract_brace_block(section_body, m.end() - 1)
+
+    # Fallback: try name: (...) => { ... } arrow pattern
+    m = re.search(rf'\b{re.escape(name)}\s*:\s*\([^)]*\)\s*=>\s*\{{', section_body)
+    if m:
+        return extract_brace_block(section_body, m.end() - 1)
+
+    return None
 
 
 def _extract_func_params(section_body: str, name: str) -> str:
     """Extract the parameter list of a named function inside a section body."""
+    # Standard: name(params)
     m = re.search(rf'\b{re.escape(name)}\s*\(([^)]*)\)', section_body)
-    return m.group(1) if m else ""
+    if m:
+        return m.group(1)
+    # name: function(params)
+    m = re.search(rf'\b{re.escape(name)}\s*:\s*function\s*\(([^)]*)\)', section_body)
+    if m:
+        return m.group(1)
+    # name: (params) =>
+    m = re.search(rf'\b{re.escape(name)}\s*:\s*\(([^)]*)\)\s*=>', section_body)
+    if m:
+        return m.group(1)
+    return ""
 
 
 def _is_async(section_body: str, name: str) -> bool:
     """Check if a named function in a section body is declared async."""
     return bool(re.search(rf'\basync\s+{re.escape(name)}\b', section_body))
+
+
+def _normalize_indentation(body: str, indent: str) -> str:
+    """Normalize indentation in a code body to use the configured indent consistently.
+
+    After textwrap.dedent, bodies may still have mixed tabs/spaces. This function
+    re-indents each line using the configured indent string (e.g. 2 spaces).
+    """
+    lines = body.splitlines()
+    normalized = []
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped:
+            normalized.append("")
+            continue
+        # Count leading spaces/tabs and convert to indent units
+        leading = line[:len(line) - len(stripped)]
+        level = 0
+        i = 0
+        while i < len(leading):
+            if leading[i] == '\t':
+                level += 1
+                i += 1
+            elif leading[i] == ' ':
+                # Count consecutive spaces
+                j = i
+                while j < len(leading) and leading[j] == ' ':
+                    j += 1
+                spaces = j - i
+                level += max(1, spaces // 2)
+                i = j
+            else:
+                break
+        normalized.append((indent * level) + stripped)
+    return "\n".join(normalized)
 
 
 def mixin_stem_to_composable_name(stem: str) -> str:
@@ -110,7 +173,16 @@ def generate_composable_from_mixin(
                 decl_lines.append(f"{indent}const {name} = computed(() => null) // TODO: getter/setter computed — migrate manually")
         elif body:
             rewritten = rewrite_this_refs(body.strip(), ref_members, plain_members)
-            decl_lines.append(f"{indent}const {name} = computed(() => {{ {rewritten} }})")
+            rewritten_lines = rewritten.strip().splitlines()
+            # Check if it's a single return statement (can use arrow shorthand)
+            if len(rewritten_lines) == 1 and rewritten_lines[0].strip().startswith("return "):
+                expr = rewritten_lines[0].strip()[len("return "):].rstrip(";").strip()
+                decl_lines.append(f"{indent}const {name} = computed(() => {expr})")
+            else:
+                # Multi-line body: use block form with proper indentation
+                inner = indent + indent
+                indented_body = f"\n{inner}" + f"\n{inner}".join(rewritten_lines) + f"\n{indent}"
+                decl_lines.append(f"{indent}const {name} = computed(() => {{{indented_body}}})")
         else:
             decl_lines.append(f"{indent}const {name} = computed(() => null) // TODO: implement")
 
@@ -122,13 +194,21 @@ def generate_composable_from_mixin(
         body = _extract_func_body(methods_body, name) if methods_body else None
         if body:
             body_clean = textwrap.dedent(body).strip()
+            # Normalize indentation to use configured indent consistently
+            body_clean = _normalize_indentation(body_clean, indent)
             rewritten = rewrite_this_refs(body_clean, ref_members, plain_members)
             inner = indent + indent
             body_lines = f"\n{inner}" + f"\n{inner}".join(rewritten.splitlines()) + f"\n{indent}"
             async_prefix = "async " if _is_async(methods_body, name) else ""
             decl_lines.append(f"{indent}{async_prefix}function {name}({params}) {{{body_lines}}}")
         else:
-            decl_lines.append(f"{indent}function {name}({params}) {{}} // TODO: implement")
+            decl_lines.append(f"{indent}function {name}({params}) {{}} // TODO: method body could not be extracted — implement manually")
+
+    # Validate all methods were generated (safety net for Issue #8)
+    generated_methods = {m for m in mixin_members.methods if any(f"function {m}(" in line for line in decl_lines)}
+    missing_methods = set(mixin_members.methods) - generated_methods
+    for m in missing_methods:
+        decl_lines.append(f"{indent}function {m}() {{}} // TODO: method missing from extraction — implement manually")
 
     if mixin_members.methods and mixin_members.watch:
         decl_lines.append("")

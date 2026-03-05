@@ -60,6 +60,38 @@ def find_used_members(component_source: str, member_names: list[str]) -> list[st
     ]
 
 
+def extract_data_property_names(component_source: str) -> list[str]:
+    """Extract property names from a component's data() return object.
+
+    Parses patterns like:
+        data() { return { key1: value1, key2: value2 } }
+        data: function() { return { key1: value1 } }
+
+    Returns a list of property name strings found in the data() return block.
+    """
+    # Find data() or data: function() return block
+    m = re.search(r'\bdata\s*(?:\(\)|:\s*function\s*\(\))\s*(?::\s*\w+(?:<[^>]*>)?\s*)?\{', component_source)
+    if not m:
+        return []
+
+    # Extract the data function body first
+    data_body = extract_brace_block(component_source, m.end() - 1)
+    if not data_body:
+        return []
+
+    # Find return { ... } in the body
+    ret_m = re.search(r'\breturn\s*\{', data_body)
+    if not ret_m:
+        return []
+
+    return_block = extract_brace_block(data_body, ret_m.end() - 1)
+    if not return_block:
+        return []
+
+    # Extract property names using the existing property name extractor
+    return extract_property_names(return_block)
+
+
 def extract_own_members(component_source: str) -> set[str]:
     """Extract member names defined in the component's OWN data/computed/methods/watch.
 

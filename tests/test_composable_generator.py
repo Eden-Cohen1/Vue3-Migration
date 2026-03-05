@@ -307,6 +307,117 @@ class TestLifecycleHookScope:
 # Bug fix regression: Issue #3 — mounted + beforeDestroy both converted
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Bug fix regression: Issues #5, #6, #7, #8 — method body faithfulness
+# ---------------------------------------------------------------------------
+
+class TestMethodBodyFaithfulness:
+    """Test that method bodies are preserved faithfully."""
+
+    def test_all_methods_present_in_output(self):
+        """All declared methods should appear in the generated composable."""
+        mixin = '''
+        export default {
+            methods: {
+                methodA() {
+                    console.log('a')
+                },
+                methodB(x, y) {
+                    return x + y
+                },
+                _privateMethod() {
+                    this.doStuff()
+                },
+                async asyncMethod() {
+                    await this.fetch()
+                },
+                methodC() {
+                    this.value = 1
+                }
+            }
+        }
+        '''
+        members = MixinMembers(
+            data=['value'],
+            computed=[],
+            methods=['methodA', 'methodB', '_privateMethod', 'asyncMethod', 'methodC'],
+            watch=[]
+        )
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        for name in members.methods:
+            assert f'function {name}(' in result, f"Method {name} missing from output"
+
+    def test_deep_clone_preserved_verbatim(self):
+        """JSON.parse(JSON.stringify(data)) should pass through unchanged."""
+        mixin = '''
+        export default {
+            methods: {
+                cloneData() {
+                    return JSON.parse(JSON.stringify(this.items))
+                }
+            }
+        }
+        '''
+        members = MixinMembers(data=['items'], computed=[], methods=['cloneData'], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        assert 'JSON.parse(JSON.stringify(' in result
+        assert 'items.value' in result
+
+    def test_method_body_preserved_with_dollar_refs(self):
+        """Method bodies with this.$refs/this.$emit should be preserved, not emptied."""
+        mixin = '''
+        export default {
+            methods: {
+                handleClick() {
+                    this.$emit('click', this.value)
+                    this.$refs.input.focus()
+                }
+            }
+        }
+        '''
+        members = MixinMembers(data=['value'], computed=[], methods=['handleClick'], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        assert 'function handleClick()' in result
+        # Body should NOT be empty
+        assert '{}' not in result.split('function handleClick()')[1].split('\n')[0]
+
+    def test_static_arrays_preserved(self):
+        """Hardcoded arrays in methods should not be truncated."""
+        mixin = '''
+        export default {
+            methods: {
+                getColors() {
+                    return ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'cyan', 'magenta']
+                }
+            }
+        }
+        '''
+        members = MixinMembers(data=[], computed=[], methods=['getColors'], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        assert "'magenta'" in result or '"magenta"' in result
+
+    def test_function_expression_method_extracted(self):
+        """Methods declared as `name: function()` should be extracted."""
+        mixin = '''
+        export default {
+            methods: {
+                doWork: function(data) {
+                    console.log(data)
+                    return data
+                }
+            }
+        }
+        '''
+        members = MixinMembers(data=[], computed=[], methods=['doWork'], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        assert 'function doWork(' in result
+        assert 'console.log' in result  # body should be extracted
+
+
+# ---------------------------------------------------------------------------
+# Bug fix regression: Issue #3 — mounted + beforeDestroy both converted
+# ---------------------------------------------------------------------------
+
 class TestMountedAndBeforeDestroy:
     def test_both_hooks_generated(self):
         """Both onMounted and onBeforeUnmount should appear in the composable."""
@@ -340,3 +451,91 @@ class TestMountedAndBeforeDestroy:
         import_line = result.split('\n')[0] if 'import' in result.split('\n')[0] else result.split('\n')[1]
         assert 'onMounted' in result.split("from 'vue'")[0]
         assert 'onBeforeUnmount' in result.split("from 'vue'")[0]
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Computed formatting improvements (Issue #26)
+# ---------------------------------------------------------------------------
+
+class TestComputedFormatting:
+    """Test computed property formatting improvements."""
+
+    def test_simple_computed_arrow_shorthand(self):
+        """Single return statement should use arrow shorthand."""
+        mixin = '''
+        export default {
+            data() {
+                return { count: 0 }
+            },
+            computed: {
+                doubled() {
+                    return this.count * 2
+                }
+            }
+        }
+        '''
+        members = MixinMembers(data=['count'], computed=['doubled'], methods=[], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        # Should use arrow shorthand, not block body
+        assert 'computed(() => count.value * 2)' in result
+        # Should NOT have block body form
+        assert 'computed(() => { return' not in result
+
+    def test_complex_computed_block_body(self):
+        """Multi-line computed should use block body."""
+        mixin = '''
+        export default {
+            data() {
+                return { items: [] }
+            },
+            computed: {
+                summary() {
+                    const total = this.items.length
+                    return `${total} items`
+                }
+            }
+        }
+        '''
+        members = MixinMembers(data=['items'], computed=['summary'], methods=[], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        # Multi-line should use block body
+        assert 'computed(() => {' in result
+
+    def test_computed_single_expression_no_semicolon(self):
+        """Arrow shorthand should strip trailing semicolons."""
+        mixin = '''
+        export default {
+            data() {
+                return { price: 0, tax: 0 }
+            },
+            computed: {
+                total() {
+                    return this.price + this.tax;
+                }
+            }
+        }
+        '''
+        members = MixinMembers(data=['price', 'tax'], computed=['total'], methods=[], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        assert 'computed(() => price.value + tax.value)' in result
+        # No semicolon inside the computed expression
+        assert 'computed(() => price.value + tax.value;)' not in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: Indentation normalization (Issue #28)
+# ---------------------------------------------------------------------------
+
+class TestIndentationNormalization:
+    """Test that method bodies have consistent indentation."""
+
+    def test_tab_indentation_normalized(self):
+        """Tab-indented method body should be normalized to space indent."""
+        mixin = "export default {\n  methods: {\n    doWork() {\n\t\tconst x = 1\n\t\treturn x\n    }\n  }\n}"
+        members = MixinMembers(data=[], computed=[], methods=['doWork'], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        assert 'function doWork()' in result
+        # Body should not contain tabs
+        body_start = result.index('function doWork()')
+        body_section = result[body_start:result.index('}', body_start) + 1]
+        assert '\t' not in body_section

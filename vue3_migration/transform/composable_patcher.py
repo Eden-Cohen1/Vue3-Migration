@@ -13,6 +13,39 @@ from .lifecycle_converter import (
 )
 
 
+def _remove_stale_comments(source: str) -> str:
+    """Remove stale 'NOT defined' / 'NOT returned' comments that contradict the actual code.
+
+    When the patcher adds a member that was previously missing, any inline comments
+    saying it is 'NOT defined' or 'NOT returned' become stale and misleading.
+    This function detects such contradictions and removes the stale comment lines.
+    """
+    lines = source.split('\n')
+    result_lines = []
+
+    for line in lines:
+        # Check for "NOT defined" or "NOT returned" comments
+        # Match patterns like: "count is NOT defined", "count NOT returned", "count is NOT returned"
+        not_match = re.search(r'//.*?\b(\w+)\s+(?:is\s+)?NOT\s+(?:defined|returned)', line)
+        if not_match:
+            member_name = not_match.group(1)
+            # Skip non-identifiers that might be matched (e.g. "MIGRATION")
+            if member_name.upper() == member_name and len(member_name) > 2:
+                result_lines.append(line)
+                continue
+            # Check if the member IS actually defined or returned elsewhere in the source
+            is_defined = (
+                re.search(rf'\b(?:const|let|var|function)\s+{re.escape(member_name)}\b', source)
+                or re.search(rf'\breturn\s*\{{[^}}]*\b{re.escape(member_name)}\b', source)
+            )
+            if is_defined:
+                # Skip this stale comment line
+                continue
+        result_lines.append(line)
+
+    return '\n'.join(result_lines)
+
+
 def _add_vue_import(content: str, name: str) -> str:
     """Add a name to the existing ``import { ... } from 'vue'`` line.
 
@@ -35,6 +68,10 @@ def add_keys_to_return(content: str, keys: list[str]) -> str:
     Uses the LAST return statement (Risk R-3: avoids patching early-exit returns).
     Skips keys already present (idempotent).
     Returns content unchanged if no 'return {' statement is found (Risk R-4).
+
+    When the return statement is multi-line, new keys are added on their own
+    lines matching the existing indentation. When single-line and adding keys
+    would exceed 80 characters, the return is converted to multi-line.
     """
     matches = list(re.finditer(r'\breturn\s*\{', content))
     if not matches:
@@ -49,9 +86,62 @@ def add_keys_to_return(content: str, keys: list[str]) -> str:
     new_keys = [k for k in keys if k not in existing]
     if not new_keys:
         return content
-    insert_pos = m.end()
-    prefix = " " + ", ".join(new_keys) + ","
-    return content[:insert_pos] + prefix + content[insert_pos:]
+
+    # Determine the full span of the return statement (from 'return' to closing '}')
+    brace_start = m.end() - 1
+    # Find the closing brace by counting
+    depth = 0
+    close_pos = brace_start
+    for i in range(brace_start, len(content)):
+        if content[i] == '{':
+            depth += 1
+        elif content[i] == '}':
+            depth -= 1
+            if depth == 0:
+                close_pos = i
+                break
+    full_return = content[m.start():close_pos + 1]
+
+    # Detect return indentation (leading whitespace of the return line)
+    line_start = content.rfind('\n', 0, m.start()) + 1
+    return_indent = content[line_start:m.start()]
+
+    # Check if the existing return is multi-line
+    is_multiline = '\n' in full_return
+
+    if is_multiline:
+        # Multi-line return: detect the member indentation from existing lines
+        return_lines = full_return.splitlines()
+        # Find indentation of existing members (lines between { and })
+        member_indent = return_indent + "  "
+        for line in return_lines[1:]:
+            stripped = line.lstrip()
+            if stripped and not stripped.startswith('}'):
+                member_indent = line[:len(line) - len(stripped)]
+                break
+        # Insert new keys before the closing }
+        new_key_lines = "".join(f"{member_indent}{k},\n" for k in new_keys)
+        return content[:close_pos] + new_key_lines + content[close_pos:]
+    else:
+        # Single-line return: check if adding keys would make it too long
+        # Extract existing keys from the return block content
+        inner = return_block[1:-1].strip()  # strip { and }
+        all_items = inner + ", " + ", ".join(new_keys) if inner else ", ".join(new_keys)
+        candidate_line = f"{return_indent}return {{ {all_items} }}"
+        if len(candidate_line) <= 80:
+            # Keep single-line, insert new keys
+            insert_pos = m.end()
+            prefix = " " + ", ".join(new_keys) + ","
+            return content[:insert_pos] + prefix + content[insert_pos:]
+        else:
+            # Convert to multi-line
+            member_indent = return_indent + "  "
+            # Parse existing items from inner
+            existing_items = [item.strip().rstrip(',') for item in inner.split(',') if item.strip()]
+            all_items_list = existing_items + new_keys
+            members_block = "".join(f"{member_indent}{item},\n" for item in all_items_list)
+            new_return = f"return {{\n{members_block}{return_indent}}}"
+            return content[:m.start()] + new_return + content[close_pos + 1:]
 
 
 def add_members_to_composable(content: str, member_lines: list[str]) -> str:
@@ -304,7 +394,16 @@ def generate_member_declaration(
             return f"{indent}const {name} = computed(() => null) // TODO: getter/setter computed — migrate manually"
         if body:
             rewritten = rewrite_this_refs(body.strip(), ref_members, plain_members)
-            return f"{indent}const {name} = computed(() => {{ {rewritten} }})"
+            rewritten_lines = rewritten.strip().splitlines()
+            # Check if it's a single return statement (can use arrow shorthand)
+            if len(rewritten_lines) == 1 and rewritten_lines[0].strip().startswith("return "):
+                expr = rewritten_lines[0].strip()[len("return "):].rstrip(";").strip()
+                return f"{indent}const {name} = computed(() => {expr})"
+            else:
+                # Multi-line body: use block form with proper indentation
+                inner = indent + indent
+                indented_body = f"\n{inner}" + f"\n{inner}".join(rewritten_lines) + f"\n{indent}"
+                return f"{indent}const {name} = computed(() => {{{indented_body}}})"
         return f"{indent}const {name} = computed(() => null) // TODO: implement"
 
     if name in mixin_members.methods:
@@ -426,6 +525,9 @@ def patch_composable(
     content, dollar_imports = rewrite_this_dollar_refs(content)
     for imp in dollar_imports:
         content = _add_vue_import(content, imp)
+
+    # Remove stale "NOT defined" / "NOT returned" comments that contradict actual code
+    content = _remove_stale_comments(content)
 
     # Collect warnings and inject inline comments + confidence header
     warnings = collect_mixin_warnings(mixin_content, mixin_members, lifecycle_hooks or [])

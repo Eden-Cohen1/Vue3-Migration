@@ -7,7 +7,8 @@ import re
 from pathlib import Path
 
 from ..core.component_analyzer import (
-    extract_own_members, find_used_members, parse_imports, parse_mixins_array,
+    extract_data_property_names, extract_own_members, find_used_members,
+    parse_imports, parse_mixins_array,
 )
 from ..core.composable_analyzer import (
     extract_all_identifiers, extract_function_name, extract_return_keys,
@@ -349,6 +350,33 @@ def plan_component_injections(
                 for w in collision_warnings:
                     w.mixin_stem = "cross-composable"
                 ready_entries[0].warnings.extend(collision_warnings)
+
+        # Detect data()/setup() name collisions (Issues #14, #20)
+        data_props = extract_data_property_names(comp_source)
+        if data_props:
+            for entry in ready_entries:
+                injectable = (
+                    list(entry.classification.injectable)
+                    if entry.classification
+                    else list(entry.used_members)
+                )
+                collisions = set(injectable) & set(data_props)
+                if collisions:
+                    from ..models import MigrationWarning
+                    for name in sorted(collisions):
+                        entry.warnings.append(MigrationWarning(
+                            mixin_stem=entry.mixin_stem,
+                            category="data-setup-collision",
+                            message=(
+                                f"'{name}' exists in both setup() return and data() "
+                                "— data() will shadow the setup() value"
+                            ),
+                            action_required=(
+                                f"Remove '{name}' from data() or rename it to avoid collision"
+                            ),
+                            line_hint=None,
+                            severity="warning",
+                        ))
 
         content = comp_source
         changes_desc = []

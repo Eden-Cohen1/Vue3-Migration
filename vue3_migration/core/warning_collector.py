@@ -368,6 +368,56 @@ def post_generation_check(composable_source: str) -> list[MigrationWarning]:
             severity="error",
         ))
 
+    # Check for this. in function parameter positions (indicates rewriter bug)
+    param_this_matches = re.findall(r'function\s+\w+\([^)]*this\.[^)]*\)', composable_source)
+    for match in param_this_matches:
+        warnings.append(MigrationWarning(
+            mixin_stem="",
+            category="this-in-params",
+            message=f"'this.' reference found in function parameter position — likely a rewriter bug: {match.strip()}",
+            action_required="Remove this. from function parameters and use a local variable instead",
+            line_hint=match.strip(),
+            severity="error",
+        ))
+
+    # Check lifecycle hook bodies for references to undefined functions
+    lifecycle_pattern = re.compile(
+        r'on(?:Mounted|BeforeUnmount|Activated|Deactivated)\(\(\)\s*=>\s*\{([^}]+)\}',
+        re.DOTALL,
+    )
+    _BUILTIN_NAMES = frozenset({
+        'console', 'window', 'document', 'setTimeout', 'setInterval',
+        'clearTimeout', 'clearInterval', 'addEventListener', 'removeEventListener',
+        'nextTick', 'Math', 'Date', 'JSON', 'Object', 'Array', 'String',
+        'Number', 'Boolean', 'Promise', 'Error', 'RegExp', 'parseInt', 'parseFloat',
+        'undefined', 'null', 'true', 'false', 'if', 'else', 'return', 'new',
+        'typeof', 'void', 'delete', 'throw', 'try', 'catch', 'finally',
+        'for', 'while', 'do', 'switch', 'case', 'break', 'continue',
+        'const', 'let', 'var', 'function', 'class', 'async', 'await',
+        'this', 'super', 'import', 'export', 'from', 'of', 'in',
+    })
+    for m in lifecycle_pattern.finditer(composable_source):
+        hook_body = m.group(1)
+        # Find standalone function calls (not method calls like obj.method())
+        called_funcs = re.findall(r'(?<!\.)(\b\w+)\s*\(', hook_body)
+        for func in called_funcs:
+            if func in _BUILTIN_NAMES:
+                continue
+            # Check if function is defined in the composable
+            if (
+                f'function {func}(' not in composable_source
+                and re.search(rf'\bconst\s+{re.escape(func)}\b', composable_source) is None
+                and re.search(rf'\blet\s+{re.escape(func)}\b', composable_source) is None
+            ):
+                warnings.append(MigrationWarning(
+                    mixin_stem="",
+                    category="undefined-in-lifecycle",
+                    message=f"Lifecycle hook references '{func}' which is not defined in the composable",
+                    action_required=f"Define '{func}' in the composable or import it",
+                    line_hint=None,
+                    severity="error",
+                ))
+
     # Count TODO markers
     todo_count = len(re.findall(r"//\s*TODO\b", composable_source))
     if todo_count:
@@ -474,7 +524,24 @@ def detect_structural_patterns(
     warnings: list[MigrationWarning] = []
 
     # Mixin factory function: export default function
-    if re.search(r'\bexport\s+default\s+function\b', mixin_source):
+    factory_m = re.search(r'\bexport\s+default\s+function\s*\w*\s*\(([^)]*)\)', mixin_source)
+    if factory_m:
+        params = factory_m.group(1).strip()
+        if params:
+            message = f"Factory mixin with params ({params}) — cannot auto-convert"
+            action = f"Create composable with matching parameters ({params})"
+        else:
+            message = "Factory mixin (no params) — convert to regular composable"
+            action = "Manually convert factory function to composable"
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="structural:factory-function",
+            message=message,
+            action_required=action,
+            line_hint=None,
+            severity="warning",
+        ))
+    elif re.search(r'\bexport\s+default\s+function\b', mixin_source):
         warnings.append(MigrationWarning(
             mixin_stem=mixin_stem,
             category="structural:factory-function",
@@ -485,7 +552,18 @@ def detect_structural_patterns(
         ))
 
     # Nested mixins: mixins: [...] inside the mixin source
-    if re.search(r'\bmixins\s*:', mixin_source):
+    nested_mixins_m = re.search(r'\bmixins\s*:\s*\[([^\]]+)\]', mixin_source)
+    if nested_mixins_m:
+        mixin_names = nested_mixins_m.group(1).strip()
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="structural:nested-mixins",
+            message=f"Nested mixins [{mixin_names}] — transitive members may be missed",
+            action_required="Ensure all transitive mixin members are accounted for",
+            line_hint=None,
+            severity="warning",
+        ))
+    elif re.search(r'\bmixins\s*:', mixin_source):
         warnings.append(MigrationWarning(
             mixin_stem=mixin_stem,
             category="structural:nested-mixins",

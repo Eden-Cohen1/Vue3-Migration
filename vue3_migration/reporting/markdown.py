@@ -428,7 +428,19 @@ def build_warning_summary(
         a(f"### {icon} {entry.mixin_stem} \u2014 Transformation confidence: {conf.value}\n")
 
         if not entry.warnings:
-            a("No manual changes needed.\n")
+            # Only say "No manual changes needed" if the composable is truly clean
+            comp_source = ""
+            if entry.composable and entry.composable.file_path in composable_content_map:
+                comp_source = composable_content_map[entry.composable.file_path]
+            has_migration_comments = (
+                '// MIGRATION:' in comp_source
+                or '// TODO:' in comp_source
+                or '// ⚠ MIGRATION' in comp_source
+            )
+            if conf == ConfidenceLevel.HIGH and not has_migration_comments:
+                a("No manual changes needed.\n")
+            else:
+                a("Review generated composable for any remaining migration markers.\n")
             continue
 
         item_count = len(entry.warnings)
