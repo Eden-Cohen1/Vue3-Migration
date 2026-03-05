@@ -350,6 +350,58 @@ def build_audit_report(
     return "\n".join(lines)
 
 
+def build_per_component_index(
+    entries_by_component: list[tuple[Path, list[MixinEntry]]],
+    confidence_map: dict[str, ConfidenceLevel],
+    project_root: Path,
+) -> str:
+    """Build a per-component quick-reference index."""
+    if not entries_by_component:
+        return ""
+
+    _CONF_ICON = {ConfidenceLevel.LOW: "\u274c", ConfidenceLevel.MEDIUM: "\u26a0\ufe0f", ConfidenceLevel.HIGH: "\u2705"}
+
+    lines: list[str] = []
+    a = lines.append
+    a("## Per-Component Guide\n")
+
+    for comp_path, entry_list in entries_by_component:
+        try:
+            comp_rel = comp_path.relative_to(project_root)
+        except ValueError:
+            comp_rel = comp_path
+        a(f"### {comp_rel.name}\n")
+
+        for entry in entry_list:
+            entry_cats = {w.category for w in entry.warnings}
+            is_skipped = entry_cats and entry_cats <= _SKIPPED_CATEGORIES
+
+            if is_skipped:
+                reason = entry.warnings[0].message if entry.warnings else "skipped"
+                a(f"- \u2139\ufe0f **{entry.mixin_stem}** skipped \u2014 {reason}")
+            elif entry.composable:
+                conf = confidence_map.get(entry.mixin_stem, ConfidenceLevel.HIGH)
+                icon = _CONF_ICON.get(conf, "\u2753")
+                error_count = sum(1 for w in entry.warnings if w.severity == "error")
+                warn_count = sum(1 for w in entry.warnings if w.severity == "warning")
+                if error_count or warn_count:
+                    parts = []
+                    if error_count:
+                        parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
+                    if warn_count:
+                        parts.append(f"{warn_count} warning{'s' if warn_count != 1 else ''}")
+                    detail = ", ".join(parts)
+                    a(f"- {icon} **{entry.composable.fn_name}** ({conf.value}) \u2014 {detail} \u2192 [See warnings](#{entry.mixin_stem})")
+                else:
+                    a(f"- {icon} **{entry.composable.fn_name}** ({conf.value}) \u2014 No issues")
+            else:
+                a(f"- \u274c **{entry.mixin_stem}** \u2014 composable not found")
+
+        a("")
+
+    return "\n".join(lines)
+
+
 def build_warning_summary(
     entries_by_component: "list[tuple[Path, list[MixinEntry]]]",
     composable_changes: "list[FileChange] | None" = None,

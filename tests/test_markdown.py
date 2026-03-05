@@ -9,7 +9,8 @@ from vue3_migration.models import (
     MixinEntry,
     MixinMembers,
 )
-from vue3_migration.reporting.markdown import build_component_report
+from vue3_migration.models import ConfidenceLevel, MigrationWarning
+from vue3_migration.reporting.markdown import build_component_report, build_per_component_index
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dummy_project"
 PROJECT_ROOT = FIXTURES
@@ -294,3 +295,45 @@ class TestBuildComponentReport:
         report = build_component_report(component, [_make_ready_entry()], PROJECT_ROOT)
         assert isinstance(report, str)
         assert len(report) > 0
+
+
+class TestBuildPerComponentIndex:
+    def test_renders_component_heading(self):
+        entry = _make_ready_entry()
+        entries_by_component = [(FIXTURES / "src/components/FullyCovered.vue", [entry])]
+        result = build_per_component_index(entries_by_component, {}, PROJECT_ROOT)
+        assert "FullyCovered.vue" in result
+
+    def test_shows_composable_with_confidence(self):
+        entry = _make_ready_entry()
+        confidence_map = {"selectionMixin": ConfidenceLevel.HIGH}
+        entries_by_component = [(FIXTURES / "src/components/FullyCovered.vue", [entry])]
+        result = build_per_component_index(entries_by_component, confidence_map, PROJECT_ROOT)
+        assert "useSelection" in result
+        assert "HIGH" in result
+
+    def test_shows_skipped_entry(self):
+        entry = _make_ready_entry()
+        w = MigrationWarning(
+            "selectionMixin", "skipped-all-overridden",
+            "all members overridden", "safe to remove", None, "info",
+        )
+        entry.warnings = [w]
+        entries_by_component = [(FIXTURES / "src/components/FullyCovered.vue", [entry])]
+        result = build_per_component_index(entries_by_component, {}, PROJECT_ROOT)
+        assert "skipped" in result.lower()
+
+    def test_empty_entries_returns_empty(self):
+        result = build_per_component_index([], {}, PROJECT_ROOT)
+        assert result == ""
+
+    def test_multiple_components(self):
+        entry1 = _make_ready_entry()
+        entry2 = _make_blocked_missing_entry()
+        entries = [
+            (FIXTURES / "src/components/A.vue", [entry1]),
+            (FIXTURES / "src/components/B.vue", [entry2]),
+        ]
+        result = build_per_component_index(entries, {}, PROJECT_ROOT)
+        assert "A.vue" in result
+        assert "B.vue" in result
