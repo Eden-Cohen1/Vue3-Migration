@@ -247,6 +247,8 @@ def generate_status_report(project_root: Path, config) -> str:
     lines.extend([
         f"- Blocked (composable missing or incomplete): **{blocked}**",
         "",
+        "> Run `vue3-migration auto` to generate a detailed diff report with warnings, per-component guide, and checklist.",
+        "",
         "## Mixin Overview",
         "",
         "| Mixin | Used in | Composable |",
