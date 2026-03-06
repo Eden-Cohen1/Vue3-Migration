@@ -323,7 +323,7 @@ class TestBuildPerComponentIndex:
         entries_by_component = [(FIXTURES / "src/components/FullyCovered.vue", [entry])]
         result = build_per_component_index(entries_by_component, confidence_map, PROJECT_ROOT)
         assert "useSelection" in result
-        assert "HIGH" in result
+        assert "\U0001f7e2" in result  # green dot for HIGH confidence
 
     def test_shows_skipped_entry(self):
         entry = _make_ready_entry()

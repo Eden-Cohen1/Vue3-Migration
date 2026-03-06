@@ -13,6 +13,23 @@ _SKIPPED_CATEGORIES = frozenset({
     "skipped-no-usage",
 })
 
+_CONF_DOT = {
+    ConfidenceLevel.LOW: "\U0001f534",      # red dot
+    ConfidenceLevel.MEDIUM: "\U0001f7e1",   # yellow dot
+    ConfidenceLevel.HIGH: "\U0001f7e2",      # green dot
+}
+
+
+def _rel_link(path: "Path | str", project_root: Path, label: str | None = None) -> str:
+    """Return a markdown hyperlink with a relative path."""
+    p = Path(path) if not isinstance(path, Path) else path
+    try:
+        rel = p.relative_to(project_root)
+    except ValueError:
+        rel = p
+    display = label or rel.name
+    return f"[`{display}`]({str(rel).replace(chr(92), '/')})"
+
 
 def build_component_report(
     component_path: Path,
@@ -20,23 +37,30 @@ def build_component_report(
     project_root: Path,
 ) -> str:
     """Build a markdown migration report for a single component."""
+    from datetime import datetime
+
     lines: list[str] = []
     w = lines.append
 
-    try:
-        component_rel = component_path.relative_to(project_root)
-    except ValueError:
-        component_rel = component_path
+    ready_count = sum(
+        1 for e in mixin_entries
+        if not e.used_members or (e.classification and e.classification.is_ready)
+    )
+    blocked_count = len(mixin_entries) - ready_count
 
-    w(f"# Migration Report: {md_green(str(component_rel))}\n")
+    w(f"# Migration Report: {_rel_link(component_path, project_root)}\n")
+    parts = [f"{len(mixin_entries)} mixin{'s' if len(mixin_entries) != 1 else ''}"]
+    parts.append(f"{ready_count} ready")
+    parts.append(f"{blocked_count} blocked")
+    w(f"`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {' \u00b7 '.join(parts)}\n")
+    w("---\n")
 
     ready_entries = []
     blocked_entries = []
 
     for entry in mixin_entries:
         mixin_name = entry.mixin_stem
-        w(f"## Mixin: {mixin_name}\n")
-        w(f"**File:** {md_green(str(entry.mixin_path))}\n")
+        w(f"## Mixin: {_rel_link(entry.mixin_path, project_root, mixin_name)}\n")
 
         # Members breakdown
         for section in ("data", "computed", "methods"):
@@ -64,7 +88,7 @@ def build_component_report(
             w(f"**Composable:** {md_yellow('NOT FOUND')}\n")
             blocked_entries.append(entry)
         else:
-            w(f"**Composable:** {md_green(str(comp.file_path))}")
+            w(f"**Composable:** {_rel_link(comp.file_path, project_root)}")
             w(f"**Function:** `{comp.fn_name}`")
             w(f"**Import path:** `{comp.import_path}`")
             w(f"> {md_yellow('Verify the above path and function name are correct.')}\n")
@@ -125,7 +149,7 @@ def build_component_report(
                     w(f"- Add to composable: {', '.join(cls.missing)}")
                 if cls and cls.not_returned:
                     w(f"- Add to return statement: {', '.join(cls.not_returned)}")
-                w(f"- File: {md_green(str(comp.file_path))}\n")
+                w(f"- File: {_rel_link(comp.file_path, project_root)}\n")
 
     if ready_entries:
         w("### Ready for injection")
@@ -233,19 +257,18 @@ def generate_status_report(project_root: Path, config) -> str:
     needs_manual_count = sum(1 for c in components_info if c["has_manual"])
     blocked = len(components_info) - ready - needs_manual_count
 
+    header_parts = [f"{len(components_info)} component{'s' if len(components_info) != 1 else ''}"]
+    header_parts.append(f"{ready} ready")
+    if needs_manual_count:
+        header_parts.append(f"{needs_manual_count} manual")
+    header_parts.append(f"{blocked} blocked")
+
     lines: list[str] = [
         "# Vue Migration Status Report",
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "",
-        "## Summary",
+        f"`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {' \u00b7 '.join(header_parts)}",
         "",
-        f"- Components with mixins remaining: **{len(components_info)}**",
-        f"- Ready to migrate now: **{ready}**",
-    ]
-    if needs_manual_count:
-        lines.append(f"- Needs manual migration: **{needs_manual_count}**")
-    lines.extend([
-        f"- Blocked (composable missing or incomplete): **{blocked}**",
+        "---",
         "",
         "> Run `vue3-migration auto` to generate a detailed diff report with warnings, per-component guide, and checklist.",
         "",
@@ -253,7 +276,7 @@ def generate_status_report(project_root: Path, config) -> str:
         "",
         "| Mixin | Used in | Composable |",
         "|-------|---------|------------|",
-    ])
+    ]
 
     for stem, count in mixin_counter.most_common():
         has_comp = mixin_has_composable(stem, composable_stems)
@@ -283,7 +306,7 @@ def generate_status_report(project_root: Path, config) -> str:
             missing = comp["total"] - comp["covered"] - comp["needs_manual"]
             status_str = f"**Blocked** -- {missing} composable(s) missing or incomplete"
 
-        lines.append(f"### `{comp['rel_path']}`")
+        lines.append(f"### [`{comp['rel_path']}`]({str(comp['rel_path']).replace(chr(92), '/')})")
         lines.append(f"- Mixins: {', '.join(f'`{s}`' for s in comp['stems'])}")
         lines.append(f"- Status: {status_str}")
         lines.append("")
@@ -305,10 +328,19 @@ def build_audit_report(
     warnings: list[MigrationWarning] | None = None,
 ) -> str:
     """Build a markdown audit report for a single mixin."""
+    from datetime import datetime
+
     lines: list[str] = []
     w = lines.append
 
-    w(f"# Mixin Audit: {mixin_path.name}\n")
+    total_members = len(all_member_names)
+    header_parts = [f"{total_members} member{'s' if total_members != 1 else ''}"]
+    header_parts.append(f"{len(lifecycle_hooks)} hook{'s' if len(lifecycle_hooks) != 1 else ''}")
+    header_parts.append(f"{len(importing_files)} file{'s' if len(importing_files) != 1 else ''}")
+
+    w(f"# Mixin Audit: {_rel_link(mixin_path, project_root, mixin_path.name)}\n")
+    w(f"`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {' \u00b7 '.join(header_parts)}\n")
+    w("---\n")
 
     w("## Mixin Members\n")
     for section in ("data", "computed", "methods"):
@@ -328,7 +360,7 @@ def build_audit_report(
     for file_path in sorted(importing_files):
         relative_path = file_path.relative_to(project_root)
         used = usage_map.get(str(relative_path), [])
-        w(f"### {relative_path}\n")
+        w(f"### {_rel_link(file_path, project_root, str(relative_path))}\n")
         if used:
             w(f"Uses: {', '.join(used)}\n")
         else:
@@ -379,18 +411,12 @@ def build_per_component_index(
     if not entries_by_component:
         return ""
 
-    _CONF_ICON = {ConfidenceLevel.LOW: "\u274c", ConfidenceLevel.MEDIUM: "\u26a0\ufe0f", ConfidenceLevel.HIGH: "\u2705"}
-
     lines: list[str] = []
     a = lines.append
     a("## Per-Component Guide\n")
 
     for comp_path, entry_list in entries_by_component:
-        try:
-            comp_rel = comp_path.relative_to(project_root)
-        except ValueError:
-            comp_rel = comp_path
-        a(f"### {comp_rel.name}\n")
+        a(f"### {_rel_link(comp_path, project_root)}\n")
 
         for entry in entry_list:
             entry_cats = {w.category for w in entry.warnings}
@@ -401,9 +427,10 @@ def build_per_component_index(
                 a(f"- \u2139\ufe0f **{entry.mixin_stem}** skipped \u2014 {reason}")
             elif entry.composable:
                 conf = confidence_map.get(entry.mixin_stem, ConfidenceLevel.HIGH)
-                icon = _CONF_ICON.get(conf, "\u2753")
+                dot = _CONF_DOT.get(conf, "\u2753")
                 error_count = sum(1 for w in entry.warnings if w.severity == "error")
                 warn_count = sum(1 for w in entry.warnings if w.severity == "warning")
+                comp_link = _rel_link(entry.composable.file_path, project_root, entry.composable.fn_name)
                 if error_count or warn_count:
                     parts = []
                     if error_count:
@@ -411,11 +438,11 @@ def build_per_component_index(
                     if warn_count:
                         parts.append(f"{warn_count} warning{'s' if warn_count != 1 else ''}")
                     detail = ", ".join(parts)
-                    a(f"- {icon} **{entry.composable.fn_name}** ({conf.value}) \u2014 {detail} \u2192 [See warnings](#{entry.mixin_stem})")
+                    a(f"- {dot} {comp_link} \u2014 {detail} \u2192 [See warnings](#{entry.mixin_stem})")
                 else:
-                    a(f"- {icon} **{entry.composable.fn_name}** ({conf.value}) \u2014 No issues")
+                    a(f"- {dot} {comp_link} \u2014 No issues")
             else:
-                a(f"- \u274c **{entry.mixin_stem}** \u2014 composable not found")
+                a(f"- \U0001f534 **{entry.mixin_stem}** \u2014 composable not found")
 
         a("")
 
@@ -508,6 +535,7 @@ def build_checklist(
 def build_warning_summary(
     entries_by_component: "list[tuple[Path, list[MixinEntry]]]",
     composable_changes: "list[FileChange] | None" = None,
+    project_root: "Path | None" = None,
 ) -> str:
     """Build a markdown Migration Summary checklist for the diff report.
 
@@ -517,34 +545,51 @@ def build_warning_summary(
     """
     from ..core.warning_collector import compute_confidence
 
-    # De-duplicate entries by mixin_stem (keep first occurrence)
-    seen_stems: set[str] = set()
-    unique_entries: list[MixinEntry] = []
-    for _comp_path, entry_list in entries_by_component:
-        for entry in entry_list:
-            if entry.mixin_stem not in seen_stems:
-                seen_stems.add(entry.mixin_stem)
-                unique_entries.append(entry)
+    # Group entries by mixin_stem, tracking component paths and warnings
+    from collections import OrderedDict
 
-    if not unique_entries:
+    # Collect per-mixin: representative entry + all (comp_path, warning) pairs
+    _MixinGroup = tuple[MixinEntry, list[tuple[Path, MigrationWarning]]]
+    mixin_groups: OrderedDict[str, _MixinGroup] = OrderedDict()
+
+    for comp_path, entry_list in entries_by_component:
+        for entry in entry_list:
+            if entry.mixin_stem not in mixin_groups:
+                mixin_groups[entry.mixin_stem] = (entry, [])
+            group_entry, group_warnings = mixin_groups[entry.mixin_stem]
+            for w in entry.warnings:
+                group_warnings.append((comp_path, w))
+
+    if not mixin_groups:
         return ""
 
     # Separate skipped entries from active entries
     skipped_rows: list[tuple[str, str, str]] = []  # (component, mixin, reason)
     active_entries: list[MixinEntry] = []
+    # Map mixin_stem -> de-duped (comp_path, warning) pairs
+    active_warnings: dict[str, list[tuple[Path, MigrationWarning]]] = {}
 
-    for entry in unique_entries:
+    for stem, (entry, comp_warnings) in mixin_groups.items():
         entry_cats = {w.category for w in entry.warnings}
         if entry_cats and entry_cats <= _SKIPPED_CATEGORIES:
-            # Find which component(s) this mixin was used in
             for comp_path, entry_list in entries_by_component:
                 for e in entry_list:
-                    if e.mixin_stem == entry.mixin_stem:
+                    if e.mixin_stem == stem:
                         reason = entry.warnings[0].message.split(":", 1)[-1].strip() if entry.warnings else "unknown"
-                        comp_name = comp_path.name
-                        skipped_rows.append((comp_name, entry.mixin_stem, reason))
+                        skipped_rows.append((comp_path.name, stem, reason))
         else:
             active_entries.append(entry)
+            # De-dup warnings by (category, message, severity) but keep component paths
+            seen_w: dict[tuple[str, str, str], list[Path]] = {}
+            deduped: list[tuple[Path, MigrationWarning]] = []
+            for cp, w in comp_warnings:
+                key = (w.category, w.message, w.severity)
+                if key not in seen_w:
+                    seen_w[key] = []
+                    deduped.append((cp, w))
+                if cp not in seen_w[key]:
+                    seen_w[key].append(cp)
+            active_warnings[stem] = deduped
 
     # Build a lookup of composable content by file path
     composable_content_map: dict[Path, str] = {}
@@ -575,8 +620,8 @@ def build_warning_summary(
     if not active_entries and not skipped_rows:
         return ""
 
-    # Count totals
-    all_warnings = [w for e in active_entries for w in e.warnings]
+    # Count totals (from de-duped warnings)
+    all_warnings = [w for stem in active_warnings for _cp, w in active_warnings[stem]]
     error_count = sum(1 for w in all_warnings if w.severity == "error")
     warning_count = sum(1 for w in all_warnings if w.severity == "warning")
     info_count = sum(1 for w in all_warnings if w.severity == "info")
@@ -588,28 +633,42 @@ def build_warning_summary(
 
     # Overview line
     total_count = len(active_entries) + len(skipped_rows)
-    parts = [f"**{total_count} composable{'s' if total_count != 1 else ''}**"]
+    parts = [f"{total_count} composable{'s' if total_count != 1 else ''}"]
     if error_count:
         parts.append(f"{error_count} error{'s' if error_count != 1 else ''}")
     if warning_count:
         parts.append(f"{warning_count} warning{'s' if warning_count != 1 else ''}")
     if info_count:
         parts.append(f"{info_count} info")
-    a(" | ".join(parts))
+    a(" \u00b7 ".join(parts))
     a("")
     a("---\n")
 
     # Per-mixin sections
-    _SEVERITY_ICON = {"error": "\u274c", "warning": "\u26a0\ufe0f", "info": "\u2139\ufe0f"}
-    _CONF_ICON = {ConfidenceLevel.LOW: "\u274c", ConfidenceLevel.MEDIUM: "\u26a0\ufe0f", ConfidenceLevel.HIGH: "\u2705"}
-
     for entry in active_entries:
         conf = confidence_map[entry.mixin_stem]
-        icon = _CONF_ICON.get(conf, "\u2753")
+        dot = _CONF_DOT.get(conf, "\u2753")
 
-        a(f"### {icon} {entry.mixin_stem} \u2014 Transformation confidence: {conf.value}\n")
+        # Build heading: dot mixin_link → composable_link · (CONFIDENCE)
+        if project_root:
+            mixin_link = _rel_link(entry.mixin_path, project_root, entry.mixin_stem)
+        else:
+            mixin_link = f"`{entry.mixin_stem}`"
 
-        if not entry.warnings:
+        if entry.composable:
+            if project_root:
+                comp_link = _rel_link(entry.composable.file_path, project_root, entry.composable.fn_name)
+            else:
+                comp_link = f"`{entry.composable.fn_name}`"
+            heading = f"{dot} {mixin_link} \u2192 {comp_link} \u00b7 ({conf.value})"
+        else:
+            heading = f"{dot} {mixin_link} \u00b7 ({conf.value})"
+
+        a(f"<a id=\"{entry.mixin_stem}\"></a>\n")
+        a(f"### {heading}\n")
+
+        entry_w = active_warnings.get(entry.mixin_stem, [])
+        if not entry_w:
             # Only say "No manual changes needed" if the composable is truly clean
             comp_source = ""
             if entry.composable and entry.composable.file_path in composable_content_map:
@@ -625,14 +684,23 @@ def build_warning_summary(
                 a("Review generated composable for any remaining migration markers.\n")
             continue
 
-        item_count = len(entry.warnings)
-        a(f"> {item_count} item{'s' if item_count != 1 else ''} need{'s' if item_count == 1 else ''} attention\n")
+        # Determine how many unique components use this mixin
+        all_comps_for_mixin = set()
+        for cp, el in entries_by_component:
+            for e in el:
+                if e.mixin_stem == entry.mixin_stem:
+                    all_comps_for_mixin.add(cp)
 
-        for warning in entry.warnings:
-            sev_icon = _SEVERITY_ICON.get(warning.severity, "\u2753")
-            a(f"- {sev_icon} **{warning.category}** ({warning.severity}): {warning.message}")
-            a(f"")
-            a(f"    **\u2192 {warning.action_required}**\n")
+        a("| Severity | Issue | Fix |")
+        a("|---|---|---|")
+        for comp_path, warning in entry_w:
+            # Show component name when there are multiple components or when it adds context
+            if project_root and len(all_comps_for_mixin) >= 1:
+                comp_name = _rel_link(comp_path, project_root)
+                a(f"| {warning.severity} | {comp_name}: {warning.message} | {warning.action_required} |")
+            else:
+                a(f"| {warning.severity} | {warning.message} | {warning.action_required} |")
+        a("")
 
     # Skipped mixins table
     if skipped_rows:

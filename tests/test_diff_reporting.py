@@ -185,7 +185,7 @@ def test_write_diff_report_includes_warning_summary(tmp_path):
     content = report_path.read_text(encoding="utf-8")
 
     assert "## Migration Summary" in content
-    assert "**this.$router**" in content
+    assert "this.$router" in content
     assert "Use useRouter()" in content
     # Summary should appear before the diff
     summary_pos = content.index("## Migration Summary")

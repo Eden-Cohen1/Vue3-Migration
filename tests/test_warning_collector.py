@@ -978,8 +978,8 @@ class TestBuildWarningSummary:
         w = MigrationWarning("auth", "this.$router", "msg", "action", None, "warning")
         entry = self._make_entry("authMixin", [w])
         result = build_warning_summary(self._wrap(entry))
-        assert "**this.$router**" in result
-        assert "\u2192" in result
+        assert "| warning | msg | action |" in result
+        assert "| Severity | Issue | Fix |" in result
 
     def test_overview_counts(self):
         w1 = MigrationWarning("auth", "this.$router", "msg", "act", None, "error")
@@ -1006,13 +1006,13 @@ class TestBuildWarningSummary:
             (Path("fake/B.vue"), [self._make_entry("sharedMixin")]),
         ]
         result = build_warning_summary(entries_by_component)
-        assert result.count("sharedMixin") == 1  # header appears once
+        assert result.count("### ") == 1  # only one section header (deduplicated)
 
-    def test_severity_icons(self):
+    def test_severity_in_table(self):
         w = MigrationWarning("auth", "ext", "msg", "act", None, "error")
         entry = self._make_entry("authMixin", [w])
         result = build_warning_summary(self._wrap(entry))
-        assert "\u274c" in result  # error icon
+        assert "| error |" in result  # severity shown in table
 
     def test_skipped_entries_in_separate_section(self):
         """Skipped mixins should appear in their own section, not mixed with warnings."""

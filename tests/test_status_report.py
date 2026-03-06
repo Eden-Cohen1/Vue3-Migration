@@ -27,7 +27,8 @@ def dummy_project(tmp_path):
 def test_status_report_contains_summary_header(dummy_project):
     config = MigrationConfig(project_root=dummy_project)
     report = generate_status_report(dummy_project, config)
-    assert "## Summary" in report
+    assert "# Vue Migration Status Report" in report
+    assert "ready" in report
 
 
 def test_status_report_shows_component_count(dummy_project):
@@ -59,7 +60,7 @@ def test_status_report_no_components_returns_empty_state(tmp_path):
     """Project with no .vue files -> summary shows 0 components."""
     config = MigrationConfig(project_root=tmp_path)
     report = generate_status_report(tmp_path, config)
-    assert "## Summary" in report
+    assert "0 components" in report or "0 blocked" in report
     assert "0" in report
 
 

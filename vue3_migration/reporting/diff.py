@@ -184,9 +184,33 @@ def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
         except ValueError:
             return str(path)
 
+    # Count totals for header
+    all_changes = [c for c in (plan.composable_changes + plan.component_changes) if c.has_changes]
+    _header_parts = [f"{len(all_changes)} file{'s' if len(all_changes) != 1 else ''}"]
+    if plan.entries_by_component:
+        _seen: set[str] = set()
+        _all_w = []
+        for _cp2, _el2 in plan.entries_by_component:
+            for _e2 in _el2:
+                if _e2.mixin_stem not in _seen:
+                    _seen.add(_e2.mixin_stem)
+                    _all_w.extend(_e2.warnings)
+        _ec = sum(1 for w in _all_w if w.severity == "error")
+        _wc = sum(1 for w in _all_w if w.severity == "warning")
+        _ic = sum(1 for w in _all_w if w.severity == "info")
+        if _ec:
+            _header_parts.append(f"{_ec} error{'s' if _ec != 1 else ''}")
+        if _wc:
+            _header_parts.append(f"{_wc} warning{'s' if _wc != 1 else ''}")
+        if _ic:
+            _header_parts.append(f"{_ic} info")
+
     sections: list[str] = [
         "# Migration Diff Report",
-        f"Generated: {now.strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        f"`{now.strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {' \u00b7 '.join(_header_parts)}",
+        "",
+        "---",
         "",
     ]
 
@@ -221,7 +245,7 @@ def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
                 else:
                     confidence_map[entry.mixin_stem] = ConfidenceLevel.HIGH
 
-        summary = build_warning_summary(plan.entries_by_component, plan.composable_changes)
+        summary = build_warning_summary(plan.entries_by_component, plan.composable_changes, project_root)
         if summary:
             sections.append(summary)
             sections.append("")
@@ -235,8 +259,6 @@ def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
             sections.append("")
 
     # Diffs
-    all_changes = [c for c in (plan.composable_changes + plan.component_changes) if c.has_changes]
-
     for change in all_changes:
         rel = _rel(change.file_path)
         sections.append(f"## `{rel}`")
