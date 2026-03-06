@@ -658,3 +658,53 @@ def test_generate_composable_no_paths_still_works():
         lifecycle_hooks=[],
     )
     assert "export function useHelper()" in result
+
+
+DASHBOARD_MIXIN = """\
+import { helperUtil } from '../utils/helpers'
+
+export default {
+  data() {
+    return {
+      stats: [],
+      error: null,
+      lastRefresh: null,
+    }
+  },
+  computed: {
+    totalCount() {
+      return this.stats.length
+    },
+  },
+  methods: {
+    async loadStats() {
+      this.error = null
+      try {
+        const data = await this.$store.dispatch('fetchStats')
+        this.stats = data
+        this.lastRefresh = Date.now()
+      } catch (e) {
+        this.error = e.message
+      }
+    },
+  },
+}
+"""
+
+def test_dashboard_mixin_import_not_used_excluded():
+    """helperUtil is imported but never called in the mixin body -> excluded."""
+    members = MixinMembers(
+        data=["stats", "error", "lastRefresh"],
+        computed=["totalCount"],
+        methods=["loadStats"],
+    )
+    result = generate_composable_from_mixin(
+        mixin_source=DASHBOARD_MIXIN,
+        mixin_stem="dashboardMixin",
+        mixin_members=members,
+        lifecycle_hooks=[],
+        mixin_path=Path("/project/src/mixins/dashboardMixin.js"),
+        composable_path=Path("/project/src/composables/useDashboard.js"),
+    )
+    # helperUtil is imported but never referenced in any method body
+    assert "helperUtil" not in result
