@@ -174,6 +174,7 @@ def plan_composable_patches(
                     "lifecycle_hooks": [],
                     "mixin_members": entry.members,
                     "mixin_content": entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n'),
+                    "mixin_path": entry.mixin_path,
                 }
             rec = patch_map[comp_path]
             if has_blocked:
@@ -194,6 +195,8 @@ def plan_composable_patches(
             missing=list(rec["missing"]),
             mixin_members=rec["mixin_members"],
             lifecycle_hooks=rec["lifecycle_hooks"] or None,
+            mixin_path=rec["mixin_path"],
+            composable_path=comp_path,
         )
         change_descs = []
         if rec["not_returned"]:
@@ -248,6 +251,8 @@ def plan_new_composables(
                 mixin_stem=entry.mixin_stem,
                 mixin_members=entry.members,
                 lifecycle_hooks=entry.lifecycle_hooks,
+                mixin_path=entry.mixin_path,
+                composable_path=composable_path,
             )
             changes.append(FileChange(
                 file_path=composable_path,
@@ -566,6 +571,8 @@ def plan_regenerated_composables(
                 mixin_stem=entry.mixin_stem,
                 mixin_members=entry.members,
                 lifecycle_hooks=entry.lifecycle_hooks,
+                mixin_path=entry.mixin_path,
+                composable_path=entry.composable.file_path,
             )
             original = entry.composable.file_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
             if content != original:
