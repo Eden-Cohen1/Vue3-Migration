@@ -1,8 +1,10 @@
 """Patch existing composables to fix BLOCKED_NOT_RETURNED and BLOCKED_MISSING_MEMBERS."""
 import re
 import textwrap
+from pathlib import Path
 from ..core.composable_analyzer import extract_all_identifiers
 from ..core.js_parser import extract_brace_block, extract_value_at
+from ..core.mixin_analyzer import extract_mixin_imports, filter_imports_by_usage, rewrite_import_path
 from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
 )
@@ -494,6 +496,8 @@ def patch_composable(
     mixin_members: MixinMembers,
     lifecycle_hooks: list[str] | None = None,
     indent: str = "  ",
+    mixin_path: Path | None = None,
+    composable_path: Path | None = None,
 ) -> str:
     """Orchestrate composable patching for both blocked cases.
 
@@ -588,6 +592,24 @@ def patch_composable(
     content, dollar_imports = rewrite_this_dollar_refs(content)
     for imp in dollar_imports:
         content = _add_vue_import(content, imp)
+
+    # Propagate non-Vue imports from mixin source
+    if mixin_path is not None:
+        mixin_imports = extract_mixin_imports(mixin_content)
+        used_imports = filter_imports_by_usage(mixin_imports, content)
+        mixin_dir = mixin_path.parent
+        composable_dir = composable_path.parent if composable_path else mixin_dir
+        for imp in used_imports:
+            rewritten_line = rewrite_import_path(imp["line"], mixin_dir, composable_dir)
+            # Skip if any identifier from this import already appears in an existing import line
+            already_present = any(
+                re.search(rf"\b{re.escape(name)}\b", line)
+                for name in imp["identifiers"]
+                for line in content.split("\n")
+                if line.strip().startswith("import ")
+            )
+            if not already_present:
+                content = rewritten_line + "\n" + content
 
     # Remove stale "NOT defined" / "NOT returned" comments that contradict actual code
     content = _remove_stale_comments(content)

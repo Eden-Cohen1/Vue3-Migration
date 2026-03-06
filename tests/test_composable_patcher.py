@@ -609,3 +609,75 @@ def test_patch_generates_methods_referenced_by_lifecycle_hooks():
     assert "onBeforeUnmount(" in result
     # _handleEscapeKey must be defined BEFORE onMounted uses it
     assert result.index("function _handleEscapeKey") < result.index("onMounted(")
+
+
+# ---------------------------------------------------------------------------
+# Mixin import propagation
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+
+def test_patch_composable_adds_mixin_imports():
+    """Patching a composable should add mixin imports used by new members."""
+    composable_src = (
+        "import { ref } from 'vue'\n\n"
+        "export function useX() {\n"
+        "  const a = ref(1)\n"
+        "  return { a }\n"
+        "}\n"
+    )
+    mixin_src = (
+        "import { helperUtil } from '../utils/helpers'\n"
+        "import { unusedLib } from '../lib/unused'\n\n"
+        "export default {\n"
+        "  data() { return { a: 1 } },\n"
+        "  methods: {\n"
+        "    doWork() { return helperUtil(this.a) },\n"
+        "  },\n"
+        "}\n"
+    )
+    members = MixinMembers(data=["a"], methods=["doWork"])
+    result = patch_composable(
+        composable_content=composable_src,
+        mixin_content=mixin_src,
+        not_returned=[],
+        missing=["doWork"],
+        mixin_members=members,
+        mixin_path=Path("/project/src/mixins/xMixin.js"),
+        composable_path=Path("/project/src/composables/useX.js"),
+    )
+    assert "import { helperUtil } from '../utils/helpers'" in result
+    assert "unusedLib" not in result
+
+def test_patch_composable_no_duplicate_imports():
+    """If the composable already has the import, don't add it again."""
+    composable_src = (
+        "import { helperUtil } from '../utils/helpers'\n"
+        "import { ref } from 'vue'\n\n"
+        "export function useX() {\n"
+        "  const a = ref(1)\n"
+        "  return { a }\n"
+        "}\n"
+    )
+    mixin_src = (
+        "import { helperUtil } from '../utils/helpers'\n\n"
+        "export default {\n"
+        "  data() { return { a: 1 } },\n"
+        "  methods: {\n"
+        "    doWork() { return helperUtil(this.a) },\n"
+        "  },\n"
+        "}\n"
+    )
+    members = MixinMembers(data=["a"], methods=["doWork"])
+    result = patch_composable(
+        composable_content=composable_src,
+        mixin_content=mixin_src,
+        not_returned=[],
+        missing=["doWork"],
+        mixin_members=members,
+        mixin_path=Path("/project/src/mixins/xMixin.js"),
+        composable_path=Path("/project/src/composables/useX.js"),
+    )
+    # Count import lines containing helperUtil (not function calls)
+    import_lines = [l for l in result.split("\n") if l.strip().startswith("import") and "helperUtil" in l]
+    assert len(import_lines) == 1
