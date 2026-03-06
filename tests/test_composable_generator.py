@@ -587,3 +587,74 @@ def test_extract_func_params_arrow_function():
 def test_extract_func_params_no_match():
     body = "    someOtherMethod(x) {\n      return x\n    },"
     assert _extract_func_params(body, "nonExistent") == ""
+
+
+# ---------------------------------------------------------------------------
+# Import propagation from mixin to composable
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+
+MIXIN_WITH_EXTERNAL_IMPORT = """\
+import { helperUtil } from '../utils/helpers'
+import { unusedThing } from '../utils/unused'
+
+export default {
+  data() {
+    return { items: [] }
+  },
+  methods: {
+    process() {
+      return helperUtil(this.items)
+    },
+  },
+}
+"""
+
+MEMBERS_WITH_IMPORT = MixinMembers(
+    data=["items"],
+    methods=["process"],
+)
+
+def test_generate_composable_includes_used_imports():
+    result = generate_composable_from_mixin(
+        mixin_source=MIXIN_WITH_EXTERNAL_IMPORT,
+        mixin_stem="helperMixin",
+        mixin_members=MEMBERS_WITH_IMPORT,
+        lifecycle_hooks=[],
+        mixin_path=Path("/project/src/mixins/helperMixin.js"),
+        composable_path=Path("/project/src/composables/useHelper.js"),
+    )
+    assert "import { helperUtil } from '../utils/helpers'" in result
+
+def test_generate_composable_excludes_unused_imports():
+    result = generate_composable_from_mixin(
+        mixin_source=MIXIN_WITH_EXTERNAL_IMPORT,
+        mixin_stem="helperMixin",
+        mixin_members=MEMBERS_WITH_IMPORT,
+        lifecycle_hooks=[],
+        mixin_path=Path("/project/src/mixins/helperMixin.js"),
+        composable_path=Path("/project/src/composables/useHelper.js"),
+    )
+    assert "unusedThing" not in result
+
+def test_generate_composable_rewrites_import_path():
+    result = generate_composable_from_mixin(
+        mixin_source=MIXIN_WITH_EXTERNAL_IMPORT,
+        mixin_stem="helperMixin",
+        mixin_members=MEMBERS_WITH_IMPORT,
+        lifecycle_hooks=[],
+        mixin_path=Path("/project/src/mixins/helperMixin.js"),
+        composable_path=Path("/project/src/composables/deep/useHelper.js"),
+    )
+    assert "../../utils/helpers" in result
+
+def test_generate_composable_no_paths_still_works():
+    """Backwards compatible: no paths passed means no import propagation."""
+    result = generate_composable_from_mixin(
+        mixin_source=MIXIN_WITH_EXTERNAL_IMPORT,
+        mixin_stem="helperMixin",
+        mixin_members=MEMBERS_WITH_IMPORT,
+        lifecycle_hooks=[],
+    )
+    assert "export function useHelper()" in result

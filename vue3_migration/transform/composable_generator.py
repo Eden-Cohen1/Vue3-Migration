@@ -1,7 +1,9 @@
 """Generate a new Vue 3 composable file from a Vue 2 mixin source."""
 import re
 import textwrap
+from pathlib import Path
 from ..core.js_parser import extract_brace_block
+from ..core.mixin_analyzer import extract_mixin_imports, filter_imports_by_usage, rewrite_import_path
 from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
 )
@@ -136,6 +138,8 @@ def generate_composable_from_mixin(
     mixin_members: MixinMembers,
     lifecycle_hooks: list[str],
     indent: str = "  ",
+    mixin_path: Path | None = None,
+    composable_path: Path | None = None,
 ) -> str:
     """Generate a complete Vue 3 composable file from a mixin.
 
@@ -331,12 +335,25 @@ def generate_composable_from_mixin(
         if imp not in vue_imports:
             vue_imports.append(imp)
 
+    # Extract and filter non-Vue imports from the mixin source
+    external_imports: list[str] = []
+    if mixin_path is not None:
+        mixin_imports = extract_mixin_imports(mixin_source)
+        used_imports = filter_imports_by_usage(mixin_imports, body)
+        mixin_dir = mixin_path.parent
+        composable_dir = composable_path.parent if composable_path else mixin_dir
+        external_imports = [
+            rewrite_import_path(imp["line"], mixin_dir, composable_dir)
+            for imp in used_imports
+        ]
+
     # Assemble full file
     import_line = (
         f"import {{ {', '.join(vue_imports)} }} from 'vue'\n\n"
         if vue_imports else ""
     )
-    result = f"{import_line}export function {fn_name}() {{\n{body}\n}}\n"
+    external_block = "\n".join(external_imports) + "\n" if external_imports else ""
+    result = f"{external_block}{import_line}export function {fn_name}() {{\n{body}\n}}\n"
 
     # Collect warnings and inject inline comments + confidence header
     warnings = collect_mixin_warnings(mixin_source, mixin_members, lifecycle_hooks)
