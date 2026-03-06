@@ -2,7 +2,9 @@
 Mixin analysis — extract members and lifecycle hooks from Vue mixin source code.
 """
 
+import os
 import re
+from pathlib import Path
 
 from .js_parser import extract_brace_block, extract_property_names, skip_non_code
 
@@ -205,3 +207,44 @@ def extract_mixin_imports(mixin_source: str) -> list[dict]:
             results.append({"line": line, "identifiers": identifiers})
 
     return results
+
+
+def filter_imports_by_usage(imports: list[dict], code: str) -> list[dict]:
+    """Return only imports that have at least one identifier referenced in code.
+
+    Uses word-boundary matching to avoid false positives (e.g. 'item' won't
+    match 'itemCount').
+    """
+    used = []
+    for imp in imports:
+        if any(re.search(rf"\b{re.escape(name)}\b", code) for name in imp["identifiers"]):
+            used.append(imp)
+    return used
+
+
+def rewrite_import_path(import_line: str, mixin_dir: Path, composable_dir: Path) -> str:
+    """Rewrite a relative import path from mixin's directory to composable's directory.
+
+    Only rewrites paths starting with './' or '../'. Aliased paths (@/...),
+    bare specifiers (lodash), and absolute paths are returned unchanged.
+    """
+    m = re.search(r"""(from\s+)(['"])(\.\.?[/\\][^'"]*)\2""", import_line)
+    if not m:
+        return import_line
+
+    quote = m.group(2)
+    old_path = m.group(3)
+
+    # Resolve the import target against the mixin's directory
+    resolved = (mixin_dir / old_path).resolve()
+
+    # Compute new relative path from composable's directory
+    try:
+        new_rel = os.path.relpath(resolved, composable_dir).replace("\\", "/")
+    except ValueError:
+        return import_line  # different drives on Windows
+
+    if not new_rel.startswith("."):
+        new_rel = "./" + new_rel
+
+    return import_line[:m.start(3)] + new_rel + import_line[m.end(3):]

@@ -453,3 +453,115 @@ def test_extract_mixin_imports_skips_side_effect():
 def test_extract_mixin_imports_empty_source():
     results = extract_mixin_imports("export default { data() { return {} } }")
     assert results == []
+
+
+# ---------------------------------------------------------------------------
+# filter_imports_by_usage
+# ---------------------------------------------------------------------------
+
+from vue3_migration.core.mixin_analyzer import filter_imports_by_usage
+
+def test_filter_imports_keeps_used():
+    imports = [
+        {"line": "import { helperUtil } from '../utils/helpers'", "identifiers": ["helperUtil"]},
+        {"line": "import { formatDate } from '../utils/date'", "identifiers": ["formatDate"]},
+    ]
+    code = "function doWork() { return helperUtil(data.value) }"
+    result = filter_imports_by_usage(imports, code)
+    assert len(result) == 1
+    assert result[0]["identifiers"] == ["helperUtil"]
+
+def test_filter_imports_removes_all_unused():
+    imports = [
+        {"line": "import { unused } from '../lib'", "identifiers": ["unused"]},
+    ]
+    code = "function doWork() { return 42 }"
+    result = filter_imports_by_usage(imports, code)
+    assert result == []
+
+def test_filter_imports_no_partial_word_match():
+    imports = [
+        {"line": "import { item } from '../lib'", "identifiers": ["item"]},
+    ]
+    code = "function doWork() { return itemCount.value }"
+    result = filter_imports_by_usage(imports, code)
+    assert result == []
+
+def test_filter_imports_multi_identifier_any_used():
+    """If any identifier from an import line is used, keep the whole line."""
+    imports = [
+        {"line": "import { a, b } from '../lib'", "identifiers": ["a", "b"]},
+    ]
+    code = "function doWork() { return a() }"
+    result = filter_imports_by_usage(imports, code)
+    assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# rewrite_import_path
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+from vue3_migration.core.mixin_analyzer import rewrite_import_path
+
+# ── rewrite_import_path ──────────────────────────────────────────────────────
+
+def test_rewrite_same_directory():
+    """Mixin and composable at same depth — path unchanged."""
+    line = "import { helper } from '../utils/helpers'"
+    result = rewrite_import_path(
+        line,
+        mixin_dir=Path("/project/src/mixins"),
+        composable_dir=Path("/project/src/composables"),
+    )
+    assert result == "import { helper } from '../utils/helpers'"
+
+def test_rewrite_different_depth():
+    """Composable is deeper — relative path needs extra ../"""
+    line = "import { helper } from '../utils/helpers'"
+    result = rewrite_import_path(
+        line,
+        mixin_dir=Path("/project/src/mixins"),
+        composable_dir=Path("/project/src/composables/nested"),
+    )
+    assert result == "import { helper } from '../../utils/helpers'"
+
+def test_rewrite_composable_shallower():
+    """Composable is shallower — shorter relative path."""
+    line = "import { helper } from '../../utils/helpers'"
+    result = rewrite_import_path(
+        line,
+        mixin_dir=Path("/project/src/deep/mixins"),
+        composable_dir=Path("/project/src/composables"),
+    )
+    assert result == "import { helper } from '../utils/helpers'"
+
+def test_rewrite_absolute_import_unchanged():
+    """Aliased/absolute import paths are not rewritten."""
+    line = "import { helper } from '@/utils/helpers'"
+    result = rewrite_import_path(
+        line,
+        mixin_dir=Path("/project/src/mixins"),
+        composable_dir=Path("/project/src/composables"),
+    )
+    assert result == "import { helper } from '@/utils/helpers'"
+
+def test_rewrite_bare_specifier_unchanged():
+    """Bare module specifiers (npm packages) are not rewritten."""
+    line = "import lodash from 'lodash'"
+    result = rewrite_import_path(
+        line,
+        mixin_dir=Path("/project/src/mixins"),
+        composable_dir=Path("/project/src/composables"),
+    )
+    assert result == "import lodash from 'lodash'"
+
+def test_rewrite_double_quote():
+    """Works with double quotes too."""
+    line = 'import { helper } from "../utils/helpers"'
+    result = rewrite_import_path(
+        line,
+        mixin_dir=Path("/project/src/mixins"),
+        composable_dir=Path("/project/src/composables/nested"),
+    )
+    assert result == 'import { helper } from "../../utils/helpers"'
