@@ -2,7 +2,7 @@
 import re
 import textwrap
 from pathlib import Path
-from ..core.composable_analyzer import extract_all_identifiers
+from ..core.composable_analyzer import extract_declared_identifiers
 from ..core.js_parser import extract_brace_block, extract_value_at
 from ..core.mixin_analyzer import extract_mixin_imports, filter_imports_by_usage, rewrite_import_path
 from ..core.warning_collector import (
@@ -191,15 +191,35 @@ def add_members_to_composable(content: str, member_lines: list[str]) -> str:
     if not matches:
         return content
     m = matches[-1]
-    existing_ids = set(extract_all_identifiers(content))
+    existing_ids = set(extract_declared_identifiers(content))
     lines_to_add = []
+    in_block = False  # True when we're adding a multi-line block (e.g. lifecycle hook)
     for line in member_lines:
         name_match = re.search(r'\b(?:const|let|var|function)\s+(\w+)', line)
         if name_match:
-            if name_match.group(1) not in existing_ids:
+            in_block = name_match.group(1) not in existing_ids
+            if in_block:
                 lines_to_add.append(line)
         else:
-            lines_to_add.append(line)  # no name detected — add anyway
+            # No extractable name — could be a lifecycle hook opener or continuation line.
+            # Check if this starts a new block (e.g. "onMounted(() => {")
+            hook_match = re.match(r'\s*(on\w+)\s*\(', line)
+            if hook_match:
+                # Lifecycle hook opener — check if this exact hook is already in content
+                in_block = not re.search(rf'\b{re.escape(hook_match.group(1))}\s*\(', content)
+                if in_block:
+                    lines_to_add.append(line)
+            elif in_block:
+                # Continuation of a block being added (body lines, closing braces)
+                lines_to_add.append(line)
+            else:
+                # Standalone line (e.g. inline hook body) — add if significant content not present
+                stripped = line.strip()
+                if stripped and not stripped.startswith('//') and stripped not in content:
+                    lines_to_add.append(line)
+                elif not stripped or stripped.startswith('//'):
+                    # Blank lines and comments — always add
+                    lines_to_add.append(line)
     if not lines_to_add:
         return content
     insertion = "\n".join(lines_to_add)
@@ -470,6 +490,15 @@ def generate_member_declaration(
     return f"{indent}// {name} — could not classify, migrate manually"
 
 
+def _inline_body_present(composable_src: str, hook_body: str) -> bool:
+    """Check if the significant statements from a hook body are already in the composable."""
+    lines = textwrap.dedent(hook_body).strip().splitlines()
+    significant = [l.strip() for l in lines if l.strip() and not l.strip().startswith('//')]
+    if not significant:
+        return False
+    return all(line in composable_src for line in significant)
+
+
 def _missing_hooks(composable_src: str, hooks: list[str]) -> list[str]:
     """Return lifecycle hooks not yet present in the composable source.
 
@@ -549,6 +578,18 @@ def patch_composable(
     # Step 3: add lifecycle hooks not yet present in the composable
     if lifecycle_hooks:
         hooks_to_add = _missing_hooks(content, lifecycle_hooks)
+        # Filter out inline hooks (created/beforeCreate) whose body is already present
+        filtered = []
+        for hook in hooks_to_add:
+            if HOOK_MAP.get(hook) is None:
+                body = extract_hook_body(mixin_content, hook)
+                if body:
+                    # Check with rewritten body (this.x → x.value / x())
+                    rewritten_body = rewrite_this_refs(body, ref_members, plain_members)
+                    if _inline_body_present(content, rewritten_body):
+                        continue
+            filtered.append(hook)
+        hooks_to_add = filtered
         if hooks_to_add:
             # Step 3a: Find mixin members referenced inside lifecycle hook bodies
             # that are not yet in the composable (e.g. _handleEscapeKey).
@@ -559,7 +600,7 @@ def patch_composable(
             lifecycle_deps = find_lifecycle_referenced_members(
                 mixin_content, hooks_to_add, all_member_names,
             )
-            existing_ids = set(extract_all_identifiers(content))
+            existing_ids = set(extract_declared_identifiers(content))
             missing_deps = [m for m in lifecycle_deps if m not in existing_ids]
             if missing_deps:
                 dep_decls = [

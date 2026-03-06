@@ -4,6 +4,7 @@ Markdown report generation for migration analysis results.
 
 from pathlib import Path
 
+from ..core.file_utils import read_source
 from ..models import ConfidenceLevel, FileChange, MigrationWarning, MixinEntry
 from .terminal import md_green, md_yellow
 
@@ -198,7 +199,7 @@ def generate_status_report(project_root: Path, config) -> str:
                 if fp.suffix not in (".js", ".ts") or not fp.stem.lower().startswith("use"):
                     continue
                 try:
-                    content = fp.read_text(errors="ignore")
+                    content = read_source(fp)
                 except Exception:
                     continue
                 if 'reactive(' in content or not _re.search(r'\breturn\s*\{', content):
@@ -216,7 +217,7 @@ def generate_status_report(project_root: Path, config) -> str:
                 continue
             filepath = Path(dirpath) / fn
             try:
-                source = filepath.read_text(errors="ignore")
+                source = read_source(filepath)
             except Exception:
                 continue
             mixin_names = parse_mixins_array(source)

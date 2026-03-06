@@ -6,12 +6,14 @@ The CLI shows the diff and writes files only after user confirmation.
 import re
 from pathlib import Path
 
+from ..core.file_utils import read_source
 from ..core.component_analyzer import (
     extract_data_property_names, extract_own_members, find_used_members,
     parse_imports, parse_mixins_array,
 )
 from ..core.composable_analyzer import (
-    extract_all_identifiers, extract_function_name, extract_return_keys,
+    extract_all_identifiers, extract_declared_identifiers,
+    extract_function_name, extract_return_keys,
 )
 from ..core.composable_search import find_composable_dirs, search_for_composable
 from ..core.file_resolver import compute_import_path, resolve_import_path
@@ -49,7 +51,7 @@ def _analyze_mixin_silent(
     if not mixin_file:
         return None
     # R-7: normalize CRLF
-    mixin_source = mixin_file.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+    mixin_source = read_source(mixin_file)
     members_dict = extract_mixin_members(mixin_source)
     members = MixinMembers(**members_dict)
     hooks = extract_lifecycle_hooks(mixin_source)
@@ -80,7 +82,7 @@ def _analyze_mixin_silent(
                 f"  [auto-migrate] Multiple composable candidates for {mixin_file.stem}; "
                 f"using first match: {composable_file.name}"
             )
-        comp_source = composable_file.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+        comp_source = read_source(composable_file)
         fn_name = extract_function_name(comp_source)
         if fn_name:
             coverage = ComposableCoverage(
@@ -88,6 +90,7 @@ def _analyze_mixin_silent(
                 fn_name=fn_name,
                 import_path=compute_import_path(composable_file, project_root),
                 all_identifiers=extract_all_identifiers(comp_source),
+                declared_identifiers=extract_declared_identifiers(comp_source),
                 return_keys=extract_return_keys(comp_source),
             )
             entry.composable = coverage
@@ -118,7 +121,7 @@ def collect_all_mixin_entries(
         if any(skip in vue_file.parts for skip in config.skip_dirs):
             continue
         # R-7: normalize CRLF
-        source = vue_file.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+        source = read_source(vue_file)
         mixin_names = parse_mixins_array(source)
         if not mixin_names:
             continue
@@ -168,12 +171,12 @@ def plan_composable_patches(
             comp_path = entry.composable.file_path
             if comp_path not in patch_map:
                 patch_map[comp_path] = {
-                    "content": comp_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n'),
+                    "content": read_source(comp_path),
                     "not_returned": set(),
                     "missing": set(),
                     "lifecycle_hooks": [],
                     "mixin_members": entry.members,
-                    "mixin_content": entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n'),
+                    "mixin_content": read_source(entry.mixin_path),
                     "mixin_path": entry.mixin_path,
                 }
             rec = patch_map[comp_path]
@@ -242,7 +245,7 @@ def plan_new_composables(
                 continue
             seen_stems.add(entry.mixin_stem)
 
-            mixin_source = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+            mixin_source = read_source(entry.mixin_path)
             fn_name = mixin_stem_to_composable_name(entry.mixin_stem)
             composable_path = target_dir / f"{fn_name}.js"
 
@@ -297,7 +300,7 @@ def plan_component_injections(
         if not comp_path.exists():
             continue
         # R-7: normalize CRLF
-        comp_source = comp_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+        comp_source = read_source(comp_path)
         own_members = extract_own_members(comp_source)
         ready_entries = []
 
@@ -317,6 +320,7 @@ def plan_component_injections(
                     fn_name=entry.composable.fn_name,
                     import_path=entry.composable.import_path,
                     all_identifiers=extract_all_identifiers(new_content),
+                    declared_identifiers=extract_declared_identifiers(new_content),
                     return_keys=extract_return_keys(new_content),
                 )
                 entry.composable = updated
@@ -333,6 +337,7 @@ def plan_component_injections(
                         fn_name=expected_fn,
                         import_path=compute_import_path(change.file_path, config.project_root),
                         all_identifiers=extract_all_identifiers(change.new_content),
+                        declared_identifiers=extract_declared_identifiers(change.new_content),
                         return_keys=extract_return_keys(change.new_content),
                     )
                     entry.composable = coverage
@@ -400,7 +405,7 @@ def plan_component_injections(
             # the composable contains the hooks and needs these members destructured.
             lifecycle_members: list[str] = []
             if entry.lifecycle_hooks and entry.composable:
-                mixin_content = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+                mixin_content = read_source(entry.mixin_path)
                 lifecycle_members = find_lifecycle_referenced_members(
                     mixin_content, entry.lifecycle_hooks, entry.members.all_names
                 )
@@ -568,7 +573,7 @@ def plan_regenerated_composables(
                 continue
             seen_stems.add(entry.mixin_stem)
 
-            mixin_source = entry.mixin_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+            mixin_source = read_source(entry.mixin_path)
             content = generate_composable_from_mixin(
                 mixin_source=mixin_source,
                 mixin_stem=entry.mixin_stem,
@@ -577,7 +582,7 @@ def plan_regenerated_composables(
                 mixin_path=entry.mixin_path,
                 composable_path=entry.composable.file_path,
             )
-            original = entry.composable.file_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+            original = read_source(entry.composable.file_path)
             if content != original:
                 changes.append(FileChange(
                     file_path=entry.composable.file_path,
@@ -641,12 +646,10 @@ def _build_standalone_mixin_entry(
     if not mixin_file:
         return []
 
-    # If a composable already exists, nothing to generate
     composable_dirs = find_composable_dirs(project_root)
-    if search_for_composable(mixin_stem, composable_dirs, project_root=project_root):
-        return []
+    matches = search_for_composable(mixin_stem, composable_dirs, project_root=project_root)
 
-    mixin_source = mixin_file.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+    mixin_source = read_source(mixin_file)
     members_dict = extract_mixin_members(mixin_source)
     members = MixinMembers(**members_dict)
     hooks = extract_lifecycle_hooks(mixin_source)
@@ -658,10 +661,34 @@ def _build_standalone_mixin_entry(
         mixin_stem=mixin_stem,
         members=members,
         lifecycle_hooks=hooks,
-        used_members=[],
+        used_members=members.all_names,
         external_deps=ext_deps,
         status=MigrationStatus.BLOCKED_NO_COMPOSABLE,
     )
+
+    # If a composable already exists, attach it so it can be re-patched
+    if matches:
+        composable_file = matches[0]
+        comp_source = read_source(composable_file)
+        fn_name = extract_function_name(comp_source)
+        if fn_name:
+            entry.composable = ComposableCoverage(
+                file_path=composable_file,
+                fn_name=fn_name,
+                import_path=compute_import_path(composable_file, project_root),
+                all_identifiers=extract_all_identifiers(comp_source),
+                declared_identifiers=extract_declared_identifiers(comp_source),
+                return_keys=extract_return_keys(comp_source),
+            )
+            entry.classification = entry.composable.classify_members(
+                members.all_names, set(),
+            )
+
+    mixin_warnings = collect_mixin_warnings(mixin_source, members, hooks)
+    for w in mixin_warnings:
+        w.mixin_stem = entry.mixin_stem
+    entry.warnings = mixin_warnings
+    entry.compute_status()
 
     # Use a sentinel path to indicate no real component
     return [(Path("<standalone>"), [entry])]

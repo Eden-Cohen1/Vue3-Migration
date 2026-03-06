@@ -353,6 +353,27 @@ def inject_inline_warnings(
         line = lines[line_idx]
         lines[line_idx] = line.rstrip("\n") + f"  // {icon}\n"
 
+    # Phase 3b: Add suffix icons on ALL lines matching a warning category,
+    # not just the first matched line.  This ensures every this.$emit, this.$router
+    # etc. gets a visible ❌ even if it didn't get its own warning box.
+    category_severity: dict[str, str] = {}
+    for w in warnings:
+        if w.category.startswith("this.$"):
+            cur = category_severity.get(w.category)
+            if cur is None or _SEVERITY_ORDER.get(w.severity, 2) < _SEVERITY_ORDER.get(cur, 2):
+                category_severity[w.category] = w.severity
+    for i, line in enumerate(lines):
+        if i in line_severity:
+            continue  # already has a suffix from Phase 3
+        stripped = line.lstrip()
+        if stripped.startswith("//"):
+            continue
+        for cat, sev in category_severity.items():
+            if cat in line:
+                icon = _INLINE_ICON.get(sev, "\u26a0\ufe0f")
+                lines[i] = line.rstrip("\n") + f"  // {icon}\n"
+                break
+
     # Phase 4: Insert box blocks above functions (bottom to top to preserve indices)
     for func_idx in sorted(func_groups.keys(), reverse=True):
         group = func_groups[func_idx]

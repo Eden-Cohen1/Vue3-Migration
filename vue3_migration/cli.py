@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from .core.component_analyzer import parse_imports, parse_mixins_array
+from .core.file_utils import read_source
 from .core.composable_search import (
     collect_composable_stems,
     find_composable_dirs,
@@ -185,7 +186,7 @@ def _scan_components_with_mixins(project_root: Path, config: MigrationConfig) ->
                 continue
             filepath = Path(dirpath) / fn
             try:
-                source = filepath.read_text(errors="ignore")
+                source = read_source(filepath)
             except Exception:
                 continue
             mixin_names = _parse_mixins_array(source)
@@ -228,7 +229,7 @@ def _scan_mixin_usage(project_root: Path, config: MigrationConfig) -> list[dict]
                 continue
             filepath = Path(dirpath) / fn
             try:
-                source = filepath.read_text(errors="ignore")
+                source = read_source(filepath)
             except Exception:
                 continue
             mixin_names = _parse_mixins_array(source)

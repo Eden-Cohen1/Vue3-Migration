@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from ..core.file_utils import read_source
 from ..core.component_analyzer import (
     extract_own_members,
     find_used_members,
@@ -19,6 +20,7 @@ from ..core.component_analyzer import (
 )
 from ..core.composable_analyzer import (
     extract_all_identifiers,
+    extract_declared_identifiers,
     extract_function_name,
     extract_return_keys,
 )
@@ -71,7 +73,7 @@ def analyze_mixin(
     print(f"  File: {green(str(mixin_file))}")
 
     # -- Extract mixin members and hooks --
-    mixin_source = mixin_file.read_text(errors="ignore")
+    mixin_source = read_source(mixin_file)
     members_dict = extract_mixin_members(mixin_source)
     members = MixinMembers(**members_dict)
     hooks = extract_lifecycle_hooks(mixin_source)
@@ -136,7 +138,7 @@ def analyze_mixin(
 
     # -- Analyze composable coverage --
     if composable_file:
-        comp_source = composable_file.read_text(errors="ignore")
+        comp_source = read_source(composable_file)
         fn_name = extract_function_name(comp_source)
         if not fn_name:
             print(f"  {yellow('Could not detect function name.')}")
@@ -144,6 +146,7 @@ def analyze_mixin(
 
         if fn_name:
             all_identifiers = extract_all_identifiers(comp_source)
+            declared_identifiers = extract_declared_identifiers(comp_source)
             return_keys = extract_return_keys(comp_source)
             import_path_str = compute_import_path(composable_file, project_root)
 
@@ -153,6 +156,7 @@ def analyze_mixin(
                 import_path=import_path_str,
                 all_identifiers=all_identifiers,
                 return_keys=return_keys,
+                declared_identifiers=declared_identifiers,
             )
             classification = coverage.classify_members(used, component_own_members)
 
@@ -184,7 +188,7 @@ def plan_injection(
 
     Returns a FileChange with original and modified content.
     """
-    content = component_path.read_text(errors="ignore")
+    content = read_source(component_path)
     original = content
     changes: list[str] = []
 
@@ -264,7 +268,7 @@ def run(component_arg: str, config: MigrationConfig | None = None):
 
     # ---- Phase 1: Analyze ----
     print(f"Analyzing: {green(component_arg)}")
-    component_source = component_path.read_text(errors="ignore")
+    component_source = read_source(component_path)
 
     all_imports = parse_imports(component_source)
     mixin_names = parse_mixins_array(component_source)
@@ -308,7 +312,7 @@ def run(component_arg: str, config: MigrationConfig | None = None):
 
     report = build_component_report(component_path, mixin_entries, project_root)
     report_path = project_root / f"migration_{component_path.stem}.md"
-    report_path.write_text(report)
+    report_path.write_text(report, encoding="utf-8")
     print(f"Report: {green(str(report_path))}")
 
     # ---- Phase 3: Inject ----

@@ -87,6 +87,8 @@ class ComposableCoverage:
     import_path: str
     all_identifiers: list[str] = field(default_factory=list)
     return_keys: list[str] = field(default_factory=list)
+    declared_identifiers: list[str] = field(default_factory=list)
+    """Identifiers with actual declarations (const/let/var/function) — excludes return-only keys."""
 
     def classify_members(
         self,
@@ -94,8 +96,11 @@ class ComposableCoverage:
         component_own_members: set[str],
     ) -> MemberClassification:
         """Classify each used member by availability in the composable and component."""
-        missing = [m for m in used if m not in self.all_identifiers]
-        not_returned = [m for m in used if m in self.all_identifiers and m not in self.return_keys]
+        # Use declared_identifiers (excludes return-only keys) when available,
+        # so "returned but not defined" members are correctly flagged as missing.
+        declared = self.declared_identifiers if self.declared_identifiers else self.all_identifiers
+        missing = [m for m in used if m not in declared]
+        not_returned = [m for m in used if m in declared and m not in self.return_keys]
 
         overridden = [m for m in missing if m in component_own_members]
         truly_missing = [m for m in missing if m not in component_own_members]

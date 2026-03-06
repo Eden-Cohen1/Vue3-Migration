@@ -224,8 +224,8 @@ def test_run_scoped_standalone_mixin_not_found_returns_empty_plan(project):
     assert not plan.has_changes
 
 
-def test_run_scoped_standalone_mixin_with_existing_composable_returns_empty(project):
-    """If a composable already exists for the mixin, nothing to generate."""
+def test_run_scoped_standalone_mixin_with_existing_composable_patches_it(project):
+    """If a composable already exists for the mixin, it should be re-patched."""
     # Create a composable for ordersMixin
     composable_dir = project / "src" / "composables"
     composable_dir.mkdir(parents=True, exist_ok=True)
@@ -234,4 +234,5 @@ def test_run_scoped_standalone_mixin_with_existing_composable_returns_empty(proj
     )
     with patch("builtins.print"):
         plan = run_scoped(project, _make_config(project), mixin_stem="ordersMixin")
-    assert not plan.has_changes
+    # The existing composable should be picked up for patching
+    assert plan.composable_changes is not None

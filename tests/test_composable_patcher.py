@@ -617,6 +617,28 @@ def test_patch_generates_methods_referenced_by_lifecycle_hooks():
 
 from pathlib import Path
 
+def test_patch_skips_already_inlined_created_hook():
+    """Running patch_composable twice should not duplicate created hook content."""
+    members = MixinMembers(data=["logs"], methods=["log"])
+    # First run
+    first = patch_composable(
+        LOGGING_COMPOSABLE, LOGGING_MIXIN,
+        not_returned=[], missing=[],
+        mixin_members=members,
+        lifecycle_hooks=["created"],
+    )
+    # Second run on already-patched output
+    second = patch_composable(
+        first, LOGGING_MIXIN,
+        not_returned=[], missing=[],
+        mixin_members=members,
+        lifecycle_hooks=["created"],
+    )
+    # The created hook body should appear exactly once
+    count = second.count("log('Component created')")
+    assert count == 1, f"Expected 1 occurrence, got {count}"
+
+
 def test_patch_composable_adds_mixin_imports():
     """Patching a composable should add mixin imports used by new members."""
     composable_src = (
@@ -681,3 +703,17 @@ def test_patch_composable_no_duplicate_imports():
     # Count import lines containing helperUtil (not function calls)
     import_lines = [l for l in result.split("\n") if l.strip().startswith("import") and "helperUtil" in l]
     assert len(import_lines) == 1
+
+
+def test_add_members_skips_duplicate_unnamed_lines():
+    """add_members_to_composable should not re-add lines already in the composable."""
+    composable = (
+        "export function useX() {\n"
+        "  const a = ref(1)\n"
+        "  doSomething()\n"
+        "\n"
+        "  return { a }\n"
+        "}\n"
+    )
+    result = add_members_to_composable(composable, ["  doSomething()"])
+    assert result.count("doSomething()") == 1

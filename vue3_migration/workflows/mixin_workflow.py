@@ -15,9 +15,11 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from ..core.file_utils import read_source
 from ..core.component_analyzer import extract_own_members, find_used_members
 from ..core.composable_analyzer import (
     extract_all_identifiers,
+    extract_declared_identifiers,
     extract_function_name,
 )
 from ..core.composable_search import (
@@ -63,7 +65,7 @@ def find_files_importing_mixin(
             if file_path.resolve() == mixin_path.resolve():
                 continue
             try:
-                content = file_path.read_text(errors="ignore")
+                content = read_source(file_path)
             except OSError:
                 continue
             import_pattern = (
@@ -77,7 +79,7 @@ def find_files_importing_mixin(
 
 def find_used_members_in_file(file_path: Path, member_names: list[str]) -> list[str]:
     """Find which mixin members are referenced in a file."""
-    file_content = file_path.read_text(errors="ignore")
+    file_content = read_source(file_path)
     return find_used_members(file_content, member_names)
 
 
@@ -94,7 +96,7 @@ def plan_injection_for_file(
     component defines itself in data/computed/methods/watch are excluded from
     the composable destructuring.
     """
-    file_content = file_path.read_text(errors="ignore")
+    file_content = read_source(file_path)
     original_content = file_content
     changes: list[str] = []
 
@@ -155,7 +157,7 @@ def plan_injection_for_file(
 def apply_changes(file_change: FileChange) -> None:
     """Write planned changes to disk."""
     if file_change.has_changes:
-        file_change.file_path.write_text(file_change.new_content)
+        file_change.file_path.write_text(file_change.new_content, encoding="utf-8")
 
 
 def prompt_and_inject(
@@ -177,7 +179,7 @@ def prompt_and_inject(
         return
 
     # Extract composable function name
-    composable_source = composable_path.read_text(errors="ignore")
+    composable_source = read_source(composable_path)
     fn_name = extract_function_name(composable_source)
 
     if not fn_name:
@@ -193,7 +195,7 @@ def prompt_and_inject(
     print(f"Import path: {import_path}")
 
     # Check for missing members
-    composable_identifiers = extract_all_identifiers(composable_source)
+    composable_identifiers = extract_declared_identifiers(composable_source)
     missing_members = [m for m in all_member_names if m not in composable_identifiers]
 
     if missing_members:
@@ -274,7 +276,7 @@ def run(mixin_arg: str, composable_arg: Optional[str] = None, config: MigrationC
 
     # --- Parse the mixin ---
     print(f"Parsing mixin: {mixin_path.name}...")
-    mixin_source = mixin_path.read_text(errors="ignore")
+    mixin_source = read_source(mixin_path)
     members = extract_mixin_members(mixin_source)
     lifecycle_hooks = extract_lifecycle_hooks(mixin_source)
     all_member_names = members["data"] + members["computed"] + members["methods"]
@@ -339,8 +341,8 @@ def run(mixin_arg: str, composable_arg: Optional[str] = None, config: MigrationC
         composable_path = Path(composable_path_resolved).resolve()
         if composable_path.is_file():
             composable_exists = True
-            composable_source = composable_path.read_text(errors="ignore")
-            composable_identifiers = extract_all_identifiers(composable_source)
+            composable_source = read_source(composable_path)
+            composable_identifiers = extract_declared_identifiers(composable_source)
             print(f"  Found {len(composable_identifiers)} identifiers in composable.")
         else:
             print(f"  Composable file not found at {composable_path}.")
@@ -373,7 +375,7 @@ def run(mixin_arg: str, composable_arg: Optional[str] = None, config: MigrationC
     )
 
     output_path = project_root / f"mixin_audit_{mixin_path.stem}.md"
-    output_path.write_text(report)
+    output_path.write_text(report, encoding="utf-8")
     print(f"Report written to {output_path}")
 
     # --- Prompt for composable injection ---

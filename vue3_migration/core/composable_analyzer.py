@@ -9,11 +9,16 @@ from typing import Optional
 from .js_parser import extract_brace_block
 
 
-def extract_all_identifiers(source: str) -> list[str]:
-    """Extract ALL identifiers defined anywhere in a composable file.
+_NOISE = {
+    "const", "let", "var", "function", "return", "if", "else", "new",
+    "true", "false", "null", "undefined", "async", "await", "from", "import",
+}
 
-    Covers: variable declarations, function declarations, destructuring,
-    and return statement keys.
+
+def extract_declared_identifiers(source: str) -> list[str]:
+    """Extract identifiers that have actual declarations (const/let/var/function/destructure).
+
+    Does NOT include return-statement keys — only names with real definitions.
     """
     ids: set[str] = set()
 
@@ -34,6 +39,17 @@ def extract_all_identifiers(source: str) -> list[str]:
             else:
                 ids.add(part.split("=")[0].strip())
 
+    return sorted(ids - _NOISE)
+
+
+def extract_all_identifiers(source: str) -> list[str]:
+    """Extract ALL identifiers defined anywhere in a composable file.
+
+    Covers: variable declarations, function declarations, destructuring,
+    and return statement keys.
+    """
+    ids = set(extract_declared_identifiers(source))
+
     # Return keys: return { foo, bar, baz: val } — use LAST match to skip nested returns
     ret_matches = list(re.finditer(r"\breturn\s*\{", source))
     ret = ret_matches[-1] if ret_matches else None
@@ -41,11 +57,7 @@ def extract_all_identifiers(source: str) -> list[str]:
         block = extract_brace_block(source, ret.end() - 1)
         ids.update(re.findall(r"\b(\w+)\s*[,}\n:]", block))
 
-    noise = {
-        "const", "let", "var", "function", "return", "if", "else", "new",
-        "true", "false", "null", "undefined", "async", "await", "from", "import",
-    }
-    return sorted(ids - noise)
+    return sorted(ids - _NOISE)
 
 
 def extract_return_keys(source: str) -> list[str]:
