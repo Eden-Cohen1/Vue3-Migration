@@ -393,3 +393,63 @@ class TestResolveExternalDepSources:
         )
         assert result["isLoading"]["kind"] == "sibling"
         assert result["userId"]["kind"] == "component"
+
+
+# ---------------------------------------------------------------------------
+# extract_mixin_imports
+# ---------------------------------------------------------------------------
+
+from vue3_migration.core.mixin_analyzer import extract_mixin_imports
+
+MIXIN_WITH_IMPORTS = """\
+import DefaultExport from '../utils/helpers'
+import { namedA, namedB } from '../services/api'
+import { original as aliased } from '../lib/transform'
+import * as allUtils from '../utils/all'
+import '../polyfills/array'
+import { ref } from 'vue'
+
+export default {
+  methods: {
+    doWork() {
+      return namedA(DefaultExport.parse(this.data))
+    },
+  },
+}
+"""
+
+def test_extract_mixin_imports_default():
+    results = extract_mixin_imports(MIXIN_WITH_IMPORTS)
+    default_imp = [r for r in results if "DefaultExport" in r["identifiers"]]
+    assert len(default_imp) == 1
+    assert "import DefaultExport from '../utils/helpers'" in default_imp[0]["line"]
+
+def test_extract_mixin_imports_named():
+    results = extract_mixin_imports(MIXIN_WITH_IMPORTS)
+    named_imp = [r for r in results if "namedA" in r["identifiers"]]
+    assert len(named_imp) == 1
+    assert "namedB" in named_imp[0]["identifiers"]
+
+def test_extract_mixin_imports_aliased():
+    results = extract_mixin_imports(MIXIN_WITH_IMPORTS)
+    aliased_imp = [r for r in results if "aliased" in r["identifiers"]]
+    assert len(aliased_imp) == 1
+    assert "original" not in aliased_imp[0]["identifiers"]
+
+def test_extract_mixin_imports_namespace():
+    results = extract_mixin_imports(MIXIN_WITH_IMPORTS)
+    ns_imp = [r for r in results if "allUtils" in r["identifiers"]]
+    assert len(ns_imp) == 1
+
+def test_extract_mixin_imports_skips_vue():
+    results = extract_mixin_imports(MIXIN_WITH_IMPORTS)
+    vue_imp = [r for r in results if any("ref" == id for id in r["identifiers"])]
+    assert len(vue_imp) == 0
+
+def test_extract_mixin_imports_skips_side_effect():
+    results = extract_mixin_imports(MIXIN_WITH_IMPORTS)
+    assert all(r["identifiers"] for r in results)
+
+def test_extract_mixin_imports_empty_source():
+    results = extract_mixin_imports("export default { data() { return {} } }")
+    assert results == []

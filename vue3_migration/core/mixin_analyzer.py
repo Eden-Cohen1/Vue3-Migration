@@ -149,3 +149,59 @@ def extract_lifecycle_hooks(source: str) -> list[str]:
         hook for hook in VUE_LIFECYCLE_HOOKS
         if re.search(rf"\b{hook}\s*(?:\(|:\s*(?:function|\())", source)
     ]
+
+
+def extract_mixin_imports(mixin_source: str) -> list[dict]:
+    """Parse all ES module import lines from mixin source, excluding Vue imports.
+
+    Returns a list of dicts, each with:
+      - "line": the full import statement string
+      - "identifiers": list of locally-bound names (aliases, not originals)
+
+    Skips side-effect imports (no identifiers) and imports from 'vue'.
+    """
+    results = []
+    for m in re.finditer(
+        r"""^(import\s+.+?\s+from\s+['"]([^'"]+)['"]\s*;?)""",
+        mixin_source,
+        re.MULTILINE,
+    ):
+        line = m.group(1)
+        module_path = m.group(2)
+
+        # Skip vue imports
+        if module_path == "vue" or module_path.startswith("vue/"):
+            continue
+
+        identifiers: list[str] = []
+
+        # import * as X from '...'
+        ns = re.match(r"import\s+\*\s+as\s+(\w+)", line)
+        if ns:
+            identifiers.append(ns.group(1))
+        else:
+            # import { A, B as C } from '...'
+            named = re.search(r"import\s*\{([^}]+)\}", line)
+            if named:
+                for part in named.group(1).split(","):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    # "original as alias" -> alias
+                    as_match = re.match(r"\w+\s+as\s+(\w+)", part)
+                    if as_match:
+                        identifiers.append(as_match.group(1))
+                    else:
+                        identifiers.append(part)
+
+            # import DefaultExport from '...' (possibly alongside named)
+            default = re.match(r"import\s+(\w+)(?:\s*,\s*\{)?", line)
+            if default and default.group(1) not in ("type", "typeof"):
+                name = default.group(1)
+                if name not in identifiers:
+                    identifiers.append(name)
+
+        if identifiers:
+            results.append({"line": line, "identifiers": identifiers})
+
+    return results
