@@ -29,13 +29,14 @@ _THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str, str]] = [
      "Use template refs or provide/inject", "error"),
     (r"this\.\$listeners\b", "this.$listeners", "$listeners is removed in Vue 3",
      "Listeners are merged into $attrs in Vue 3", "error"),
-    # --- warning: will crash but has known drop-in replacement ---
+    # --- error: will crash at runtime, no 'this' in composables ---
     (r"this\.\$router\b", "this.$router", "this.$router is not available in composables",
-     "Import and use useRouter() from vue-router", "warning"),
+     "Import and use useRouter() from vue-router", "error"),
     (r"this\.\$route\b", "this.$route", "this.$route is not available in composables",
-     "Import and use useRoute() from vue-router", "warning"),
+     "Import and use useRoute() from vue-router", "error"),
     (r"this\.\$store\b", "this.$store", "this.$store is not available in composables",
-     "Import and use the Pinia/Vuex store directly", "warning"),
+     "Import and use the Pinia/Vuex store directly", "error"),
+    # --- warning: has known drop-in replacement ---
     (r"this\.\$attrs\b", "this.$attrs", "this.$attrs used — needs useAttrs()",
      "Add const attrs = useAttrs() and import from 'vue'", "warning"),
     (r"this\.\$slots\b", "this.$slots", "this.$slots used — needs useSlots()",
@@ -130,10 +131,7 @@ def detect_external_dependencies(
         warnings.append(MigrationWarning(
             mixin_stem="",
             category="external-dependency",
-            message=(
-                f"'{name}' — external dep, not available in composable scope.\n"
-                f"// Accept as composable param: this.{name} → {name}.value or {name}."
-            ),
+            message=f"'{name}' — external dep, not available in composable scope",
             action_required=f"Accept '{name}' as a composable parameter and rewrite this.{name}",
             line_hint=line_hint,
             severity="error",
@@ -205,7 +203,7 @@ def compute_confidence(
     if re.search(r"//\s*TODO\b", composable_source):
         return ConfidenceLevel.MEDIUM
 
-    if "⚠ MIGRATION" in composable_source:
+    if "MIGRATION WARNINGS" in composable_source:
         return ConfidenceLevel.MEDIUM
 
     # Check for warnings (MEDIUM)
@@ -215,11 +213,74 @@ def compute_confidence(
     return ConfidenceLevel.HIGH
 
 
-_INLINE_SEVERITY_PREFIX = {
-    "error": "\u274c MIGRATION [error]",
-    "warning": "\u26a0 MIGRATION [warning]",
-    "info": "\u2139 MIGRATION [info]",
+# Matches old-format inline warnings: "// ⚠ MIGRATION: ..." or "// ❌ MIGRATION [error]: ..."
+# Uses .*MIGRATION to handle encoding-corrupted icon characters (e.g. âš )
+_OLD_INLINE_RE = re.compile(
+    r"^\s*//.+\bMIGRATION\s*(?:\[(?:error|warning|info)\])?\s*:.*$"
+)
+_BOX_LINE_RE = re.compile(r"^\s*//\s*[\u250c\u2502\u2514]")
+_CONFIDENCE_RE = re.compile(r"^//\s*Transformation confidence:")
+_SUFFIX_ICON_RE = re.compile(r"\s+//\s*[\u274c\u26a0\u2139]\ufe0f?\s*$")
+
+
+def _strip_old_inline_warnings(source: str) -> str:
+    """Remove old-format inline warnings, box blocks, confidence headers, and suffix icons."""
+    lines = source.splitlines(keepends=True)
+    result: list[str] = []
+    for line in lines:
+        stripped = line.rstrip("\n")
+        if _OLD_INLINE_RE.match(stripped):
+            continue
+        if _BOX_LINE_RE.match(stripped):
+            continue
+        if _CONFIDENCE_RE.match(stripped):
+            continue
+        # Remove suffix icons from code lines
+        cleaned = _SUFFIX_ICON_RE.sub("", stripped)
+        if cleaned != stripped:
+            result.append(cleaned + "\n")
+        else:
+            result.append(line)
+    return "".join(result)
+
+
+_INLINE_ICON = {
+    "error": "\u274c",      # ❌
+    "warning": "\u26a0\ufe0f",  # ⚠️
+    "info": "\u2139\ufe0f",     # ℹ️
 }
+
+_SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+
+_FUNC_RE = re.compile(
+    r"^\s*(?:async\s+)?function\s+\w+|^\s*const\s+\w+\s*=\s*(?:async\s*)?\("
+)
+
+
+def _find_containing_function(lines: list[str], line_idx: int) -> int:
+    """Scan backward from *line_idx* to find the nearest function declaration."""
+    for i in range(line_idx, -1, -1):
+        if _FUNC_RE.match(lines[i]):
+            return i
+    return line_idx
+
+
+def _build_warning_box(
+    warnings_with_lines: list[tuple[MigrationWarning, int]],
+    indent: str,
+) -> str:
+    """Build a box-style warning block (open right — emoji widths render
+    inconsistently across editors/terminals so right border is omitted)."""
+    box = [f"{indent}// \u250c\u2500 MIGRATION WARNINGS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"]
+    for w, _ in warnings_with_lines:
+        icon = _INLINE_ICON.get(w.severity, "\u26a0\ufe0f")
+        # Use only the first line of the message (guard against embedded newlines)
+        msg = w.message.split("\n")[0]
+        box.append(f"{indent}// \u2502 {icon} {msg}\n")
+        if w.action_required:
+            box.append(f"{indent}// \u2502    \u2192 {w.action_required}\n")
+    box.append(f"{indent}// \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
+    return "".join(box)
 
 
 def inject_inline_warnings(
@@ -230,55 +291,88 @@ def inject_inline_warnings(
 ) -> str:
     """Inject inline warning comments into generated composable source.
 
-    For each warning with a line_hint, inserts a severity-prefixed comment
-    above the first line that contains the hint text.
+    For each warning with a line_hint, finds the first matching line and:
+    1. Groups all warnings by their containing function
+    2. Inserts a box-style warning block above each function
+    3. Adds a severity suffix icon on the matched line
 
     Warnings that cannot be placed inline (no line_hint or no matching line)
-    are collected and inserted as a block after the confidence header.
+    are collected and inserted as a box block after the confidence header.
 
     Optionally prepends a confidence header comment at the top.
     """
+    # Strip any existing inline warnings from previous runs
+    source = _strip_old_inline_warnings(source)
+
     if confidence is not None:
-        header = f"// Transformation confidence: {confidence.value} ({warning_count} warnings — see migration report)\n"
+        header = f"// Transformation confidence: {confidence.value} ({warning_count} warnings \u2014 see migration report)\n"
         source = header + source
 
+    lines = source.splitlines(keepends=True)
+
+    # Phase 1: Match warnings to source lines
+    placed: list[tuple[MigrationWarning, int]] = []
     unplaced: list[MigrationWarning] = []
 
     for w in warnings:
-        prefix = _INLINE_SEVERITY_PREFIX.get(w.severity, "\u26a0 MIGRATION")
         if not w.line_hint:
             unplaced.append(w)
             continue
-        # Find a line containing the hint text
-        lines = source.splitlines(keepends=True)
-        new_lines: list[str] = []
-        injected = False
-        for line in lines:
-            if not injected and w.line_hint in line:
-                indent = line[: len(line) - len(line.lstrip())]
-                for msg_line in f"// {prefix}: {w.message}".splitlines():
-                    new_lines.append(f"{indent}{msg_line}\n")
-                injected = True
-            new_lines.append(line)
-        if injected:
-            source = "".join(new_lines)
-        else:
+        matched = None
+        # Try exact line_hint match on code lines first
+        for i, line in enumerate(lines):
+            if w.line_hint in line and not line.lstrip().startswith("//"):
+                matched = i
+                break
+        # Fallback: match using the category (e.g. "this.$emit") on code lines
+        if matched is None and w.category.startswith("this.$"):
+            for i, line in enumerate(lines):
+                if w.category in line and not line.lstrip().startswith("//"):
+                    matched = i
+                    break
+        if matched is None:
             unplaced.append(w)
-
-    # Place unmatched warnings as a block after the confidence header
-    if unplaced:
-        block_lines: list[str] = []
-        for w in unplaced:
-            prefix = _INLINE_SEVERITY_PREFIX.get(w.severity, "\u26a0 MIGRATION")
-            for msg_line in f"// {prefix}: {w.message}".splitlines():
-                block_lines.append(f"{msg_line}\n")
-        block = "".join(block_lines)
-        if confidence is not None:
-            # Insert right after the first line (confidence header)
-            idx = source.index('\n') + 1
-            source = source[:idx] + block + source[idx:]
         else:
-            source = block + source
+            placed.append((w, matched))
+
+    # Phase 2: Group placed warnings by containing function
+    func_groups: dict[int, list[tuple[MigrationWarning, int]]] = {}
+    for w, matched_idx in placed:
+        func_idx = _find_containing_function(lines, matched_idx)
+        func_groups.setdefault(func_idx, []).append((w, matched_idx))
+
+    # Phase 3: Add suffix icons on matched lines (best severity per line)
+    line_severity: dict[int, str] = {}
+    for w, matched_idx in placed:
+        current = line_severity.get(matched_idx)
+        if current is None or _SEVERITY_ORDER.get(w.severity, 2) < _SEVERITY_ORDER.get(current, 2):
+            line_severity[matched_idx] = w.severity
+
+    for line_idx, severity in line_severity.items():
+        icon = _INLINE_ICON.get(severity, "\u26a0\ufe0f")
+        line = lines[line_idx]
+        lines[line_idx] = line.rstrip("\n") + f"  // {icon}\n"
+
+    # Phase 4: Insert box blocks above functions (bottom to top to preserve indices)
+    for func_idx in sorted(func_groups.keys(), reverse=True):
+        group = func_groups[func_idx]
+        indent = lines[func_idx][: len(lines[func_idx]) - len(lines[func_idx].lstrip())]
+        box = _build_warning_box(group, indent)
+        # Add blank line before box if previous line is not already blank
+        if func_idx > 0 and lines[func_idx - 1].strip():
+            box = "\n" + box
+        lines.insert(func_idx, box)
+
+    source = "".join(lines)
+
+    # Phase 5: Place unplaced warnings as box block
+    if unplaced:
+        box = _build_warning_box([(w, -1) for w in unplaced], "")
+        if confidence is not None:
+            idx = source.index("\n") + 1
+            source = source[:idx] + box + source[idx:]
+        else:
+            source = box + source
 
     return source
 
