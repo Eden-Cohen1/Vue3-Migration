@@ -192,3 +192,46 @@ def test_migration_config_has_regenerate_flag():
 def test_migration_config_regenerate_true():
     config = MigrationConfig(regenerate=True)
     assert config.regenerate is True
+
+
+# ---------------------------------------------------------------------------
+# run_scoped — standalone mixin (not used by any component)
+# ---------------------------------------------------------------------------
+
+from vue3_migration.workflows.auto_migrate_workflow import run_scoped
+
+
+def test_run_scoped_standalone_mixin_generates_composable(project):
+    """A mixin not used by any component should still generate a composable."""
+    with patch("builtins.print"):
+        plan = run_scoped(project, _make_config(project), mixin_stem="ordersMixin")
+    assert plan.has_changes
+    # Should have a generated composable
+    composable = next(
+        (c for c in plan.composable_changes if "useOrders" in str(c.file_path)), None
+    )
+    assert composable is not None
+    assert composable.original_content == ""  # new file
+    assert "export function useOrders" in composable.new_content
+    # No component changes since no component uses this mixin
+    assert not any(c.has_changes for c in plan.component_changes)
+
+
+def test_run_scoped_standalone_mixin_not_found_returns_empty_plan(project):
+    """A mixin stem that doesn't match any file should produce an empty plan."""
+    with patch("builtins.print"):
+        plan = run_scoped(project, _make_config(project), mixin_stem="nonexistentMixin")
+    assert not plan.has_changes
+
+
+def test_run_scoped_standalone_mixin_with_existing_composable_returns_empty(project):
+    """If a composable already exists for the mixin, nothing to generate."""
+    # Create a composable for ordersMixin
+    composable_dir = project / "src" / "composables"
+    composable_dir.mkdir(parents=True, exist_ok=True)
+    (composable_dir / "useOrders.js").write_text(
+        "import { ref } from 'vue';\nexport function useOrders() { return { orders: ref([]) } }\n"
+    )
+    with patch("builtins.print"):
+        plan = run_scoped(project, _make_config(project), mixin_stem="ordersMixin")
+    assert not plan.has_changes

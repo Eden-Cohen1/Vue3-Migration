@@ -293,6 +293,9 @@ def plan_component_injections(
     component_changes = []
 
     for comp_path, entries in entries_by_component:
+        # Skip standalone entries (mixin-only, no component)
+        if not comp_path.exists():
+            continue
         # R-7: normalize CRLF
         comp_source = comp_path.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
         own_members = extract_own_members(comp_source)
@@ -615,6 +618,55 @@ def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     )
 
 
+def _build_standalone_mixin_entry(
+    mixin_stem: str, project_root: Path,
+) -> list[tuple[Path, list[MixinEntry]]]:
+    """Build a synthetic MixinEntry for a mixin not used by any component.
+
+    This allows generating a composable from the mixin even when no
+    component references it. Returns empty list if the mixin file is not
+    found or a composable already exists.
+    """
+    mixin_file = None
+    skip = {"node_modules", "dist", ".git", "__pycache__"}
+    for path in sorted(project_root.rglob(f"{mixin_stem}.js")):
+        if not any(p in skip for p in path.parts):
+            mixin_file = path
+            break
+    if not mixin_file:
+        for path in sorted(project_root.rglob(f"{mixin_stem}.ts")):
+            if not any(p in skip for p in path.parts):
+                mixin_file = path
+                break
+    if not mixin_file:
+        return []
+
+    # If a composable already exists, nothing to generate
+    composable_dirs = find_composable_dirs(project_root)
+    if search_for_composable(mixin_stem, composable_dirs, project_root=project_root):
+        return []
+
+    mixin_source = mixin_file.read_text(errors="ignore").replace('\r\n', '\n').replace('\r', '\n')
+    members_dict = extract_mixin_members(mixin_source)
+    members = MixinMembers(**members_dict)
+    hooks = extract_lifecycle_hooks(mixin_source)
+    ext_deps = find_external_this_refs(mixin_source, members.all_names)
+
+    entry = MixinEntry(
+        local_name=mixin_stem,
+        mixin_path=mixin_file,
+        mixin_stem=mixin_stem,
+        members=members,
+        lifecycle_hooks=hooks,
+        used_members=[],
+        external_deps=ext_deps,
+        status=MigrationStatus.BLOCKED_NO_COMPOSABLE,
+    )
+
+    # Use a sentinel path to indicate no real component
+    return [(Path("<standalone>"), [entry])]
+
+
 def run_scoped(
     project_root: Path,
     config: MigrationConfig,
@@ -644,6 +696,10 @@ def run_scoped(
             for path, es in all_entries
             if any(e.mixin_stem == mixin_stem for e in es)
         ]
+
+    # If no components use this mixin, try to generate the composable standalone
+    if not entries and mixin_stem is not None:
+        entries = _build_standalone_mixin_entry(mixin_stem, project_root)
 
     composable_changes = _build_all_composable_changes(entries, project_root, config)
     component_changes = plan_component_injections(entries, composable_changes, config)

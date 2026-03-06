@@ -465,8 +465,12 @@ def _run_mixin_migration(mixin_stem: str, config: MigrationConfig) -> None:
         return
 
     component_count = sum(1 for c in plan.component_changes if c.has_changes)
-    component_word = "component" if component_count == 1 else "components"
-    print(f"  This will update {yellow(str(component_count))} {component_word}.\n")
+    composable_count = sum(1 for c in plan.composable_changes if c.has_changes)
+    if component_count:
+        component_word = "component" if component_count == 1 else "components"
+        print(f"  This will update {yellow(str(component_count))} {component_word}.\n")
+    elif composable_count:
+        print(f"  No components use this mixin. Will generate composable only.\n")
 
     _show_change_summary(plan, config.project_root)
 
