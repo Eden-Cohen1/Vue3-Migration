@@ -236,3 +236,56 @@ def test_run_scoped_standalone_mixin_with_existing_composable_patches_it(project
         plan = run_scoped(project, _make_config(project), mixin_stem="ordersMixin")
     # The existing composable should be picked up for patching
     assert plan.composable_changes is not None
+
+
+# ---------------------------------------------------------------------------
+# run_scoped — mixin imported by component but zero members used
+# ---------------------------------------------------------------------------
+
+def _add_zero_member_component(project):
+    """Create a component that imports loadingMixin but uses none of its members."""
+    comp = project / "src" / "components" / "EmptyUsage.vue"
+    comp.write_text(
+        "<template><div>No mixin members used</div></template>\n"
+        "<script>\n"
+        "import loadingMixin from '../mixins/loadingMixin'\n"
+        "export default {\n"
+        "  name: 'EmptyUsage',\n"
+        "  mixins: [loadingMixin],\n"
+        "}\n"
+        "</script>\n"
+    )
+    return comp
+
+
+def test_run_scoped_zero_members_generates_composable(project):
+    """Mixin imported by component but no members used should still generate composable."""
+    _add_zero_member_component(project)
+    # Ensure no composable exists yet
+    composable = project / "src" / "composables" / "useLoading.js"
+    if composable.exists():
+        composable.unlink()
+    with patch("builtins.print"):
+        plan = run_scoped(project, _make_config(project), mixin_stem="loadingMixin")
+    assert plan.has_changes
+    gen = next(
+        (c for c in plan.composable_changes if "useLoading" in str(c.file_path) and c.has_changes),
+        None,
+    )
+    assert gen is not None, "Composable should be generated even with zero member usage"
+    assert "export function useLoading" in gen.new_content
+
+
+def test_run_scoped_zero_members_no_component_changes(project):
+    """Component with zero used members should NOT be modified."""
+    _add_zero_member_component(project)
+    composable = project / "src" / "composables" / "useLoading.js"
+    if composable.exists():
+        composable.unlink()
+    with patch("builtins.print"):
+        plan = run_scoped(project, _make_config(project), mixin_stem="loadingMixin")
+    comp_change = next(
+        (c for c in plan.component_changes if "EmptyUsage" in str(c.file_path) and c.has_changes),
+        None,
+    )
+    assert comp_change is None, "Component should not be modified when no members are used"
