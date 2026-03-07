@@ -354,22 +354,34 @@ def inject_inline_warnings(
         lines[line_idx] = line.rstrip("\n") + f"  // {icon}\n"
 
     # Phase 3b: Add suffix icons on ALL lines matching a warning category,
-    # not just the first matched line.  This ensures every this.$emit, this.$router
-    # etc. gets a visible ❌ even if it didn't get its own warning box.
+    # not just the first matched line.  This ensures every this.$emit, this.$router,
+    # external deps (this.entityId), etc. gets a visible ❌ even if it didn't get
+    # its own warning box.
     category_severity: dict[str, str] = {}
+    # Pattern to match in source lines: for this.$ categories use the category
+    # itself (e.g. "this.$emit"); for external-dependency use "this.<name>".
+    category_patterns: dict[str, str] = {}
     for w in warnings:
         if w.category.startswith("this.$"):
-            cur = category_severity.get(w.category)
+            pat = w.category
+        elif w.category == "external-dependency":
+            # Extract the dep name from the message: "'entityId' — external dep..."
+            m = re.match(r"'(\w+)'", w.message)
+            pat = f"this.{m.group(1)}" if m else None
+        else:
+            pat = None
+        if pat:
+            cur = category_severity.get(pat)
             if cur is None or _SEVERITY_ORDER.get(w.severity, 2) < _SEVERITY_ORDER.get(cur, 2):
-                category_severity[w.category] = w.severity
+                category_severity[pat] = w.severity
     for i, line in enumerate(lines):
         if i in line_severity:
             continue  # already has a suffix from Phase 3
         stripped = line.lstrip()
         if stripped.startswith("//"):
             continue
-        for cat, sev in category_severity.items():
-            if cat in line:
+        for pat, sev in category_severity.items():
+            if pat in line:
                 icon = _INLINE_ICON.get(sev, "\u26a0\ufe0f")
                 lines[i] = line.rstrip("\n") + f"  // {icon}\n"
                 break
