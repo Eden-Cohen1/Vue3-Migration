@@ -156,7 +156,7 @@ def test_entries_by_component_populated(project):
     plan = _run(project)
     assert plan.entries_by_component, "entries_by_component should not be empty"
     for comp_path, entries in plan.entries_by_component:
-        assert comp_path.suffix == ".vue"
+        assert comp_path.suffix == ".vue" or str(comp_path) == "<standalone>"
         assert len(entries) > 0
 
 

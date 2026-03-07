@@ -212,6 +212,29 @@ def _scan_components_with_mixins(project_root: Path, config: MigrationConfig) ->
     return results
 
 
+def _find_all_mixin_files(project_root: Path, config: MigrationConfig) -> list[Path]:
+    """Find all .js/.ts mixin files on disk.
+
+    Matches files that:
+    - Are inside a directory named 'mixins' (case-insensitive), OR
+    - Have 'mixin' anywhere in the filename (case-insensitive)
+    """
+    files: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(project_root):
+        rel = Path(dirpath).relative_to(project_root)
+        if any(part in config.skip_dirs for part in rel.parts):
+            dirnames.clear()
+            continue
+        is_mixin_dir = Path(dirpath).name.lower() == "mixins"
+        for fn in filenames:
+            fp = Path(fn)
+            if fp.suffix not in (".js", ".ts"):
+                continue
+            if is_mixin_dir or "mixin" in fp.stem.lower():
+                files.append(Path(dirpath) / fn)
+    return files
+
+
 def _scan_mixin_usage(project_root: Path, config: MigrationConfig) -> list[dict]:
     """Return list of mixin info dicts sorted by usage count."""
     from .core.composable_search import collect_composable_stems, find_composable_dirs, mixin_has_composable
@@ -238,7 +261,7 @@ def _scan_mixin_usage(project_root: Path, config: MigrationConfig) -> list[dict]
                 stem = resolve_mixin_stem(imports.get(name, "")) or name
                 mixin_counter[stem] += 1
 
-    return [
+    results = [
         {
             "stem": stem,
             "count": count,
@@ -246,6 +269,20 @@ def _scan_mixin_usage(project_root: Path, config: MigrationConfig) -> list[dict]
         }
         for stem, count in mixin_counter.most_common()
     ]
+
+    # Also find mixin files on disk that aren't referenced by any component
+    known_stems = {r["stem"] for r in results}
+    for mixin_file in _find_all_mixin_files(project_root, config):
+        stem = mixin_file.stem
+        if stem not in known_stems:
+            results.append({
+                "stem": stem,
+                "count": 0,
+                "has_composable": mixin_has_composable(stem, composable_stems),
+            })
+            known_stems.add(stem)
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -393,15 +430,19 @@ def pick_mixin_migration(config: MigrationConfig) -> None:
     mixins = _scan_mixin_usage(project_root, config)
 
     if not mixins:
-        print(f"  {green('No mixins in use.')} Migration complete!\n")
+        print(f"  {green('No mixins found.')} Migration complete!\n")
         return
 
     print(f"  {'#':<4} {'Mixin':<40} {'Components':<12} Composable")
     print(f"  {'-'*4} {'-'*40} {'-'*12} {'-'*20}")
     for idx, m in enumerate(mixins, 1):
         comp_label = green("found") if m["has_composable"] else dim("will be generated")
-        component_word = "component" if m["count"] == 1 else "components"
-        print(f"  {idx:<4} {m['stem']:<40} {m['count']} {component_word:<9} {comp_label}")
+        if m["count"] == 0:
+            usage_str = dim("standalone")
+        else:
+            component_word = "component" if m["count"] == 1 else "components"
+            usage_str = f"{m['count']} {component_word}"
+        print(f"  {idx:<4} {m['stem']:<40} {usage_str:<12} {comp_label}")
 
     print(f"\n  Enter a number (1-{len(mixins)}), mixin name, or {bold('q')} to go back.\n")
     choice = input("  > ").strip()
@@ -442,8 +483,11 @@ def pick_mixin_migration(config: MigrationConfig) -> None:
             print(f"  {yellow('No mixin found matching:')} {choice}")
             return
 
-    component_word = "component" if mixin["count"] == 1 else "components"
-    print(f"\n{bold('Retiring:')} {green(mixin['stem'])} across {yellow(str(mixin['count']))} {component_word}\n")
+    if mixin["count"] == 0:
+        print(f"\n{bold('Converting:')} {green(mixin['stem'])} (standalone — no components reference it)\n")
+    else:
+        component_word = "component" if mixin["count"] == 1 else "components"
+        print(f"\n{bold('Retiring:')} {green(mixin['stem'])} across {yellow(str(mixin['count']))} {component_word}\n")
     _run_mixin_migration(mixin["stem"], config)
 
 

@@ -126,6 +126,8 @@ class TestCrossFlowConsistency:
         identical whether collected via full-project or single-component flow."""
         full_plan = _run_full(project)
         for comp_path, full_entries in full_plan.entries_by_component:
+            if str(comp_path) == "<standalone>":
+                continue
             comp_plan = _run_component(project, comp_path.name)
             if not comp_plan.entries_by_component:
                 continue

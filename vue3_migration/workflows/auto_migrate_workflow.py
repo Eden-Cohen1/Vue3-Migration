@@ -608,12 +608,44 @@ def _build_all_composable_changes(
     return patched + generated
 
 
+def _find_standalone_mixin_stems(
+    project_root: Path, config: MigrationConfig,
+    known_stems: set[str],
+) -> list[str]:
+    """Find mixin files on disk that aren't referenced by any component."""
+    standalone: list[str] = []
+    skip = config.skip_dirs
+    for dirpath, dirnames, filenames in __import__("os").walk(project_root):
+        rel = Path(dirpath).relative_to(project_root)
+        if any(part in skip for part in rel.parts):
+            dirnames.clear()
+            continue
+        is_mixin_dir = Path(dirpath).name.lower() == "mixins"
+        for fn in filenames:
+            fp = Path(fn)
+            if fp.suffix not in (".js", ".ts"):
+                continue
+            if is_mixin_dir or "mixin" in fp.stem.lower():
+                stem = fp.stem
+                if stem not in known_stems:
+                    standalone.append(stem)
+                    known_stems.add(stem)
+    return standalone
+
+
 def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     """Main entry point: scan, plan composable patches, plan component injections.
 
     No file I/O. Returns a MigrationPlan the CLI can show as a diff and write.
     """
     entries = collect_all_mixin_entries(project_root, config)
+
+    # Also include standalone mixins (not referenced by any component)
+    known_stems = {e.mixin_stem for _, elist in entries for e in elist}
+    for stem in _find_standalone_mixin_stems(project_root, config, known_stems):
+        standalone = _build_standalone_mixin_entry(stem, project_root)
+        entries.extend(standalone)
+
     composable_changes = _build_all_composable_changes(entries, project_root, config)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
