@@ -760,6 +760,19 @@ def run_scoped(
     if not entries and mixin_stem is not None:
         entries = _build_standalone_mixin_entry(mixin_stem, project_root)
 
+    # If components include the mixin but none trigger composable work
+    # (e.g. no members are referenced → READY with composable=None),
+    # add a standalone entry so the composable is still generated/patched.
+    if entries and mixin_stem is not None:
+        any_composable_work = any(
+            e.composable is not None
+            or e.status == MigrationStatus.BLOCKED_NO_COMPOSABLE
+            for _, es in entries for e in es
+        )
+        if not any_composable_work:
+            standalone = _build_standalone_mixin_entry(mixin_stem, project_root)
+            entries.extend(standalone)
+
     composable_changes = _build_all_composable_changes(entries, project_root, config)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
