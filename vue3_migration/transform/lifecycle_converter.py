@@ -1,7 +1,7 @@
 """Convert Vue 2 lifecycle hooks to Vue 3 composition API form."""
 import re
 import textwrap
-from ..core.js_parser import skip_non_code, extract_brace_block
+from ..core.js_parser import skip_non_code, extract_brace_block, strip_comments
 from .this_rewriter import rewrite_this_refs
 
 _MAX_SIGNATURE_SCAN = 400  # max chars to scan from hook name to opening brace
@@ -237,6 +237,7 @@ def find_lifecycle_referenced_members(
         body = extract_hook_body(mixin_source, hook)
         if not body:
             continue
+        body = strip_comments(body)
         for member in member_names:
             if member not in referenced and re.search(
                 rf"(?<!\w){re.escape(member)}(?!\w)", body

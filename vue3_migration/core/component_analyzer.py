@@ -5,7 +5,7 @@ component-defined members from Vue component source code.
 
 import re
 
-from .js_parser import extract_brace_block, extract_property_names
+from .js_parser import extract_brace_block, extract_property_names, strip_comments
 
 
 def parse_imports(component_source: str) -> dict[str, str]:
@@ -53,6 +53,7 @@ def find_used_members(component_source: str, member_names: list[str]) -> list[st
         if tag_match:
             sections.append(tag_match.group(1))
     search_text = "\n".join(sections) if sections else component_source
+    search_text = strip_comments(search_text)
 
     return [
         member for member in member_names

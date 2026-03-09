@@ -695,8 +695,11 @@ def build_warning_summary(
         a("| Severity | Issue | Fix |")
         a("|---|---|---|")
         for comp_path, warning in entry_w:
-            # Show component name when there are multiple components or when it adds context
-            if project_root and len(all_comps_for_mixin) >= 1:
+            # Mixin-intrinsic warnings: show without component attribution (or with mixin name)
+            # Component-specific warnings: show with the component name
+            if getattr(warning, 'source_context', '') == "mixin":
+                a(f"| {warning.severity} | {warning.message} | {warning.action_required} |")
+            elif project_root and len(all_comps_for_mixin) >= 1:
                 comp_name = _rel_link(comp_path, project_root)
                 a(f"| {warning.severity} | {comp_name}: {warning.message} | {warning.action_required} |")
             else:

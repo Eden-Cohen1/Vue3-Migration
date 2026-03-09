@@ -4,9 +4,11 @@ import pytest
 from vue3_migration.core.js_parser import (
     extract_brace_block,
     extract_property_names,
+    extract_value_at,
     is_regex_start,
     skip_regex_literal,
     skip_string,
+    strip_comments,
 )
 
 
@@ -194,3 +196,88 @@ class TestExtractPropertyNames:
     def test_empty_body(self):
         assert extract_property_names('') == []
         assert extract_property_names('  ') == []
+
+
+# ---------------------------------------------------------------------------
+# extract_value_at — trailing comment stripping
+# ---------------------------------------------------------------------------
+
+class TestExtractValueAtComments:
+    def test_trailing_single_line_comment_stripped(self):
+        src = "0 // default count, unused: true}"
+        assert extract_value_at(src, 0) == "0"
+
+    def test_trailing_comment_with_parens(self):
+        src = "false // D1: never used by component, next: 1}"
+        assert extract_value_at(src, 0) == "false"
+
+    def test_no_comment_unchanged(self):
+        src = "'hello', next: 1}"
+        assert extract_value_at(src, 0) == "'hello'"
+
+    def test_comment_syntax_inside_string_preserved(self):
+        src = "'http://example.com', next: 1}"
+        assert extract_value_at(src, 0) == "'http://example.com'"
+
+    def test_array_value_with_trailing_comment(self):
+        src = "[] // empty list, next: 1}"
+        assert extract_value_at(src, 0) == "[]"
+
+    def test_object_value_with_trailing_comment(self):
+        src = "{ a: 1 } // config, next: 1}"
+        assert extract_value_at(src, 0) == "{ a: 1 }"
+
+
+# ---------------------------------------------------------------------------
+# strip_comments
+# ---------------------------------------------------------------------------
+
+class TestStripComments:
+    def test_strip_html_comments(self):
+        src = 'before <!-- removed --> after'
+        result = strip_comments(src)
+        assert 'removed' not in result
+        assert 'before' in result
+        assert 'after' in result
+
+    def test_strip_js_single_line_comments(self):
+        src = 'code\n// removed\nmore code'
+        result = strip_comments(src)
+        assert 'removed' not in result
+        assert 'code' in result
+        assert 'more code' in result
+
+    def test_strip_js_block_comments(self):
+        src = 'code /* removed */ more'
+        result = strip_comments(src)
+        assert 'removed' not in result
+        assert 'code' in result
+        assert 'more' in result
+
+    def test_preserves_strings(self):
+        src = '"// not a comment" + \'/* also not */\''
+        result = strip_comments(src)
+        assert '// not a comment' in result
+        assert '/* also not */' in result
+
+    def test_preserves_template_literals(self):
+        src = '`<!-- not a comment -->`'
+        result = strip_comments(src)
+        assert '<!-- not a comment -->' in result
+
+    def test_mixed_comments(self):
+        src = (
+            'real code\n'
+            '// single line comment\n'
+            '/* block comment */\n'
+            '<!-- html comment -->\n'
+            '"// string with comment syntax"\n'
+            'more real code'
+        )
+        result = strip_comments(src)
+        assert 'real code' in result
+        assert 'more real code' in result
+        assert '"// string with comment syntax"' in result
+        assert 'single line comment' not in result
+        assert 'block comment' not in result
+        assert 'html comment' not in result

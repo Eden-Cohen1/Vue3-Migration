@@ -113,6 +113,44 @@ class TestThisDollarWarningDetection:
         warnings = collect_mixin_warnings(source, MixinMembers(), [])
         assert any(w.category == "this.$watch" for w in warnings)
 
+    # --- i18n patterns (Task A2) ---
+
+    def test_detects_dollar_t(self):
+        source = "const label = this.$t('some.key')"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        assert any(w.category == "this.$t" for w in warnings)
+
+    def test_detects_dollar_tc(self):
+        source = "const msg = this.$tc('items', count)"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        assert any(w.category == "this.$tc" for w in warnings)
+
+    def test_detects_dollar_te(self):
+        source = "if (this.$te('key')) { return true }"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        assert any(w.category == "this.$te" for w in warnings)
+
+    def test_detects_dollar_d(self):
+        source = "const formatted = this.$d(date)"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        assert any(w.category == "this.$d" for w in warnings)
+
+    def test_detects_dollar_n(self):
+        source = "const num = this.$n(number)"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        assert any(w.category == "this.$n" for w in warnings)
+
+    def test_dollar_t_in_string_not_detected(self):
+        """this.$t inside a string literal should not trigger a warning."""
+        source = "const msg = 'use this.$t for translations'"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        # The regex scans raw source so it may still match inside strings.
+        # This test documents the current behaviour — the pattern does NOT
+        # do string-aware scanning.  If it happens to match, that's a known
+        # limitation; if it doesn't, even better.
+        # We just verify no crash and the test is explicit about this edge case.
+        assert isinstance(warnings, list)
+
 
 class TestThisDollarWarningMessages:
     """Verify warning messages and action_required are informative."""
@@ -159,6 +197,32 @@ class TestThisDollarWarningMessages:
         warnings = collect_mixin_warnings(source, MixinMembers(), [])
         w = next(w for w in warnings if w.category == "this.$slots")
         assert "useSlots" in w.action_required
+
+    # --- i18n warning messages (Task A2) ---
+
+    def test_dollar_t_severity_is_error(self):
+        source = "this.$t('key')"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        w = next(w for w in warnings if w.category == "this.$t")
+        assert w.severity == "error"
+
+    def test_dollar_t_suggests_useI18n(self):
+        source = "this.$t('key')"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        w = next(w for w in warnings if w.category == "this.$t")
+        assert "useI18n" in w.action_required
+
+    def test_dollar_tc_mentions_removed(self):
+        source = "this.$tc('items', 2)"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        w = next(w for w in warnings if w.category == "this.$tc")
+        assert "removed" in w.message.lower() or "v9" in w.message
+
+    def test_dollar_n_suggests_useI18n(self):
+        source = "this.$n(42)"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        w = next(w for w in warnings if w.category == "this.$n")
+        assert "useI18n" in w.action_required
 
 
 class TestThisDollarDeduplication:

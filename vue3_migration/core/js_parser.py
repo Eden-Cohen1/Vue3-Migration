@@ -115,6 +115,73 @@ def skip_non_code(source: str, pos: int) -> tuple[int, bool]:
     return pos, False
 
 
+def strip_comments(source: str) -> str:
+    """Remove all comments from source while preserving strings and regex literals.
+
+    Strips:
+    - HTML comments: <!-- ... -->
+    - JS single-line comments: // ... \\n  (preserves the newline)
+    - JS multi-line comments: /* ... */
+
+    Preserves:
+    - String literals (single, double, template)
+    - Regex literals
+    """
+    result: list[str] = []
+    pos = 0
+    length = len(source)
+    while pos < length:
+        # Check for HTML comments first (skip_non_code doesn't handle these)
+        if source[pos:pos + 4] == "<!--":
+            end = source.find("-->", pos + 4)
+            if end != -1:
+                pos = end + 3
+            else:
+                pos = length
+            continue
+
+        # Use skip_non_code for JS comments, strings, and regex
+        new_pos, skipped = skip_non_code(source, pos)
+        if skipped:
+            two = source[pos:pos + 2]
+            if two == "//":
+                # Single-line comment: skip but preserve newline
+                result.append("\n")
+                pos = new_pos
+            elif two == "/*":
+                # Block comment: skip entirely
+                pos = new_pos
+            else:
+                # String or regex literal: preserve as-is
+                result.append(source[pos:new_pos])
+                pos = new_pos
+            continue
+
+        result.append(source[pos])
+        pos += 1
+    return "".join(result)
+
+
+def _strip_trailing_line_comment(val: str) -> str:
+    """Remove a trailing ``// …`` comment from a JS value, respecting strings.
+
+    Walks the value character-by-character using :func:`skip_non_code` so that
+    ``//`` inside string literals is left alone.
+    """
+    i = 0
+    while i < len(val):
+        new_i, skipped = skip_non_code(val, i)
+        if skipped:
+            # If skip_non_code jumped past a // comment, everything from i
+            # onward is the comment — trim it.
+            if val[i:i+2] == "//":
+                return val[:i].rstrip()
+            i = new_i
+            continue
+        i += 1
+    return val
+
+
 def extract_value_at(source: str, pos: int) -> str:
     """Extract a full JS value expression starting at pos.
 
@@ -143,7 +210,11 @@ def extract_value_at(source: str, pos: int) -> str:
         elif ch == "," and depth == 0:
             break
         pos += 1
-    return source[start:pos].strip()
+    val = source[start:pos].strip()
+    # Strip trailing single-line comments (// ...) that got captured with the value.
+    # E.g. "0 // default count" → "0".  Must not strip inside strings.
+    stripped = _strip_trailing_line_comment(val)
+    return stripped
 
 
 def extract_brace_block(source: str, open_brace_pos: int) -> str:
@@ -187,11 +258,21 @@ def extract_property_names(object_body: str) -> list[str]:
     expect_key = True
     pos = 0
     while pos < len(object_body):
+        ch = object_body[pos]
+        # Handle quoted string keys at depth 0 before skip_non_code consumes them
+        if depth == 0 and expect_key and ch in ("'", '"'):
+            end = skip_string(object_body, pos)
+            key = object_body[pos + 1: end - 1]  # strip quotes
+            rest = object_body[end:].lstrip()
+            if rest and rest[0] in (":", "("):
+                names.append(key)
+                expect_key = False
+            pos = end
+            continue
         new_pos, skipped = skip_non_code(object_body, pos)
         if skipped:
             pos = new_pos
             continue
-        ch = object_body[pos]
         if ch in "{[(":
             depth += 1
         elif ch in "}])":

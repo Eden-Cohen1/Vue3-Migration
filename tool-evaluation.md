@@ -1,329 +1,1491 @@
-# Vue3-Migration Tool Evaluation
+# Vue3-Migration Tool — Bug Report
 
-> **Purpose:** This evaluation is intended as context for fixing the vue3-migration tool. It scores each dimension, identifies actual bugs vs correctly-handled patterns, and provides prioritized improvement recommendations.
+Four bugs found by evaluating the tool's output on the test repo. Each section shows the **before** (pre-patch composable or component) and **after** (what the tool produced), along with the **expected correct output**.
 
-## Scorecard
+Source of truth: `git diff` of working tree vs `HEAD`.
 
-| Dimension | Score | Notes |
-|-----------|-------|-------|
-| Transformation correctness | 3/10 | 2 syntax errors, wholesale logic rewrites in 6 composables diverging from originals |
-| this. rewriting accuracy | 6/10 | Correctly leaves `$emit`/`$refs`/`$el`/`$router`/`$forceUpdate` with warnings (by design); 1 real bug where `this.exportFileName` corrupted a function parameter |
-| Import generation | 6/10 | Vue imports mostly correct; missing `watch`, `onBeforeUnmount`, `nextTick` in several files |
-| Lifecycle hook conversion | 4/10 | `onMounted` placed inside `computed()` in useChart; missing `onBeforeUnmount` cleanup in 3 composables |
-| Warning quality (accuracy) | 8/10 | No false positives; every `this.$emit`/`$refs`/`$el`/`$router` correctly identified with actionable guidance |
-| Warning coverage (completeness) | 6/10 | Missed: formData collision, missing lifecycle cleanup, shallow-clone, syntax error in useExport |
-| Edge case handling | 3/10 | Factory mixin (sortMixin) not migrated; nested mixins detected but members not carried |
-| Report clarity & usefulness | 7/10 | Well-structured, easy to scan; misleading "NOT returned" comments contradict actual code |
-| Code style & readability | 5/10 | Inline `// ⚠ MIGRATION:` comments clutter code; single-line computed bodies hard to read |
-| **Overall** | **5/10** | Warning system is solid. The real problems are in AST transformation: syntax errors, misplaced lifecycle hooks, logic divergence from originals, missing watchers, and component wiring gaps |
+---
 
-## Executive Summary
+## Bug 1: Patcher Destroys Closing Braces (SyntaxError)
 
-The tool has a strong warning system — it correctly identifies all `this.$emit`, `this.$refs`, `this.$el`, `this.$router`, and `this.$forceUpdate` references, leaves them in place (since these require human judgment to fix), and emits actionable warnings with specific guidance. This is the right design decision. Component wiring (setup() injection, mixin removal) works for ~60% of components.
+**Affected files:** `usePermission.js`, `useTable.js`, `usePagination.js`, `useForm.js`, `useSelection.js` (all 5 patched composables)
 
-The actual bugs are in the AST transformation engine: 2 syntax errors that prevent files from loading, lifecycle hooks inserted at wrong scope depth, 6 composables with wholesale logic rewrites that diverge from the original mixins, missing `onBeforeUnmount` cleanup (memory leaks), 3 of 4 watchers not converted, and component destructuring that misses template-referenced members. These are the issues that need fixing.
+**Result:** `SyntaxError: Unexpected end of input` — none of these files can be parsed.
 
-## Transformation Correctness
+**Pattern:** In every case the pre-patch file ends with two closing braces — one for the return object (2-space indent) and one for the function (0-space indent):
 
-### Correct Transformations
-
-These composables and components were migrated cleanly with no issues:
-
-- **usePagination.js** — data, computed, and methods all correctly converted. Added missing `hasPrevPage`/`prevPage` that components needed.
-- **useExport.js** (partial) — ref/computed/method structure is correct. Export logic faithfully preserved.
-- **useFilter.js** — data, computed, methods correct. Watch correctly converted with `{ deep: true }`.
-- **useUndoRedo.js** — data, computed, methods all correctly structured.
-- **useNotification.js** — data, computed, methods all correctly converted. `created` hook correctly inlined.
-- **DataTable.vue** — 3 mixins correctly replaced with 3 composables, all members properly destructured.
-- **ExportButton.vue** — clean single-mixin migration.
-- **ProjectBoard.vue** — 2 mixins correctly replaced.
-- **TaskDetail.vue** — 3 mixins correctly replaced.
-- **UserProfile.vue** — 3 mixins correctly replaced.
-- **ReportBuilder.vue** — 3 mixins correctly replaced.
-- **StatusBadge.vue, TaskCard.vue, NotificationItem.vue, NotFoundView.vue, SettingsView.vue** — correct removal-only (mixins provided no members used in these components).
-
-### Incorrect Transformations
-
-#### 1. SYNTAX ERROR: useExport.js:54 — `this.` in function parameter
-
-```javascript
-// GENERATED (BROKEN — will not parse):
-function downloadFile(blob, this.exportFileName) {
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = name  // 'name' is now undefined
+```
+    member1,
+    member2
+  }
+}
 ```
 
-```javascript
-// ORIGINAL (exportMixin.js:65):
-downloadFile(blob, name) {
-  // ...
-  link.download = name
+After patching, both are replaced with a single `}` at 0-space indent, and newly added members have inconsistent indentation:
+
+```
+    member2,
+      newMember,
+
+}
 ```
 
-The tool substituted the call-site expression `this.exportFileName` into the parameter declaration. This is invalid JavaScript syntax. Additionally, the body still references the original parameter `name`, which no longer exists.
+---
 
-#### 2. SYNTAX ERROR: useChart.js:14 — `onMounted` nested inside `computed()`
+### 1a. usePermission.js
 
-```javascript
-// GENERATED (BROKEN):
-const formattedChartData = computed(() => {
-    if (!chartData.value) return null
-  onMounted(() => {           // <-- lifecycle hook inside computed!
-    resizeChart()
-  })
-    return {
-      labels: chartData.value.labels || [],
-      datasets: chartData.value.datasets || []
+**Before (valid):**
+
+```js
+import { ref, computed } from "vue";
+
+export function usePermission() {
+  const userPermissions = ref([]);
+  const roleMap = ref({
+    admin: ["read", "write", "create", "delete", "manage"],
+    editor: ["read", "write", "create"],
+    viewer: ["read"],
+  });
+
+  const canEdit = computed(() => userPermissions.value.includes("write"));
+  const canCreate = computed(() => userPermissions.value.includes("create"));
+  const isManager = computed(() => userPermissions.value.includes("manage"));
+
+  const permissionLevel = computed(() => {
+    if (userPermissions.value.includes("manage")) return "admin";
+    if (userPermissions.value.includes("create")) return "editor";
+    if (userPermissions.value.includes("read")) return "viewer";
+    return "none";
+  });
+
+  function checkPermission(action) {
+    return userPermissions.value.includes(action);
+  }
+
+  function requestPermission(action) {
+    if (!userPermissions.value.includes(action)) {
+      userPermissions.value.push(action);
     }
+  }
+
+  // NOTE: canDelete and hasRole are NOT defined in this composable
+
+  return {
+    userPermissions,
+    roleMap,
+    canEdit,
+    canCreate,
+    isManager,
+    permissionLevel,
+    checkPermission,
+    requestPermission,
+  };
+}
+```
+
+**After (tool output — broken):**
+
+```js
+// Transformation confidence: LOW (1 warnings — see migration report)
+// ⚠ MIGRATION: this.$router is not available in composables
+import { ref, computed } from 'vue'
+
+export function usePermission() {
+  const userPermissions = ref([])
+  const roleMap = ref({
+    admin: ['read', 'write', 'create', 'delete', 'manage'],
+    editor: ['read', 'write', 'create'],
+    viewer: ['read']
   })
-```
 
-`onMounted` must be called synchronously during `setup()`, not inside a `computed()` getter. Vue will throw "onMounted is called when there is no active component instance."
+  const canEdit = computed(() => userPermissions.value.includes('write'))
+  const canCreate = computed(() => userPermissions.value.includes('create'))
+  const isManager = computed(() => userPermissions.value.includes('manage'))
 
-#### 3. useChart.js — wholesale logic rewrite
-
-The entire composable diverges from the original mixin:
-
-| Member | Original (chartMixin) | Generated (useChart) |
-|--------|----------------------|---------------------|
-| `formattedChartData` | Maps array of `{label, value}` objects | Expects object with `.labels`/`.datasets` properties — different data shape |
-| `chartColors` | Static 8-color hardcoded array | `chartOptions.value.colors \|\| [5-color array]` — different fallback, different source |
-| `hasData` | `!!this.chartData && this.chartData.length > 0` | `chartData.value !== null` — empty array `[]` returns `true` |
-| `prepareChartData` | Maps raw items to `{label, value}` | Sets `labels`/`datasets` from raw, applies colors — completely different transformation |
-| `updateChart` | Sets ready, uses `$nextTick` | Toggles ready false→true (may be no-op), no nextTick |
-| `resizeChart` | Uses `$el.offsetWidth` and `$refs.chartCanvas` | Just calls `updateChart()` — all resize logic lost |
-| `exportChart` | Uses canvas `toDataURL()` | Returns plain object — no actual image export |
-| Watch on `chartData` | Deep watcher calling `updateChart` | **Missing entirely** |
-| `beforeUnmount` cleanup | Sets `isChartReady = false` | **Missing entirely** |
-
-#### 4. usePermission.js — completely different role/permission model
-
-| Member | Original (permissionMixin) | Generated (usePermission) |
-|--------|---------------------------|--------------------------|
-| `roleMap` | `{admin, manager, developer, viewer}` with permissions `create/read/update/delete` | `{admin, editor, viewer}` with permissions `read/write/create/delete/manage` — different roles AND permission names |
-| `canEdit` | `checkPermission('update')` | `userPermissions.value.includes('write')` — different permission string |
-| `isManager` | `includes('manage') \|\| checkPermission('create')` | `includes('manage')` only — dropped alternative |
-| `permissionLevel` | Checks `delete` → `update` | Checks `manage` → `create` → `read` → `none` |
-| `requestPermission` | Checks NOT granted, redirects to `/unauthorized` | Unconditionally adds permission — opposite behavior |
-| `hasRole(role)` | Defined | **Missing entirely** |
-
-#### 5. useForm.js — shallow copy breaks dirty checking
-
-```javascript
-// GENERATED (BROKEN):
-function initForm(data) {
-    formData.value = { ...data }           // shallow copy
-    originalData.value = { ...data }       // shallow copy — shares nested objects!
-```
-
-```javascript
-// ORIGINAL (formMixin.js):
-initForm(data) {
-    this.formData = JSON.parse(JSON.stringify(data))    // deep clone
-    this.originalData = JSON.parse(JSON.stringify(data)) // deep clone
-```
-
-Nested objects are shared by reference, so `isDirty` computed (which uses `JSON.stringify` comparison) will always see them as equal after mutation.
-
-#### 6. useForm.js — submitForm gutted
-
-Original calls `this.$refs.form.reportValidity()` and emits `'form-submitted'`. Composable has an empty try/finally that only toggles `isSubmitting`. All validation and event emission lost.
-
-#### 7. useModal.js — `_handleEscapeKey` undefined + memory leak
-
-```javascript
-// GENERATED (BROKEN):
-onMounted(() => {
-    document.addEventListener('keydown', _handleEscapeKey)  // _handleEscapeKey never defined!
+  const permissionLevel = computed(() => {
+    if (userPermissions.value.includes('manage')) return 'admin'
+    if (userPermissions.value.includes('create')) return 'editor'
+    if (userPermissions.value.includes('read')) return 'viewer'
+    return 'none'
   })
-  // No onBeforeUnmount — listener never removed = memory leak
+
+  function checkPermission(action) {
+    return userPermissions.value.includes(action)
+  }
+
+  function requestPermission(action) {
+    if (!userPermissions.value.includes(action)) {
+      userPermissions.value.push(action)
+    }
+  }
+
+  // NOTE: canDelete and hasRole are NOT defined in this composable
+
+  const canDelete = computed(() => checkPermission('delete'))
+  return {
+    userPermissions,
+    roleMap,
+    canEdit,
+    canCreate,
+    isManager,
+    permissionLevel,
+    checkPermission,
+    requestPermission,
+      canDelete,
+
+}
 ```
 
-Original mixin defined `_handleEscapeKey` as a method and cleaned up in `beforeUnmount`.
+**Git diff:**
 
-#### 8. useTable.js — transitive mixin members completely lost
-
-Original `tableMixin` included `mixins: [sortMixin('name'), paginationMixin]`, providing ~14 additional members (sortKey, sortOrder, multiSort, currentPage, pageSize, totalPages, etc.). The composable `useTable` has **none** of these. The tool emitted a warning about nested mixins but did not carry the members forward.
-
-#### 9. BaseModal.vue — `isOpen` not destructured
-
-```javascript
-// GENERATED:
-const { modalData, modalTitle, closeModal, confirmModal, _handleEscapeKey } = useModal()
-// Missing: isOpen — template uses v-if="isOpen", modal will NEVER render
+```diff
+@@ -41,6 +44,7 @@ export function usePermission() {
+     isManager,
+     permissionLevel,
+     checkPermission,
+-    requestPermission
+-  }
++    requestPermission,
++      canDelete,
++
+ }
 ```
 
-#### 10. ProjectForm.vue — formData collision
+**Expected correct output:**
 
-`setup()` returns `formData` from `useForm()`, but `data()` also declares `formData: { name: '', ... }`. In Vue 3, `data()` shadows `setup()` returns, so `initForm()`/`resetForm()` modify the wrong reactive object.
-
-## this. Rewriting Analysis
-
-### Correctly Warned (By Design)
-
-The tool intentionally leaves these Vue instance API references unrewritten and emits warnings, since they require human judgment to resolve:
-
-| Pattern | Files affected | Warning guidance | Correct? |
-|---------|---------------|-----------------|----------|
-| `this.$emit()` | 7 files (10 occurrences) | "Accept an emit function parameter or use defineEmits" | **Yes** — correct design decision |
-| `this.$refs` | 4 files | "Use template refs with ref() instead" | **Yes** — requires template knowledge |
-| `this.$el` | 3 files (5 occurrences) | "Use a template ref on the root element instead" | **Yes** — requires template knowledge |
-| `this.$router` | 1 file | "Import and use useRouter() from vue-router" | **Yes** — context-dependent |
-| `this.$forceUpdate` | 1 file | "$forceUpdate — rarely needed in Vue 3" | **Yes** — usually should just be removed |
-| `this.entityId` (external dep) | 1 file | "Accept as composable parameter" | **Yes** — flagged as error, not warning |
-
-This is the right approach — these patterns can't be safely automated without understanding the component's template and parent contract.
-
-### Actual Bug
-
-The only real `this.` rewriting bug is in `useExport.js:54` where `this.exportFileName` was placed in a function parameter declaration (a syntax error). The tool confused a call-site argument expression with the formal parameter name. This was not warned about.
-
-## Warning Quality
-
-### False Positives
-
-**None found.** Every warning in the migration report corresponds to a genuine issue in the generated code. This is a strength of the tool.
-
-### Missing Warnings
-
-| Issue | Should have warned | Severity |
-|-------|-------------------|----------|
-| `useExport.js` `this.exportFileName` as parameter name | SYNTAX ERROR — prevents file from loading | Critical |
-| `useChart.js` `onMounted` inside `computed()` | Lifecycle hook in wrong scope | Critical |
-| `useModal.js` `_handleEscapeKey` never defined | ReferenceError at mount | Error |
-| `useModal.js` missing `onBeforeUnmount` cleanup | Memory leak (event listener) | Error |
-| `useKeyboardShortcut.js` missing `onBeforeUnmount` cleanup | Memory leak (event listener) | Error |
-| `useChart.js` missing deep watcher on `chartData` | Lost reactivity | Warning |
-| `useChart.js` missing `beforeUnmount` cleanup | Missing cleanup | Warning |
-| `useForm.js` shallow copy in `initForm`/`resetForm` | Broken dirty checking | Warning |
-| `useForm.js` `submitForm` lost validation and emit | Lost functionality | Warning |
-| BaseModal.vue `isOpen` not in destructuring | Modal won't render | Error |
-| ProjectForm.vue `formData` collision in data() | setup/data conflict | Error |
-| AppHeader.vue `themeMixin` removed without replacement | Lost theme initialization | Warning |
-
-### Severity Mismatches
-
-| Item | Reported as | Should be |
-|------|------------|-----------|
-| `searchMixin._searchTimeout` external dep | Error | Warning — `_searchTimeout` is an internal non-reactive property, not an external dependency |
-| `exportMixin` — "Transformation confidence: LOW" with "No manual changes needed" | LOW confidence but "no changes needed" | Contradictory — if confidence is LOW, there should be items needing attention |
-
-## Edge Cases Not Handled
-
-### 1. Factory function mixin (sortMixin)
-`sortMixin.js` exports `function createSortMixin(defaultKey)` — a factory that returns a mixin object. **The tool did not generate a composable for it at all.** Components using `sortMixin('dueDate')` still have it in their `mixins: []` array (e.g., UpcomingDeadlines.vue, ProjectList.vue). This is the only mixin pattern completely skipped.
-
-### 2. Transitive/nested mixin members
-`tableMixin` includes `mixins: [sortMixin('name'), paginationMixin]`. The tool detected this (emitted a "nested-mixins" warning) but did **not** carry the ~14 transitive members into `useTable`. Components using `useTable` that relied on sort/pagination will break.
-
-### 3. `this.$forceUpdate()`
-Detected in warnings but left as-is in code. No guidance on the Composition API alternative (trigger reactivity via ref toggle or `getCurrentInstance()`).
-
-### 4. String shorthand watcher
-`themeMixin` uses `watch: { currentTheme: 'applyTheme' }` (method name as string). The composable has only a comment: `// watch: currentTheme — migrate manually`. The watcher was not converted.
-
-### 5. Deep watcher with object form
-`chartMixin` has `watch: { chartData: { handler(newData) { this.updateChart() }, deep: true } }`. This was **not migrated at all** — no `watch()` call appears in `useChart.js`.
-
-### 6. Lifecycle cleanup pairs (mount/unmount)
-`modalMixin` and `keyboardShortcutMixin` both add event listeners in `mounted` and remove them in `beforeUnmount`. The tool migrated the `mounted` → `onMounted` but **dropped** the `beforeUnmount` → `onBeforeUnmount` cleanup in both cases, creating memory leaks.
-
-### 7. External dependencies (this.entityId, this.items)
-Correctly identified in warnings, but the code still uses `this.entityId` and `this.items` without converting to composable parameters. The warning says "Accept as composable parameter" but the function signature was not updated.
-
-### 8. Computed properties calling methods
-`permissionMixin` has computed properties that call `this.checkPermission()`. The composable rewrote both the computeds AND the method, but with different permission strings, breaking the relationship.
-
-## Code Quality Issues
-
-### 1. Inline computed bodies are hard to read
-```javascript
-// Generated:
-const dirtyFields = computed(() => { return Object.keys(formData.value).filter((key) => {
-        return JSON.stringify(formData.value[key]) !== JSON.stringify(originalData.value[key])
-      }) })
+```js
+  const canDelete = computed(() => checkPermission('delete'))
+  return {
+    userPermissions,
+    roleMap,
+    canEdit,
+    canCreate,
+    isManager,
+    permissionLevel,
+    checkPermission,
+    requestPermission,
+    canDelete,
+  }
+}
 ```
-Multi-line logic crammed into a single computed initializer line makes the code harder to maintain.
 
-### 2. Return statement formatting
-```javascript
-// Generated:
-return { sortDirection,    // <-- new member jammed on same line as brace
+---
+
+### 1b. useTable.js
+
+**Before (valid — return block):**
+
+```js
+  // NOTE: sortDirection and collapseAll are intentionally NOT returned
+  return {
     rows,
     columns,
+    sortField,
+    expandedRows,
+    sortedRows,
+    visibleColumns,
+    hasExpandedRows,
+    sortBy,
+    toggleRow,
+    getColumnClass
+  }
+}
 ```
-Members added to the return statement are placed awkwardly on the same line as the opening brace.
 
-### 3. Misleading "NOT returned/defined" comments
-Four composables have comments saying members are "NOT defined" or "intentionally NOT returned" immediately above code that defines or returns those exact members:
-- `useForm.js:44` — says `dirtyFields` NOT defined, but it IS defined on line 46
-- `useTable.js:62` — says `sortDirection` NOT returned, but it IS returned on line 63
-- `useSelection.js:54` — says `deselectAll` NOT returned, but it IS returned on line 55
-- `usePagination.js:32` — says `hasPrevPage`/`prevPage` NOT defined, but both ARE defined on lines 34-39
+**After (tool output — broken):**
 
-The tool appears to first generate a "missing" comment, then add the missing members below it, but fails to remove the stale comment.
+```js
+    sortBy,
+    toggleRow,
+    getColumnClass,
+      sortDirection,
 
-### 4. Migration marker comments in production code
-`// ⚠ MIGRATION:` and `// Transformation confidence:` comments are left in every composable file. While useful during migration review, they should be flagged for removal before production use.
+}
+```
 
-## Report Quality
+**Git diff:**
 
-**Strengths:**
-- Well-structured with per-composable sections and unified diffs
-- Warning severity icons (❌ error, ⚠️ warning) are easy to scan
-- Confidence levels (HIGH/MEDIUM/LOW) give a quick quality signal
-- Action-required guidance is specific and actionable
+```diff
+@@ -66,6 +70,7 @@ export function useTable() {
+     hasExpandedRows,
+     sortBy,
+     toggleRow,
+-    getColumnClass
+-  }
++    getColumnClass,
++      sortDirection,
++
+ }
+```
 
-**Weaknesses:**
-- The report says "No manual changes needed" for exportMixin (LOW confidence) despite it having a syntax error in the generated code
-- Unified diffs are only shown for modified composables, not for new ones — new composables show full source, which is verbose and harder to review
-- No diff shown for component changes alongside their composable changes (would help verify the wiring)
-- The status summary (19 composables, 4 errors, 28 warnings) does not mention the number of components modified or the number of clean vs problematic migrations
+**Expected correct output:**
 
-## Prioritized Improvements
+```js
+  return {
+    rows,
+    columns,
+    sortField,
+    expandedRows,
+    sortedRows,
+    visibleColumns,
+    hasExpandedRows,
+    sortBy,
+    toggleRow,
+    getColumnClass,
+    sortDirection,
+  }
+}
+```
 
-### Critical (blocks correct migration)
+---
 
-1. **Fix `this.` in function parameters** — The tool must never substitute `this.x` into a parameter declaration. When a mixin method has `downloadFile(blob, name)` and the call site uses `this.exportFileName`, the parameter should remain `name` (or be renamed to `fileName`), not become `this.exportFileName`.
+### 1c. usePagination.js
 
-2. **Never place lifecycle hooks inside `computed()` or `watch()` callbacks** — `onMounted`, `onBeforeUnmount`, etc. must be emitted at the top level of the composable function body, never inside other Vue primitives.
+**Before (valid — return block):**
 
-3. **Generate `onBeforeUnmount` when the mixin has `beforeUnmount`/`beforeDestroy`** — Every `mounted` that adds event listeners must have a corresponding `onBeforeUnmount` that removes them. The tool should detect mount/unmount pairs and always emit both.
+```js
+  // NOTE: hasPrevPage and prevPage are NOT defined in this composable
 
-4. **Ensure destructured members in component `setup()` include all template-referenced members** — Specifically, `isOpen` was missing from BaseModal.vue's destructuring, preventing the modal from ever rendering.
+  return {
+    currentPage,
+    pageSize,
+    totalItems,
+    totalPages,
+    hasNextPage,
+    paginatedOffset,
+    nextPage,
+    goToPage,
+    changePageSize
+  }
+}
+```
 
-### High (produces incorrect code)
+**After (tool output — broken):**
 
-5. **Do not rewrite composable logic** — The tool should transliterate mixin code to composable code (replacing `this.x` with `x.value`, `this.method` with `method`, etc.) without changing the algorithm or data shapes. useChart, usePermission, useForm, and useTable all have logic that doesn't match their original mixins.
+The tool correctly generated the missing members:
 
-6. **Use deep clone (`JSON.parse(JSON.stringify())` or `structuredClone`) where the original mixin uses deep clone** — The shallow spread `{ ...data }` substitution in useForm.js breaks dirty tracking.
+```js
+const hasPrevPage = computed(() => currentPage.value > 1);
+function prevPage() {
+  if (hasPrevPage.value) {
+    currentPage.value--;
+  }
+}
+```
 
-7. **Detect and warn about `data()` / `setup()` return collisions** — When a component has a `data()` property with the same name as a `setup()` return, the data() version shadows setup(). The tool should either rename one, remove the data() property, or emit a warning.
+But the return block is broken:
 
-8. **Migrate watchers completely** — The tool must convert `watch: { prop: handler }`, `watch: { prop: { handler, deep, immediate } }`, and `watch: { prop: 'methodName' }` to `watch(prop, handler, { deep, immediate })`. Currently, 3 of 4 watchers were not migrated.
+```js
+return {
+  currentPage,
+  pageSize,
+  totalItems,
+  totalPages,
+  hasNextPage,
+  paginatedOffset,
+  nextPage,
+  goToPage,
+  changePageSize,
+  hasPrevPage,
+  prevPage,
+};
+```
 
-9. **Remove stale "NOT defined/returned" comments** — When the tool adds a missing member, it must delete the comment that says the member is missing.
+**Git diff:**
 
-### Medium (missing warnings or incomplete handling)
+```diff
+@@ -39,6 +45,8 @@ export function usePagination() {
+     paginatedOffset,
+     nextPage,
+     goToPage,
+-    changePageSize
+-  }
++    changePageSize,
++      hasPrevPage,
++    prevPage,
++
+ }
+```
 
-10. **Support factory function mixins** — `sortMixin.js` uses `export default function(defaultKey)` which returns a mixin. The tool should detect this pattern and either generate a composable with a parameter or emit a clear warning that factory mixins require manual migration.
+**Expected correct output:**
 
-11. **Carry transitive mixin members forward** — When a mixin includes other mixins (`mixins: [sortMixin('name'), paginationMixin]`), the tool should either: (a) import and compose the corresponding composables, or (b) inline the transitive members, or (c) emit a detailed warning listing every transitive member that was lost.
+```js
+  return {
+    currentPage,
+    pageSize,
+    totalItems,
+    totalPages,
+    hasNextPage,
+    paginatedOffset,
+    nextPage,
+    goToPage,
+    changePageSize,
+    hasPrevPage,
+    prevPage,
+  }
+}
+```
 
-12. **Convert external dependencies to composable parameters** — When the tool detects `this.entityId` (external dep), it should update the composable function signature to `useComment(entityId)` and rewrite `this.entityId` to `entityId.value` (if ref) or just `entityId` (if raw). Currently it warns but doesn't transform.
+---
 
-13. **Optionally auto-fix `this.$emit` / `this.$refs` / `this.$router`** — The current warn-only behavior is correct and safe. As a future enhancement, the tool could optionally auto-convert these (behind a flag): `this.$emit` → callback parameter, `this.$refs.foo` → `const fooRef = ref(null)`, `this.$router` → `useRouter()`. But the current warnings-with-guidance approach is the right default.
+### 1d. useForm.js
 
-### Low (style, polish, nice-to-have)
+**Before (valid — return block):**
 
-16. **Format multi-line computed bodies with proper indentation** — Don't cram complex computed logic into a single line.
+```js
+  // NOTE: setFieldError and dirtyFields are NOT defined in this composable
 
-17. **Place new return members on their own lines** — Instead of `return { newMember,` on the same line, put `newMember` on a separate line.
+  return {
+    formData,
+    originalData,
+    isDirty,
+    isSubmitting,
+    formErrors,
+    hasChanges,
+    isFormValid,
+    initForm,
+    resetForm,
+    submitForm
+  }
+}
+```
 
-18. **Add a "clean up migration markers" pass** — After migration, optionally strip `// ⚠ MIGRATION:` and `// Transformation confidence:` comments.
+**After (tool output — broken):**
 
-19. **Include component diffs alongside composable diffs in the report** — Helps reviewers verify the full migration chain.
+The tool correctly generated a `dirtyFields` computed and `onBeforeMount` lifecycle hook:
 
-20. **Add a migration summary section with counts** — "X components cleanly migrated, Y need manual fixes, Z partially migrated" gives developers a quick overview of remaining work.
+```js
+const dirtyFields = computed(() => {
+  return Object.keys(formData.value).filter((key) => {
+    return (
+      JSON.stringify(formData.value[key]) !==
+      JSON.stringify(originalData.value[key])
+    );
+  });
+});
+onBeforeMount(() => {
+  initForm(formData.value);
+});
+```
+
+But the return block is broken:
+
+```js
+return {
+  formData,
+  originalData,
+  isDirty,
+  isSubmitting,
+  formErrors,
+  hasChanges,
+  isFormValid,
+  initForm,
+  resetForm,
+  submitForm,
+  dirtyFields,
+};
+```
+
+**Git diff:**
+
+```diff
+@@ -50,6 +61,7 @@ export function useForm() {
+     isFormValid,
+     initForm,
+     resetForm,
+-    submitForm
+-  }
++    submitForm,
++      dirtyFields,
++
+ }
+```
+
+**Expected correct output:**
+
+```js
+  return {
+    formData,
+    originalData,
+    isDirty,
+    isSubmitting,
+    formErrors,
+    hasChanges,
+    isFormValid,
+    initForm,
+    resetForm,
+    submitForm,
+    dirtyFields,
+  }
+}
+```
+
+---
+
+### 1e. useSelection.js
+
+**Before (valid — return block):**
+
+```js
+  // NOTE: deselectAll is intentionally NOT returned
+  return {
+    selectedItems,
+    selectionMode,
+    lastSelected,
+    hasSelection,
+    selectionCount,
+    allSelected,
+    select,
+    deselect,
+    toggleSelection,
+    selectAll,
+    isSelected
+  }
+}
+```
+
+**After (tool output — broken):**
+
+```js
+    selectAll,
+    isSelected,
+      deselectAll,
+
+}
+```
+
+**Git diff:**
+
+```diff
+@@ -61,6 +63,7 @@ export function useSelection() {
+     deselect,
+     toggleSelection,
+     selectAll,
+-    isSelected
+-  }
++    isSelected,
++      deselectAll,
++
+ }
+```
+
+**Expected correct output:**
+
+```js
+  return {
+    selectedItems,
+    selectionMode,
+    lastSelected,
+    hasSelection,
+    selectionCount,
+    allSelected,
+    select,
+    deselect,
+    toggleSelection,
+    selectAll,
+    isSelected,
+    deselectAll,
+  }
+}
+```
+
+---
+
+## Bug 2: Lifecycle Hooks Injected Inside `computed()` Body
+
+**Affected file:** `src/composables/useChart.js`
+
+**Result:** `onMounted` and `onBeforeUnmount` are called inside a `computed()` callback. Vue will throw _"onMounted is called when there is no active component instance"_ or silently fail. The hooks would also re-execute on every computed re-evaluation instead of running once.
+
+### Source mixin (`chartMixin.js`):
+
+```js
+export default {
+  data() {
+    return {
+      chartData: null,
+      chartOptions: {},
+      chartType: "bar",
+      isChartReady: false,
+    };
+  },
+
+  computed: {
+    formattedChartData() {
+      if (!this.chartData || this.chartData.length === 0) {
+        return { labels: [], datasets: [] };
+      }
+      return {
+        labels: this.chartData.map((d) => d.label),
+        datasets: [
+          {
+            data: this.chartData.map((d) => d.value),
+            backgroundColor: this.chartColors,
+          },
+        ],
+      };
+    },
+
+    chartColors() {
+      return [
+        "#4CAF50",
+        "#2196F3",
+        "#FF9800",
+        "#F44336",
+        "#9C27B0",
+        "#00BCD4",
+        "#FFEB3B",
+        "#795548",
+      ];
+    },
+
+    hasData() {
+      return !!this.chartData && this.chartData.length > 0;
+    },
+  },
+
+  methods: {
+    prepareChartData(raw) {
+      this.chartData = raw.map((item) => ({
+        label: item.name || item.label,
+        value: item.value || item.count || 0,
+      }));
+    },
+
+    updateChart() {
+      this.isChartReady = true;
+      this.$nextTick(() => {
+        // Chart DOM updated
+      });
+    },
+
+    resizeChart() {
+      const width = this.$el.offsetWidth;
+      if (this.$refs.chartCanvas) {
+        this.$refs.chartCanvas.width = width;
+        this.$refs.chartCanvas.height = width * 0.6;
+      }
+    },
+
+    exportChart(format) {
+      const canvas = this.$refs.chartCanvas;
+      if (!canvas) return null;
+      if (format === "png") {
+        return canvas.toDataURL("image/png");
+      } else if (format === "jpg") {
+        return canvas.toDataURL("image/jpeg");
+      }
+      return null;
+    },
+  },
+
+  mounted() {
+    this.resizeChart();
+  },
+
+  beforeUnmount() {
+    this.isChartReady = false;
+  },
+
+  watch: {
+    chartData: {
+      deep: true,
+      handler() {
+        this.updateChart();
+      },
+    },
+  },
+};
+```
+
+### Before (valid composable):
+
+```js
+import { ref, computed } from "vue";
+
+export function useChart() {
+  const chartData = ref(null);
+  const chartOptions = ref({});
+  const chartType = ref("bar");
+  const isChartReady = ref(false);
+
+  const formattedChartData = computed(() => {
+    if (!chartData.value) return null;
+    return {
+      labels: chartData.value.labels || [],
+      datasets: chartData.value.datasets || [],
+    };
+  });
+
+  const chartColors = computed(() => {
+    return (
+      chartOptions.value.colors || [
+        "#4CAF50",
+        "#2196F3",
+        "#FF9800",
+        "#F44336",
+        "#9C27B0",
+      ]
+    );
+  });
+
+  const hasData = computed(() => chartData.value !== null);
+
+  function prepareChartData(raw) {
+    if (!raw) return;
+    chartData.value = {
+      labels: raw.labels || [],
+      datasets: (raw.datasets || []).map((ds, i) => ({
+        ...ds,
+        backgroundColor: chartColors.value[i % chartColors.value.length],
+      })),
+    };
+    isChartReady.value = true;
+  }
+
+  function updateChart() {
+    if (chartData.value) {
+      isChartReady.value = false;
+      isChartReady.value = true;
+    }
+  }
+
+  function resizeChart() {
+    updateChart();
+  }
+
+  function exportChart(format) {
+    if (!isChartReady.value) return null;
+    return {
+      type: chartType.value,
+      format: format || "png",
+      data: formattedChartData.value,
+    };
+  }
+
+  return {
+    chartData,
+    chartOptions,
+    chartType,
+    isChartReady,
+    formattedChartData,
+    chartColors,
+    hasData,
+    prepareChartData,
+    updateChart,
+    resizeChart,
+    exportChart,
+  };
+}
+```
+
+### After (tool output — broken):
+
+```js
+// Transformation confidence: MEDIUM (2 warnings — see migration report)
+// ⚠ MIGRATION: this.$refs is not available in composables
+// ⚠ MIGRATION: this.$el has no composable equivalent
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+
+export function useChart() {
+  const chartData = ref(null);
+  const chartOptions = ref({});
+  const chartType = ref("bar");
+  const isChartReady = ref(false);
+
+  const formattedChartData = computed(() => {
+    if (!chartData.value) return null;
+    onMounted(() => {
+      // ← WRONG: inside computed() callback
+      resizeChart();
+    });
+    onBeforeUnmount(() => {
+      // ← WRONG: inside computed() callback
+      isChartReady.value = false;
+    });
+    return {
+      labels: chartData.value.labels || [],
+      datasets: chartData.value.datasets || [],
+    };
+  });
+
+  // ... rest unchanged ...
+}
+```
+
+**Git diff:**
+
+```diff
+@@ -8,6 +11,12 @@ export function useChart() {
+
+   const formattedChartData = computed(() => {
+     if (!chartData.value) return null
++  onMounted(() => {
++    resizeChart()
++  })
++  onBeforeUnmount(() => {
++    isChartReady.value = false
++  })
+     return {
+       labels: chartData.value.labels || [],
+       datasets: chartData.value.datasets || []
+```
+
+### Expected correct output (hooks at top-level function scope, before return):
+
+```js
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+
+export function useChart() {
+  const chartData = ref(null);
+  const chartOptions = ref({});
+  const chartType = ref("bar");
+  const isChartReady = ref(false);
+
+  const formattedChartData = computed(() => {
+    if (!chartData.value) return null;
+    return {
+      labels: chartData.value.labels || [],
+      datasets: chartData.value.datasets || [],
+    };
+  });
+
+  const chartColors = computed(() => {
+    return (
+      chartOptions.value.colors || [
+        "#4CAF50",
+        "#2196F3",
+        "#FF9800",
+        "#F44336",
+        "#9C27B0",
+      ]
+    );
+  });
+
+  const hasData = computed(() => chartData.value !== null);
+
+  function prepareChartData(raw) {
+    if (!raw) return;
+    chartData.value = {
+      labels: raw.labels || [],
+      datasets: (raw.datasets || []).map((ds, i) => ({
+        ...ds,
+        backgroundColor: chartColors.value[i % chartColors.value.length],
+      })),
+    };
+    isChartReady.value = true;
+  }
+
+  function updateChart() {
+    if (chartData.value) {
+      isChartReady.value = false;
+      isChartReady.value = true;
+    }
+  }
+
+  function resizeChart() {
+    updateChart();
+  }
+
+  function exportChart(format) {
+    if (!isChartReady.value) return null;
+    return {
+      type: chartType.value,
+      format: format || "png",
+      data: formattedChartData.value,
+    };
+  }
+
+  onMounted(() => {
+    resizeChart();
+  });
+
+  onBeforeUnmount(() => {
+    isChartReady.value = false;
+  });
+
+  return {
+    chartData,
+    chartOptions,
+    chartType,
+    isChartReady,
+    formattedChartData,
+    chartColors,
+    hasData,
+    prepareChartData,
+    updateChart,
+    resizeChart,
+    exportChart,
+  };
+}
+```
+
+---
+
+## Bug 3: `_handleEscapeKey` Referenced But Never Defined
+
+**Affected file:** `src/composables/useModal.js`
+
+**Result:** `ReferenceError: _handleEscapeKey is not defined` — the patcher added `onMounted`/`onBeforeUnmount` lifecycle hooks that reference `_handleEscapeKey`, but this function does not exist anywhere in the composable. The mixin defines it as a method, but the generator never converted it to a composable function.
+
+### Source mixin (`modalMixin.js`):
+
+```js
+export default {
+  data() {
+    return {
+      isOpen: false,
+      modalData: null,
+      modalOptions: {},
+    };
+  },
+
+  computed: {
+    modalTitle() {
+      return this.modalOptions.title || "Modal";
+    },
+    hasData() {
+      return !!this.modalData;
+    },
+  },
+
+  methods: {
+    openModal(data, options) {
+      this.modalData = data;
+      this.modalOptions = options || {};
+      this.isOpen = true;
+      this.$nextTick(() => {
+        this.$refs.modalOverlay?.focus();
+      });
+    },
+
+    closeModal() {
+      this.isOpen = false;
+      this.modalData = null;
+      this.modalOptions = {};
+      this.$emit("modal-closed");
+    },
+
+    confirmModal() {
+      this.$emit("modal-confirmed", this.modalData);
+      this.closeModal();
+    },
+
+    _handleEscapeKey(event) {
+      if (event.key === "Escape" && this.isOpen) {
+        this.closeModal();
+      }
+    },
+  },
+
+  mounted() {
+    document.addEventListener("keydown", this._handleEscapeKey);
+  },
+
+  beforeUnmount() {
+    document.removeEventListener("keydown", this._handleEscapeKey);
+  },
+};
+```
+
+### Before (composable — `_handleEscapeKey` already missing from generator output):
+
+```js
+import { ref, computed } from "vue";
+
+export function useModal() {
+  const isOpen = ref(false);
+  const modalData = ref(null);
+  const modalOptions = ref({});
+
+  const modalTitle = computed(() => modalOptions.value.title || "Modal");
+  const hasData = computed(() => modalData.value !== null);
+
+  function openModal(data, options) {
+    modalData.value = data;
+    modalOptions.value = options || {};
+    isOpen.value = true;
+  }
+
+  function closeModal() {
+    isOpen.value = false;
+    modalData.value = null;
+    modalOptions.value = {};
+  }
+
+  function confirmModal() {
+    const callback = modalOptions.value.onConfirm;
+    if (typeof callback === "function") {
+      callback(modalData.value);
+    }
+    closeModal();
+  }
+
+  return {
+    isOpen,
+    modalData,
+    modalOptions,
+    modalTitle,
+    hasData,
+    openModal,
+    closeModal,
+    confirmModal,
+  };
+}
+```
+
+### After (tool output — broken):
+
+```js
+// Transformation confidence: MEDIUM (2 warnings — see migration report)
+// ⚠ MIGRATION: this.$emit is not available in composables
+// ⚠ MIGRATION: this.$refs is not available in composables
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+
+export function useModal() {
+  const isOpen = ref(false);
+  const modalData = ref(null);
+  const modalOptions = ref({});
+
+  const modalTitle = computed(() => modalOptions.value.title || "Modal");
+  const hasData = computed(() => modalData.value !== null);
+
+  function openModal(data, options) {
+    modalData.value = data;
+    modalOptions.value = options || {};
+    isOpen.value = true;
+  }
+
+  function closeModal() {
+    isOpen.value = false;
+    modalData.value = null;
+    modalOptions.value = {};
+  }
+
+  function confirmModal() {
+    const callback = modalOptions.value.onConfirm;
+    if (typeof callback === "function") {
+      callback(modalData.value);
+    }
+    closeModal();
+  }
+
+  onMounted(() => {
+    document.addEventListener("keydown", _handleEscapeKey); // ← ReferenceError
+  });
+  onBeforeUnmount(() => {
+    document.removeEventListener("keydown", _handleEscapeKey); // ← ReferenceError
+  });
+
+  return {
+    isOpen,
+    modalData,
+    modalOptions,
+    modalTitle,
+    hasData,
+    openModal,
+    closeModal,
+    confirmModal,
+  };
+}
+```
+
+**Git diff:**
+
+```diff
+@@ -28,6 +31,12 @@ export function useModal() {
+     closeModal()
+   }
+
++  onMounted(() => {
++    document.addEventListener('keydown', _handleEscapeKey)
++  })
++  onBeforeUnmount(() => {
++    document.removeEventListener('keydown', _handleEscapeKey)
++  })
+   return {
+     isOpen,
+     modalData,
+```
+
+### Expected correct output (function defined, then used in hooks):
+
+```js
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+
+export function useModal() {
+  const isOpen = ref(false);
+  const modalData = ref(null);
+  const modalOptions = ref({});
+
+  const modalTitle = computed(() => modalOptions.value.title || "Modal");
+  const hasData = computed(() => modalData.value !== null);
+
+  function openModal(data, options) {
+    modalData.value = data;
+    modalOptions.value = options || {};
+    isOpen.value = true;
+  }
+
+  function closeModal() {
+    isOpen.value = false;
+    modalData.value = null;
+    modalOptions.value = {};
+  }
+
+  function confirmModal() {
+    const callback = modalOptions.value.onConfirm;
+    if (typeof callback === "function") {
+      callback(modalData.value);
+    }
+    closeModal();
+  }
+
+  function _handleEscapeKey(event) {
+    if (event.key === "Escape" && isOpen.value) {
+      closeModal();
+    }
+  }
+
+  onMounted(() => {
+    document.addEventListener("keydown", _handleEscapeKey);
+  });
+
+  onBeforeUnmount(() => {
+    document.removeEventListener("keydown", _handleEscapeKey);
+  });
+
+  return {
+    isOpen,
+    modalData,
+    modalOptions,
+    modalTitle,
+    hasData,
+    openModal,
+    closeModal,
+    confirmModal,
+  };
+}
+```
+
+---
+
+## Bug 4: Template Members Missing from `setup()` Destructuring
+
+**Affected files:** `BaseModal.vue`, `PaginationBar.vue`, `StatsOverview.vue`
+
+**Result:** Members used in the component's template and script are not included in the `setup()` destructuring or return. Since the mixin was removed, these members become `undefined` at runtime — breaking conditional rendering, computed properties, and watchers.
+
+---
+
+### 4a. BaseModal.vue — `isOpen` missing
+
+**Template uses `isOpen`:**
+
+```html
+<div v-if="isOpen" ref="modalOverlay" ...></div>
+```
+
+**Component script also references `isOpen` in:**
+
+- `watch: { isOpen(newVal) { ... } }`
+- `mounted() { if (this.isOpen) { ... } }`
+
+**Before (mixin provides `isOpen`):**
+
+```js
+import modalMixin from "@/mixins/modalMixin";
+import keyboardShortcutMixin from "@/mixins/keyboardShortcutMixin";
+
+export default {
+  name: "BaseModal",
+  mixins: [modalMixin, keyboardShortcutMixin],
+  emits: ["modal-closed", "modal-confirmed", "shortcut-triggered"],
+
+  watch: {
+    isOpen(newVal) {
+      if (newVal) {
+        this.$nextTick(() => {
+          if (this.$refs.modalOverlay) {
+            this.$refs.modalOverlay.focus();
+          }
+        });
+      }
+    },
+  },
+
+  mounted() {
+    this.registerShortcut("Escape", () => {
+      if (this.isOpen) {
+        this.closeModal();
+      }
+    });
+  },
+};
+```
+
+**After (tool output — `isOpen` missing from destructuring and return):**
+
+```js
+import { useKeyboardShortcut } from "@/composables/useKeyboardShortcut";
+import { useModal } from "@/composables/useModal";
+
+export default {
+  setup() {
+    const {
+      modalData,
+      modalTitle,
+      closeModal,
+      confirmModal,
+      _handleEscapeKey,
+    } = useModal();
+    const { registerShortcut, shortcuts, handleKeyDown } =
+      useKeyboardShortcut();
+
+    return {
+      modalData,
+      modalTitle,
+      closeModal,
+      confirmModal,
+      _handleEscapeKey,
+      registerShortcut,
+      shortcuts,
+      handleKeyDown,
+    };
+  },
+  name: "BaseModal",
+  emits: ["modal-closed", "modal-confirmed", "shortcut-triggered"],
+  // ...
+};
+```
+
+`isOpen` is used in the template (`v-if="isOpen"`), in a watcher, and in `mounted()`, but is not destructured from `useModal()` and not returned from `setup()`.
+
+Additionally, `_handleEscapeKey` IS included in the destructuring but does not exist in the composable (see Bug 3).
+
+**Git diff:**
+
+```diff
+-import modalMixin from '@/mixins/modalMixin'
+-import keyboardShortcutMixin from '@/mixins/keyboardShortcutMixin'
++import { useKeyboardShortcut } from '@/composables/useKeyboardShortcut'
++import { useModal } from '@/composables/useModal'
+
+ export default {
+-  name: 'BaseModal',
++  setup() {
++    const { modalData, modalTitle, closeModal, confirmModal, _handleEscapeKey } = useModal()
++    const { registerShortcut, shortcuts, handleKeyDown } = useKeyboardShortcut()
+
+-  mixins: [modalMixin, keyboardShortcutMixin],
++    return { modalData, modalTitle, closeModal, confirmModal, _handleEscapeKey, registerShortcut, shortcuts, handleKeyDown }
++  },
++  name: 'BaseModal',
+```
+
+**Expected correct `setup()`:**
+
+```js
+setup() {
+  const { isOpen, modalData, modalTitle, hasData, openModal, closeModal, confirmModal } = useModal()
+  const { registerShortcut, shortcuts, handleKeyDown } = useKeyboardShortcut()
+
+  return { isOpen, modalData, modalTitle, hasData, openModal, closeModal, confirmModal, registerShortcut, shortcuts, handleKeyDown }
+},
+```
+
+---
+
+### 4b. PaginationBar.vue — `currentPage` missing
+
+**Template uses `currentPage`:**
+
+```html
+<!-- :class binding -->
+page === currentPage ? 'bg-blue-600 text-white border-blue-600 z-10' : 'bg-white
+text-gray-700 border-gray-300 hover:bg-gray-50'
+
+<!-- v-if -->
+v-if="totalPages > 7 && currentPage < totalPages - 2"
+```
+
+**Component script also references `currentPage` in:**
+
+- `computed: { visiblePages() { ... this.currentPage ... } }`
+- `watch: { currentPage(newPage) { this.$emit('page-changed', ...) } }`
+
+**Before (mixin provides `currentPage`):**
+
+```js
+import paginationMixin from "@/mixins/paginationMixin";
+
+export default {
+  name: "PaginationBar",
+  mixins: [paginationMixin],
+  props: {
+    total: { type: Number, default: 0 },
+  },
+  emits: ["page-changed"],
+  // ...
+};
+```
+
+**After (tool output — `currentPage` missing from destructuring and return):**
+
+```js
+import { usePagination } from "@/composables/usePagination";
+
+export default {
+  setup() {
+    const {
+      pageSize,
+      totalItems,
+      totalPages,
+      hasPrevPage,
+      hasNextPage,
+      paginatedOffset,
+      nextPage,
+      prevPage,
+      goToPage,
+      changePageSize,
+    } = usePagination();
+
+    return {
+      pageSize,
+      totalItems,
+      totalPages,
+      hasPrevPage,
+      hasNextPage,
+      paginatedOffset,
+      nextPage,
+      prevPage,
+      goToPage,
+      changePageSize,
+    };
+  },
+  name: "PaginationBar",
+  // ...
+};
+```
+
+`currentPage` is used in template bindings and in `computed`/`watch` blocks, but is not destructured or returned.
+
+**Git diff:**
+
+```diff
+-import paginationMixin from '@/mixins/paginationMixin'
++import { usePagination } from '@/composables/usePagination'
+
+ export default {
+-  name: 'PaginationBar',
+-
+-  mixins: [paginationMixin],
++  setup() {
++    const { pageSize, totalItems, totalPages, hasPrevPage, hasNextPage, paginatedOffset, nextPage, prevPage, goToPage, changePageSize } = usePagination()
++
++    return { pageSize, totalItems, totalPages, hasPrevPage, hasNextPage, paginatedOffset, nextPage, prevPage, goToPage, changePageSize }
++  },
++  name: 'PaginationBar',
+```
+
+**Expected correct `setup()`:**
+
+```js
+setup() {
+  const { currentPage, pageSize, totalItems, totalPages, hasPrevPage, hasNextPage, paginatedOffset, nextPage, prevPage, goToPage, changePageSize } = usePagination()
+
+  return { currentPage, pageSize, totalItems, totalPages, hasPrevPage, hasNextPage, paginatedOffset, nextPage, prevPage, goToPage, changePageSize }
+},
+```
+
+---
+
+### 4c. StatsOverview.vue — `hasError`, `error`, `canRetry`, `retry` missing
+
+**Template uses these members:**
+
+```html
+<div v-else-if="hasError" ...>
+  <p class="text-red-600 text-sm">{{ error }}</p>
+  <button v-if="canRetry" ...>@click="retry(loadStats)"</button>
+</div>
+```
+
+**Source mixin (`loadingMixin.js`) provides all of them:**
+
+```js
+export default {
+  data() {
+    return {
+      isLoading: false,
+      loadingMessage: "",
+      error: null,
+      retryCount: 0,
+    };
+  },
+  computed: {
+    hasError() {
+      return !!this.error;
+    },
+    canRetry() {
+      return this.retryCount < 3;
+    },
+  },
+  methods: {
+    startLoading(msg) {
+      this.isLoading = true;
+      this.loadingMessage = msg || "Loading...";
+      this.error = null;
+    },
+    stopLoading() {
+      this.isLoading = false;
+      this.loadingMessage = "";
+    },
+    setError(err) {
+      this.error = err;
+      this.isLoading = false;
+      this.$forceUpdate();
+    },
+    retry(fn) {
+      this.retryCount++;
+      fn();
+    },
+  },
+};
+```
+
+**The composable (`useLoading.js`) correctly defines and returns ALL of these:**
+
+```js
+export function useLoading() {
+  const isLoading = ref(false);
+  const loadingMessage = ref("");
+  const error = ref(null);
+  const retryCount = ref(0);
+
+  const hasError = computed(() => error.value !== null);
+  const canRetry = computed(() => retryCount.value < 3);
+
+  function startLoading(msg) {
+    isLoading.value = true;
+    loadingMessage.value = msg || "";
+    error.value = null;
+  }
+
+  function stopLoading() {
+    isLoading.value = false;
+    loadingMessage.value = "";
+  }
+
+  function setError(err) {
+    error.value = err;
+    isLoading.value = false;
+  }
+
+  async function retry(fn) {
+    if (!canRetry.value) return;
+    retryCount.value++;
+    try {
+      startLoading("Retrying...");
+      await fn();
+      stopLoading();
+    } catch (err) {
+      setError(err);
+    }
+  }
+
+  return {
+    isLoading,
+    loadingMessage,
+    error,
+    retryCount,
+    hasError,
+    canRetry,
+    startLoading,
+    stopLoading,
+    setError,
+    retry,
+  };
+}
+```
+
+**Before (mixin provides all members):**
+
+```js
+import loadingMixin from "@/mixins/loadingMixin";
+import chartMixin from "@/mixins/chartMixin";
+import { useProjectsStore } from "@/stores/projects";
+import { useTasksStore } from "@/stores/tasks";
+import { useUsersStore } from "@/stores/users";
+
+export default {
+  name: "StatsOverview",
+  mixins: [loadingMixin, chartMixin],
+  // ...
+};
+```
+
+**After (tool output — 4 members missing from destructuring and return):**
+
+```js
+import { useChart } from "@/composables/useChart";
+import { useLoading } from "@/composables/useLoading";
+import { useProjectsStore } from "@/stores/projects";
+import { useTasksStore } from "@/stores/tasks";
+import { useUsersStore } from "@/stores/users";
+
+export default {
+  name: "StatsOverview",
+  setup() {
+    const { isLoading, startLoading, stopLoading, setError } = useLoading();
+    const { prepareChartData, resizeChart, isChartReady } = useChart();
+
+    return {
+      isLoading,
+      startLoading,
+      stopLoading,
+      setError,
+      prepareChartData,
+      resizeChart,
+      isChartReady,
+    };
+  },
+  // ...
+};
+```
+
+`hasError`, `error`, `canRetry`, and `retry` are all used in the template but none are destructured from `useLoading()` or returned from `setup()`. The composable returns them — the injector just didn't include them.
+
+**Git diff:**
+
+```diff
+-import loadingMixin from '@/mixins/loadingMixin'
+-import chartMixin from '@/mixins/chartMixin'
++import { useChart } from '@/composables/useChart'
++import { useLoading } from '@/composables/useLoading'
+ import { useProjectsStore } from '@/stores/projects'
+ import { useTasksStore } from '@/stores/tasks'
+ import { useUsersStore } from '@/stores/users'
+
+ export default {
+   name: 'StatsOverview',
+-
+-  mixins: [loadingMixin, chartMixin],
++  setup() {
++    const { isLoading, startLoading, stopLoading, setError } = useLoading()
++    const { prepareChartData, resizeChart, isChartReady } = useChart()
++
++    return { isLoading, startLoading, stopLoading, setError, prepareChartData, resizeChart, isChartReady }
++  },
+```
+
+**Expected correct `setup()`:**
+
+```js
+setup() {
+  const { isLoading, startLoading, stopLoading, setError, hasError, error, canRetry, retry } = useLoading()
+  const { prepareChartData, resizeChart, isChartReady } = useChart()
+
+  return { isLoading, startLoading, stopLoading, setError, hasError, error, canRetry, retry, prepareChartData, resizeChart, isChartReady }
+},
+```

@@ -36,6 +36,7 @@ class MigrationWarning:
     action_required: str      # What the developer must do
     line_hint: str | None     # Source line context (for inline comment)
     severity: str             # "error" | "warning" | "info"
+    source_context: str = ""  # "mixin" | "component" | "" (legacy)
 
 
 @dataclass
@@ -48,7 +49,10 @@ class MixinMembers:
 
     @property
     def all_names(self) -> list[str]:
-        return list(dict.fromkeys(self.data + self.computed + self.methods + self.watch))
+        # Exclude dotted watch keys (e.g. 'nested.path') from the return list
+        # — they are path expressions, not standalone members to return.
+        watch_simple = [w for w in self.watch if '.' not in w]
+        return list(dict.fromkeys(self.data + self.computed + self.methods + watch_simple))
 
 
 @dataclass

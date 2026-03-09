@@ -7,9 +7,10 @@ from ..core.js_parser import extract_brace_block, extract_value_at
 from ..core.mixin_analyzer import extract_mixin_imports, filter_imports_by_usage, rewrite_import_path
 from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
+    suppress_resolved_warnings,
 )
 from ..models import MixinMembers
-from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs
+from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs, rewrite_this_i18n_refs
 from .lifecycle_converter import (
     extract_hook_body, convert_lifecycle_hooks, get_required_imports, HOOK_MAP,
     find_lifecycle_referenced_members,
@@ -318,7 +319,14 @@ def parse_watch_entry(watch_body: str, name: str) -> dict | None:
 
     Returns None if the entry can't be found.
     """
-    m = re.search(rf'\b{re.escape(name)}\s*(?:\(|:)', watch_body)
+    # For dotted names (e.g. 'nested.path'), search for the quoted form
+    if '.' in name:
+        m = re.search(
+            rf"""(?:['"]){re.escape(name)}(?:['"])\s*(?:\(|:)""",
+            watch_body,
+        )
+    else:
+        m = re.search(rf'\b{re.escape(name)}\s*(?:\(|:)', watch_body)
     if not m:
         return None
 
@@ -411,13 +419,23 @@ def generate_watch_call(
         opts = ", ".join(f"{k}: {v}" for k, v in options.items())
         options_str = f", {{ {opts} }}"
 
+    # For dotted watch keys like 'nested.path', generate a getter function:
+    #   watch(() => nested.value.path, ...)
+    if '.' in name:
+        parts = name.split('.')
+        root = parts[0]
+        rest = '.'.join(parts[1:])
+        watch_source = f"() => {root}.value.{rest}"
+    else:
+        watch_source = name
+
     lines = rewritten.splitlines()
     if len(lines) <= 1:
-        return f"{indent}watch({name}, ({params}) => {{ {rewritten} }}{options_str})"
+        return f"{indent}watch({watch_source}, ({params}) => {{ {rewritten} }}{options_str})"
 
     inner = indent + indent
     body_lines = "\n".join(f"{inner}{line}" for line in lines)
-    return f"{indent}watch({name}, ({params}) => {{\n{body_lines}\n{indent}}}{options_str})"
+    return f"{indent}watch({watch_source}, ({params}) => {{\n{body_lines}\n{indent}}}{options_str})"
 
 
 def generate_member_declaration(
@@ -634,6 +652,28 @@ def patch_composable(
     for imp in dollar_imports:
         content = _add_vue_import(content, imp)
 
+    # Apply this.$t/$tc/$te/$d/$n auto-rewrites to useI18n() equivalents
+    content, i18n_functions = rewrite_this_i18n_refs(content)
+    if i18n_functions:
+        sorted_fns = sorted(i18n_functions)
+        # Add import { useI18n } from 'vue-i18n' if not already present
+        if "useI18n" not in content:
+            # Insert after the Vue import line
+            vue_import_m = re.search(r"import\s*\{[^}]*\}\s*from\s*['\"]vue['\"].*\n", content)
+            if vue_import_m:
+                insert_pos = vue_import_m.end()
+                content = content[:insert_pos] + "import { useI18n } from 'vue-i18n'\n" + content[insert_pos:]
+            else:
+                content = "import { useI18n } from 'vue-i18n'\n" + content
+        # Add const { t, ... } = useI18n() if not already present
+        if "useI18n()" not in content or "= useI18n()" not in content:
+            # Find the opening of the composable function body
+            fn_m = re.search(r'export\s+function\s+\w+\s*\([^)]*\)\s*\{', content)
+            if fn_m:
+                insert_pos = fn_m.end()
+                destructure = f"\n{indent}const {{ {', '.join(sorted_fns)} }} = useI18n()\n"
+                content = content[:insert_pos] + destructure + content[insert_pos:]
+
     # Propagate non-Vue imports from mixin source
     if mixin_path is not None:
         mixin_imports = extract_mixin_imports(mixin_content)
@@ -655,8 +695,9 @@ def patch_composable(
     # Remove stale "NOT defined" / "NOT returned" comments that contradict actual code
     content = _remove_stale_comments(content)
 
-    # Collect warnings and inject inline comments + confidence header
+    # Collect warnings and suppress those already resolved by the generated code
     warnings = collect_mixin_warnings(mixin_content, mixin_members, lifecycle_hooks or [])
+    warnings = suppress_resolved_warnings(warnings, [], content)
     confidence = compute_confidence(content, warnings)
     content = inject_inline_warnings(content, warnings, confidence, len(warnings))
 

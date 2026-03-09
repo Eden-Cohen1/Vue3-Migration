@@ -552,6 +552,82 @@ class TestInjectInlineWarnings:
         assert "Warning B" in result
         assert "Warning C" in result
 
+    def test_external_dep_this_items_gets_inline_icon_on_all_lines(self):
+        """Non-underscore external dep (this.items) gets ❌ on every occurrence."""
+        source = (
+            "export function useX() {\n"
+            "  function go() { return this.items }\n"
+            "  function reset() { this.items = [] }\n"
+            "  return { go, reset }\n"
+            "}\n"
+        )
+        warnings = [
+            MigrationWarning("x", "external-dependency",
+                             "'items' — external dep, not available in composable scope",
+                             "Accept 'items' as a composable parameter and rewrite this.items",
+                             "return this.items",
+                             "error"),
+        ]
+        result = inject_inline_warnings(source, warnings)
+        lines = result.splitlines()
+        # Both lines containing this.items should get ❌ icons
+        items_lines = [l for l in lines if "this.items" in l and not l.lstrip().startswith("//")]
+        assert len(items_lines) == 2, f"Expected 2 code lines with this.items, got {len(items_lines)}"
+        for l in items_lines:
+            assert "// \u274c" in l, f"Missing ❌ icon on line: {l}"
+
+    def test_rewritten_internal_prop_gets_inline_icon(self):
+        """After internal_props rewriting (this._searchTimeout -> _searchTimeout),
+        the bare name should still get a ❌ icon via fallback matching."""
+        source = (
+            "export function useX() {\n"
+            "  let _searchTimeout = null\n"
+            "  function search() { clearTimeout(_searchTimeout) }\n"
+            "  function debounce() { _searchTimeout = setTimeout(go, 300) }\n"
+            "  return { search, debounce }\n"
+            "}\n"
+        )
+        warnings = [
+            MigrationWarning("x", "external-dependency",
+                             "'_searchTimeout' — external dep, not available in composable scope",
+                             "Accept '_searchTimeout' as a composable parameter and rewrite this._searchTimeout",
+                             "clearTimeout(this._searchTimeout)",
+                             "error"),
+        ]
+        result = inject_inline_warnings(source, warnings)
+        lines = result.splitlines()
+        # Lines with _searchTimeout (bare, no this.) should get icons
+        bare_lines = [l for l in lines if "_searchTimeout" in l
+                      and not l.lstrip().startswith("//")
+                      and "let _searchTimeout" not in l]
+        assert len(bare_lines) >= 2, f"Expected >=2 code lines with _searchTimeout, got {len(bare_lines)}"
+        for l in bare_lines:
+            assert "// \u274c" in l, f"Missing ❌ icon on line: {l}"
+
+    def test_phase3b_does_not_duplicate_icon_from_phase3(self):
+        """Lines already annotated in Phase 3 should not get a second suffix icon."""
+        source = (
+            "export function useX() {\n"
+            "  function go() { this.$router.push('/') }\n"
+            "  function back() { this.$router.back() }\n"
+            "  return { go, back }\n"
+            "}\n"
+        )
+        warnings = [
+            MigrationWarning("x", "this.$router",
+                             "this.$router not available", "Use useRouter()",
+                             "this.$router.push('/')",
+                             "error"),
+        ]
+        result = inject_inline_warnings(source, warnings)
+        lines = result.splitlines()
+        # Both lines should have exactly one icon each
+        router_lines = [l for l in lines if "this.$router" in l and not l.lstrip().startswith("//")]
+        assert len(router_lines) == 2
+        for l in router_lines:
+            # Count icon occurrences - should be exactly 1
+            assert l.count("// \u274c") == 1, f"Expected exactly 1 icon on: {l}"
+
 
 # ---------------------------------------------------------------------------
 # Step 3 (cont): Integration — generator produces warnings + inline comments
@@ -609,6 +685,75 @@ export default {
         result = generate_composable_from_mixin(source, "counterMixin", members, [])
         # Clean mixin — no this.$ patterns — should be HIGH
         assert "Transformation confidence: HIGH" in result
+
+    def test_external_dep_this_items_gets_header_and_inline_icons(self):
+        """End-to-end: mixin with this.items (external dep) gets both
+        header warning AND inline ❌ icons on all occurrences."""
+        source = """
+export default {
+    data() {
+        return { query: '' }
+    },
+    methods: {
+        search() {
+            return this.items.filter(i => i.name.includes(this.query))
+        },
+        count() {
+            return this.items.length
+        }
+    }
+}
+"""
+        members = MixinMembers(data=["query"], methods=["search", "count"])
+        result = generate_composable_from_mixin(source, "filterMixin", members, [])
+        # Header should mention external dep
+        assert "external dep" in result
+        assert "'items'" in result
+        # All code lines with this.items should have ❌
+        lines = result.splitlines()
+        items_code_lines = [
+            l for l in lines
+            if "this.items" in l and not l.lstrip().startswith("//")
+        ]
+        assert len(items_code_lines) >= 2, (
+            f"Expected >=2 code lines with this.items, got {len(items_code_lines)}"
+        )
+        for l in items_code_lines:
+            assert "// \u274c" in l, f"Missing ❌ icon on line: {l}"
+
+    def test_underscore_external_dep_rewritten_still_gets_icons(self):
+        """End-to-end: mixin with this._searchTimeout (underscore external dep)
+        that gets rewritten by internal_props should still get ❌ icons."""
+        source = """
+export default {
+    methods: {
+        search() {
+            clearTimeout(this._searchTimeout)
+            this._searchTimeout = setTimeout(() => this.doSearch(), 300)
+        },
+        doSearch() {
+            console.log('searching')
+        }
+    }
+}
+"""
+        members = MixinMembers(methods=["search", "doSearch"])
+        result = generate_composable_from_mixin(source, "searchMixin", members, [])
+        # internal_props rewrites this._searchTimeout -> _searchTimeout
+        assert "let _searchTimeout = null" in result
+        # The bare _searchTimeout usages should have ❌ icons
+        lines = result.splitlines()
+        bare_lines = [
+            l for l in lines
+            if "_searchTimeout" in l
+            and not l.lstrip().startswith("//")
+            and "let _searchTimeout" not in l
+        ]
+        assert len(bare_lines) >= 1, (
+            f"Expected >=1 code lines with _searchTimeout usage, got {len(bare_lines)}"
+        )
+        for l in bare_lines:
+            assert "// \u274c" in l, f"Missing ❌ icon on rewritten line: {l}"
 
 
 # ---------------------------------------------------------------------------
@@ -1445,3 +1590,188 @@ class TestTransitiveMixinWarnings:
         nested_warnings = [w for w in warnings if w.category == "structural:nested-mixins"]
         assert len(nested_warnings) == 1
         assert "baseMixin" in nested_warnings[0].message
+
+
+# ---------------------------------------------------------------------------
+# B2: Suppress warnings when composable already has alternative implementation
+# ---------------------------------------------------------------------------
+
+from vue3_migration.core.warning_collector import suppress_resolved_warnings
+
+
+class TestSuppressResolvedWarnings:
+    def test_external_dep_suppressed_when_in_declared(self):
+        """External dep warning suppressed when name is in composable_declared."""
+        warnings = [
+            MigrationWarning(
+                mixin_stem="myMixin", category="external-dependency",
+                message="'items' — external dep, not available in composable scope",
+                action_required="Accept 'items' as a composable parameter",
+                line_hint="this.items.length", severity="error",
+            ),
+        ]
+        result = suppress_resolved_warnings(warnings, ["items", "loadData"])
+        assert len(result) == 0
+
+    def test_external_dep_not_suppressed_when_missing(self):
+        """External dep warning NOT suppressed when name is missing from composable_declared."""
+        warnings = [
+            MigrationWarning(
+                mixin_stem="myMixin", category="external-dependency",
+                message="'entityId' — external dep, not available in composable scope",
+                action_required="Accept 'entityId' as a composable parameter",
+                line_hint="this.entityId", severity="error",
+            ),
+        ]
+        result = suppress_resolved_warnings(warnings, ["items", "loadData"])
+        assert len(result) == 1
+        assert result[0].message == warnings[0].message
+
+    def test_this_router_suppressed_when_composable_has_useRouter(self):
+        """this.$router warning suppressed when composable contains useRouter."""
+        warnings = [
+            MigrationWarning(
+                mixin_stem="authMixin", category="this.$router",
+                message="this.$router is not available in composables",
+                action_required="Import and use useRouter() from vue-router",
+                line_hint="this.$router.push('/login')", severity="error",
+            ),
+        ]
+        comp_source = """
+import { useRouter } from 'vue-router'
+export function useAuth() {
+  const router = useRouter()
+  return { router }
+}
+"""
+        result = suppress_resolved_warnings(warnings, [], comp_source)
+        assert len(result) == 0
+
+    def test_this_router_not_suppressed_when_composable_lacks_useRouter(self):
+        """this.$router warning NOT suppressed when composable lacks useRouter."""
+        warnings = [
+            MigrationWarning(
+                mixin_stem="authMixin", category="this.$router",
+                message="this.$router is not available in composables",
+                action_required="Import and use useRouter() from vue-router",
+                line_hint="this.$router.push('/login')", severity="error",
+            ),
+        ]
+        comp_source = """
+export function useAuth() {
+  const token = ref(null)
+  return { token }
+}
+"""
+        result = suppress_resolved_warnings(warnings, [], comp_source)
+        assert len(result) == 1
+
+    def test_this_t_suppressed_when_composable_has_useI18n(self):
+        """this.$t warning suppressed when composable contains useI18n."""
+        warnings = [
+            MigrationWarning(
+                mixin_stem="i18nMixin", category="this.$t",
+                message="this.$t — needs useI18n()",
+                action_required="Use useI18n()",
+                line_hint="this.$t('key')", severity="warning",
+            ),
+        ]
+        comp_source = """
+import { useI18n } from 'vue-i18n'
+export function useTranslation() {
+  const { t } = useI18n()
+  return { t }
+}
+"""
+        result = suppress_resolved_warnings(warnings, [], comp_source)
+        assert len(result) == 0
+
+    def test_mixed_scenario_some_suppressed_some_kept(self):
+        """Mixed scenario: some warnings suppressed, others kept."""
+        warnings = [
+            MigrationWarning(
+                mixin_stem="myMixin", category="external-dependency",
+                message="'items' — external dep, not available in composable scope",
+                action_required="Accept 'items'",
+                line_hint="this.items", severity="error",
+            ),
+            MigrationWarning(
+                mixin_stem="myMixin", category="external-dependency",
+                message="'userId' — external dep, not available in composable scope",
+                action_required="Accept 'userId'",
+                line_hint="this.userId", severity="error",
+            ),
+            MigrationWarning(
+                mixin_stem="myMixin", category="this.$router",
+                message="this.$router is not available in composables",
+                action_required="Import and use useRouter()",
+                line_hint="this.$router.push('/')", severity="error",
+            ),
+        ]
+        comp_source = """
+import { useRouter } from 'vue-router'
+export function useMyMixin() {
+  const router = useRouter()
+  const items = ref([])
+  return { items, router }
+}
+"""
+        result = suppress_resolved_warnings(warnings, ["items"], comp_source)
+        # 'items' ext dep: suppressed (in declared)
+        # 'userId' ext dep: kept (not in declared)
+        # this.$router: suppressed (useRouter in source)
+        assert len(result) == 1
+        assert "'userId'" in result[0].message
+
+    def test_non_suppressible_categories_pass_through(self):
+        """Non-suppressible categories (e.g. this-alias, mixin-option:props) pass through unchanged."""
+        warnings = [
+            MigrationWarning(
+                mixin_stem="myMixin", category="this-alias",
+                message="'this' is aliased as 'self'",
+                action_required="Manually replace self.x",
+                line_hint="const self = this", severity="warning",
+            ),
+            MigrationWarning(
+                mixin_stem="myMixin", category="mixin-option:props",
+                message="Mixin defines props",
+                action_required="Use defineProps()",
+                line_hint=None, severity="warning",
+            ),
+        ]
+        comp_source = "export function useFoo() { return {} }"
+        result = suppress_resolved_warnings(warnings, ["items"], comp_source)
+        assert len(result) == 2
+
+    def test_this_store_suppressed_with_pinia_store(self):
+        """this.$store suppressed when composable uses a Pinia store (useXxxStore pattern)."""
+        warnings = [
+            MigrationWarning(
+                mixin_stem="myMixin", category="this.$store",
+                message="this.$store is not available in composables",
+                action_required="Import and use the Pinia/Vuex store directly",
+                line_hint="this.$store.dispatch('load')", severity="error",
+            ),
+        ]
+        comp_source = """
+import { useAuthStore } from '@/stores/auth'
+export function useMyMixin() {
+  const store = useAuthStore()
+  return { store }
+}
+"""
+        result = suppress_resolved_warnings(warnings, [], comp_source)
+        assert len(result) == 0
+
+    def test_no_suppression_without_composable_source(self):
+        """this.$X warnings are NOT suppressed when composable_source is None."""
+        warnings = [
+            MigrationWarning(
+                mixin_stem="myMixin", category="this.$router",
+                message="this.$router is not available in composables",
+                action_required="Import and use useRouter()",
+                line_hint="this.$router.push('/')", severity="error",
+            ),
+        ]
+        result = suppress_resolved_warnings(warnings, [], composable_source=None)
+        assert len(result) == 1

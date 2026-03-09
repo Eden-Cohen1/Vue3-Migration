@@ -708,3 +708,130 @@ def test_dashboard_mixin_import_not_used_excluded():
     )
     # helperUtil is imported but never referenced in any method body
     assert "helperUtil" not in result
+
+
+# ── ordering tests ────────────────────────────────────────────────────────────
+
+FULL_ORDERING_MIXIN = """
+export default {
+  data() {
+    return {
+      count: 0,
+      name: '',
+    }
+  },
+  computed: {
+    doubled() {
+      return this.count * 2
+    },
+  },
+  methods: {
+    increment() {
+      this.count++
+    },
+    reset() {
+      this.count = 0
+    },
+  },
+  watch: {
+    count(newVal) {
+      console.log(newVal)
+    },
+  },
+}
+"""
+
+
+class TestComposableOrdering:
+    """Verify that generated composable code follows canonical ordering:
+    refs -> computed -> methods -> watch."""
+
+    def _generate(self, mixin_source, members, lifecycle_hooks=None):
+        return generate_composable_from_mixin(
+            mixin_source=mixin_source,
+            mixin_stem="orderingMixin",
+            mixin_members=members,
+            lifecycle_hooks=lifecycle_hooks or [],
+        )
+
+    def test_refs_before_computed(self):
+        members = MixinMembers(
+            data=["count"],
+            computed=["doubled"],
+            methods=[],
+        )
+        mixin = """
+export default {
+  data() { return { count: 0 } },
+  computed: {
+    doubled() { return this.count * 2 }
+  },
+}
+"""
+        result = self._generate(mixin, members)
+        ref_pos = result.index("ref(")
+        computed_pos = result.index("computed(")
+        assert ref_pos < computed_pos, "ref() declarations must appear before computed()"
+
+    def test_computed_before_methods(self):
+        members = MixinMembers(
+            data=[],
+            computed=["doubled"],
+            methods=["increment"],
+        )
+        mixin = """
+export default {
+  computed: {
+    doubled() { return 42 }
+  },
+  methods: {
+    increment() { }
+  },
+}
+"""
+        result = self._generate(mixin, members)
+        computed_pos = result.index("computed(")
+        method_pos = result.index("function increment(")
+        assert computed_pos < method_pos, "computed() must appear before function declarations"
+
+    def test_methods_before_watch(self):
+        members = MixinMembers(
+            data=["count"],
+            computed=[],
+            methods=["increment"],
+            watch=["count"],
+        )
+        mixin = """
+export default {
+  data() { return { count: 0 } },
+  methods: {
+    increment() { this.count++ }
+  },
+  watch: {
+    count(newVal) { console.log(newVal) }
+  },
+}
+"""
+        result = self._generate(mixin, members)
+        method_pos = result.index("function increment(")
+        watch_pos = result.index("watch(")
+        assert method_pos < watch_pos, "function declarations must appear before watch() calls"
+
+    def test_full_ordering_with_all_sections(self):
+        members = MixinMembers(
+            data=["count", "name"],
+            computed=["doubled"],
+            methods=["increment", "reset"],
+            watch=["count"],
+        )
+        result = self._generate(FULL_ORDERING_MIXIN, members)
+
+        # Find first occurrence of each section marker
+        ref_pos = result.index("ref(")
+        computed_pos = result.index("computed(")
+        method_pos = result.index("function increment(")
+        watch_pos = result.index("watch(")
+
+        assert ref_pos < computed_pos, "refs must come before computed"
+        assert computed_pos < method_pos, "computed must come before methods"
+        assert method_pos < watch_pos, "methods must come before watch"

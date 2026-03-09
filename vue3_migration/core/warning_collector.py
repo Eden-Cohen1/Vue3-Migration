@@ -36,6 +36,17 @@ _THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str, str]] = [
      "Import and use useRoute() from vue-router", "error"),
     (r"this\.\$store\b", "this.$store", "this.$store is not available in composables",
      "Import and use the Pinia/Vuex store directly", "error"),
+    # --- error: i18n — will crash at runtime, no 'this' in composables ---
+    (r"this\.\$t\b", "this.$t", "this.$t (i18n) is not available in composables",
+     "Import and use useI18n() from 'vue-i18n': const { t } = useI18n()", "error"),
+    (r"this\.\$tc\b", "this.$tc", "this.$tc (i18n pluralization) is removed in vue-i18n v9",
+     "Use t() with plural syntax instead: const { t } = useI18n()", "error"),
+    (r"this\.\$te\b", "this.$te", "this.$te (i18n key existence) is not available in composables",
+     "Use te() from useI18n(): const { te } = useI18n()", "error"),
+    (r"this\.\$d\b", "this.$d", "this.$d (i18n date) is not available in composables",
+     "Use d() from useI18n(): const { d } = useI18n()", "error"),
+    (r"this\.\$n\b", "this.$n", "this.$n (i18n number) is not available in composables",
+     "Use n() from useI18n(): const { n } = useI18n()", "error"),
     # --- warning: has known drop-in replacement ---
     (r"this\.\$attrs\b", "this.$attrs", "this.$attrs used — needs useAttrs()",
      "Add const attrs = useAttrs() and import from 'vue'", "warning"),
@@ -49,6 +60,55 @@ _THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str, str]] = [
     (r"this\.\$forceUpdate\b", "this.$forceUpdate", "$forceUpdate — rarely needed in Vue 3",
      "Reactive system usually handles it; review logic", "info"),
 ]
+
+
+_RESOLVED_PATTERNS: dict[str, str] = {
+    "this.$router": "useRouter",
+    "this.$route": "useRoute",
+    "this.$store": r"use\w+Store",
+    "this.$attrs": "useAttrs",
+    "this.$slots": "useSlots",
+    "this.$t": "useI18n",
+    "this.$tc": "useI18n",
+    "this.$te": "useI18n",
+    "this.$d": "useI18n",
+    "this.$n": "useI18n",
+}
+
+
+def suppress_resolved_warnings(
+    warnings: list[MigrationWarning],
+    composable_declared: list[str],
+    composable_source: str | None = None,
+) -> list[MigrationWarning]:
+    """Filter out warnings that are already resolved by the composable.
+
+    Suppresses:
+    1. External-dependency warnings where the dep name is in composable_declared.
+    2. this.$X warnings where the composable source already contains the
+       corresponding API call (e.g. useRouter for this.$router).
+
+    Warnings that are NOT suppressed are returned unchanged.
+    """
+    declared_set = set(composable_declared)
+    result: list[MigrationWarning] = []
+
+    for w in warnings:
+        # Check external-dependency suppression
+        if w.category == "external-dependency":
+            m = re.match(r"'(\w+)'", w.message)
+            if m and m.group(1) in declared_set:
+                continue  # suppressed
+
+        # Check this.$X suppression
+        if w.category in _RESOLVED_PATTERNS and composable_source:
+            pattern = _RESOLVED_PATTERNS[w.category]
+            if re.search(pattern, composable_source):
+                continue  # suppressed
+
+        result.append(w)
+
+    return result
 
 
 def collect_mixin_warnings(
@@ -360,14 +420,24 @@ def inject_inline_warnings(
     category_severity: dict[str, str] = {}
     # Pattern to match in source lines: for this.$ categories use the category
     # itself (e.g. "this.$emit"); for external-dependency use "this.<name>".
-    category_patterns: dict[str, str] = {}
+    # Also store fallback patterns for names that may have had `this.` stripped
+    # by internal_props rewriting (e.g. this._searchTimeout -> _searchTimeout).
+    category_fallbacks: dict[str, str] = {}  # pat -> bare fallback name
     for w in warnings:
         if w.category.startswith("this.$"):
             pat = w.category
         elif w.category == "external-dependency":
             # Extract the dep name from the message: "'entityId' — external dep..."
             m = re.match(r"'(\w+)'", w.message)
-            pat = f"this.{m.group(1)}" if m else None
+            if m:
+                dep_name = m.group(1)
+                pat = f"this.{dep_name}"
+                # For underscore-prefixed names, internal_props rewriting strips
+                # `this.` — add a bare-name fallback so we can still find them.
+                if dep_name.startswith("_"):
+                    category_fallbacks[pat] = dep_name
+            else:
+                pat = None
         else:
             pat = None
         if pat:
@@ -375,13 +445,20 @@ def inject_inline_warnings(
             if cur is None or _SEVERITY_ORDER.get(w.severity, 2) < _SEVERITY_ORDER.get(cur, 2):
                 category_severity[pat] = w.severity
     for i, line in enumerate(lines):
-        if i in line_severity:
-            continue  # already has a suffix from Phase 3
         stripped = line.lstrip()
         if stripped.startswith("//"):
             continue
+        # Skip lines that already have a suffix icon (from Phase 3 or earlier 3b match)
+        if _SUFFIX_ICON_RE.search(line):
+            continue
         for pat, sev in category_severity.items():
-            if pat in line:
+            matched = pat in line
+            # Fallback: for rewritten internal props, try bare name with word boundary
+            if not matched and pat in category_fallbacks:
+                bare = category_fallbacks[pat]
+                if re.search(rf'\b{re.escape(bare)}\b', line):
+                    matched = True
+            if matched:
                 icon = _INLINE_ICON.get(sev, "\u26a0\ufe0f")
                 lines[i] = line.rstrip("\n") + f"  // {icon}\n"
                 break

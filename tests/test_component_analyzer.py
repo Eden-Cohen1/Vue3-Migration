@@ -166,6 +166,64 @@ class TestFindUsedMembers:
         assert 'clearSelection' in result
         assert 'nope' not in result
 
+    def test_html_comment_does_not_count_as_usage(self):
+        src = '''\
+<template>
+  <div><!-- loadData is referenced here --></div>
+</template>
+<script>
+export default {}
+</script>
+'''
+        result = find_used_members(src, ['loadData'])
+        assert 'loadData' not in result
+
+    def test_js_single_line_comment_does_not_count(self):
+        src = '''\
+<template><div></div></template>
+<script>
+// use loadData later
+export default {}
+</script>
+'''
+        result = find_used_members(src, ['loadData'])
+        assert 'loadData' not in result
+
+    def test_js_block_comment_does_not_count(self):
+        src = '''\
+<template><div></div></template>
+<script>
+/* loadData will be used */
+export default {}
+</script>
+'''
+        result = find_used_members(src, ['loadData'])
+        assert 'loadData' not in result
+
+    def test_member_in_comment_and_real_code_still_found(self):
+        src = '''\
+<template>
+  <div><!-- loadData comment --></div>
+  <button @click="loadData">Load</button>
+</template>
+<script>
+export default {}
+</script>
+'''
+        result = find_used_members(src, ['loadData'])
+        assert 'loadData' in result
+
+    def test_member_in_string_still_found(self):
+        src = '''\
+<template><div></div></template>
+<script>
+const msg = "call loadData here"
+export default {}
+</script>
+'''
+        result = find_used_members(src, ['loadData'])
+        assert 'loadData' in result
+
     def test_nested_template_tags(self):
         """Bug 4: Nested <template v-if> must not cut off the outer template."""
         src = '''\

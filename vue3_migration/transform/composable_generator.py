@@ -6,6 +6,7 @@ from ..core.js_parser import extract_brace_block
 from ..core.mixin_analyzer import extract_mixin_imports, filter_imports_by_usage, rewrite_import_path
 from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
+    suppress_resolved_warnings,
 )
 from ..models import MigrationWarning, MixinMembers
 from .composable_patcher import (
@@ -17,7 +18,7 @@ from .composable_patcher import (
     generate_getter_setter_computed,
 )
 from .lifecycle_converter import convert_lifecycle_hooks, get_required_imports
-from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs
+from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs, rewrite_this_i18n_refs
 
 
 def _extract_section_body(mixin_source: str, section: str) -> str:
@@ -161,41 +162,40 @@ def generate_composable_from_mixin(
     methods_body = _extract_section_body(mixin_source, "methods")
     computed_body = _extract_section_body(mixin_source, "computed")
 
-    # Generate member declarations using section-aware extraction
-    decl_lines: list[str] = []
+    # Generate member declarations using section-aware extraction.
+    # Build separate lists for each section, then assemble in canonical order:
+    # refs -> computed -> methods -> watch
+    ref_lines: list[str] = []
+    computed_lines: list[str] = []
+    method_lines: list[str] = []
+    watch_lines: list[str] = []
 
     for name in mixin_members.data:
         default = _extract_data_default(mixin_source, name)
-        decl_lines.append(f"{indent}const {name} = ref({default})")
-
-    if mixin_members.data and (mixin_members.computed or mixin_members.methods or mixin_members.watch):
-        decl_lines.append("")
+        ref_lines.append(f"{indent}const {name} = ref({default})")
 
     for name in mixin_members.computed:
         body = _extract_func_body(computed_body, name) if computed_body else None
         if body and re.search(r'\bget\s*\(', body):
             gs = parse_getter_setter_computed(body)
             if gs:
-                decl_lines.append(generate_getter_setter_computed(name, gs, ref_members, plain_members, indent))
+                computed_lines.append(generate_getter_setter_computed(name, gs, ref_members, plain_members, indent))
             else:
-                decl_lines.append(f"{indent}const {name} = computed(() => null) // TODO: getter/setter computed — migrate manually")
+                computed_lines.append(f"{indent}const {name} = computed(() => null) // TODO: getter/setter computed — migrate manually")
         elif body:
             rewritten = rewrite_this_refs(body.strip(), ref_members, plain_members)
             rewritten_lines = rewritten.strip().splitlines()
             # Check if it's a single return statement (can use arrow shorthand)
             if len(rewritten_lines) == 1 and rewritten_lines[0].strip().startswith("return "):
                 expr = rewritten_lines[0].strip()[len("return "):].rstrip(";").strip()
-                decl_lines.append(f"{indent}const {name} = computed(() => {expr})")
+                computed_lines.append(f"{indent}const {name} = computed(() => {expr})")
             else:
                 # Multi-line body: use block form with proper indentation
                 inner = indent + indent
                 indented_body = f"\n{inner}" + f"\n{inner}".join(rewritten_lines) + f"\n{indent}"
-                decl_lines.append(f"{indent}const {name} = computed(() => {{{indented_body}}})")
+                computed_lines.append(f"{indent}const {name} = computed(() => {{{indented_body}}})")
         else:
-            decl_lines.append(f"{indent}const {name} = computed(() => null) // TODO: implement")
-
-    if mixin_members.computed and (mixin_members.methods or mixin_members.watch):
-        decl_lines.append("")
+            computed_lines.append(f"{indent}const {name} = computed(() => null) // TODO: implement")
 
     for name in mixin_members.methods:
         params = _extract_func_params(methods_body, name) if methods_body else ""
@@ -208,28 +208,33 @@ def generate_composable_from_mixin(
             inner = indent + indent
             body_lines = f"\n{inner}" + f"\n{inner}".join(rewritten.splitlines()) + f"\n{indent}"
             async_prefix = "async " if _is_async(methods_body, name) else ""
-            decl_lines.append(f"{indent}{async_prefix}function {name}({params}) {{{body_lines}}}")
+            method_lines.append(f"{indent}{async_prefix}function {name}({params}) {{{body_lines}}}")
         else:
-            decl_lines.append(f"{indent}function {name}({params}) {{}} // TODO: method body could not be extracted — implement manually")
+            method_lines.append(f"{indent}function {name}({params}) {{}} // TODO: method body could not be extracted — implement manually")
 
     # Validate all methods were generated (safety net for Issue #8)
-    generated_methods = {m for m in mixin_members.methods if any(f"function {m}(" in line for line in decl_lines)}
+    generated_methods = {m for m in mixin_members.methods if any(f"function {m}(" in line for line in method_lines)}
     missing_methods = set(mixin_members.methods) - generated_methods
     for m in missing_methods:
-        decl_lines.append(f"{indent}function {m}() {{}} // TODO: method missing from extraction — implement manually")
-
-    if mixin_members.methods and mixin_members.watch:
-        decl_lines.append("")
+        method_lines.append(f"{indent}function {m}() {{}} // TODO: method missing from extraction — implement manually")
 
     watch_section = _extract_watch_section_body(mixin_source)
     has_auto_watch = False
     for name in mixin_members.watch:
         entry = parse_watch_entry(watch_section, name) if watch_section else None
         if entry and not entry["complex"]:
-            decl_lines.append(generate_watch_call(name, entry, ref_members, plain_members, indent))
+            watch_lines.append(generate_watch_call(name, entry, ref_members, plain_members, indent))
             has_auto_watch = True
         else:
-            decl_lines.append(f"{indent}// watch: {name} — migrate manually")
+            watch_lines.append(f"{indent}// watch: {name} — migrate manually")
+
+    # Assemble decl_lines from sections in canonical order with uniform blank-line separators
+    decl_lines: list[str] = []
+    for section in [ref_lines, computed_lines, method_lines, watch_lines]:
+        if section:
+            if decl_lines and decl_lines[-1] != "":
+                decl_lines.append("")
+            decl_lines.extend(section)
 
     # Convert lifecycle hooks
     inline_lines, wrapped_lines = convert_lifecycle_hooks(
@@ -335,6 +340,9 @@ def generate_composable_from_mixin(
         if imp not in vue_imports:
             vue_imports.append(imp)
 
+    # Apply this.$t/$tc/$te/$d/$n auto-rewrites to useI18n() equivalents
+    body, i18n_functions = rewrite_this_i18n_refs(body)
+
     # Extract and filter non-Vue imports from the mixin source
     external_imports: list[str] = []
     if mixin_path is not None:
@@ -347,16 +355,29 @@ def generate_composable_from_mixin(
             for imp in used_imports
         ]
 
+    # If i18n functions are used, prepend destructuring to body and prepare import
+    i18n_import_line = ""
+    if i18n_functions:
+        sorted_fns = sorted(i18n_functions)
+        i18n_import_line = f"import {{ useI18n }} from 'vue-i18n'\n"
+        i18n_destructure = f"{indent}const {{ {', '.join(sorted_fns)} }} = useI18n()"
+        body = i18n_destructure + "\n\n" + body
+
     # Assemble full file
     import_line = (
-        f"import {{ {', '.join(vue_imports)} }} from 'vue'\n\n"
+        f"import {{ {', '.join(vue_imports)} }} from 'vue'\n"
         if vue_imports else ""
     )
+    if import_line and not i18n_import_line:
+        import_line += "\n"  # extra blank line before function when no i18n import
     external_block = "\n".join(external_imports) + "\n" if external_imports else ""
-    result = f"{external_block}{import_line}export function {fn_name}() {{\n{body}\n}}\n"
+    if i18n_import_line:
+        i18n_import_line += "\n"  # blank line after last import
+    result = f"{external_block}{import_line}{i18n_import_line}export function {fn_name}() {{\n{body}\n}}\n"
 
-    # Collect warnings and inject inline comments + confidence header
+    # Collect warnings and suppress those already resolved by the generated code
     warnings = collect_mixin_warnings(mixin_source, mixin_members, lifecycle_hooks)
+    warnings = suppress_resolved_warnings(warnings, [], result)
 
     # Add nested-lifecycle warnings from post-generation validation
     for msg in _nested_lifecycle_warnings:

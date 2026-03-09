@@ -160,6 +160,20 @@ Some patterns need human judgment. The tool doesn't silently skip them — it fl
 
 Each warning is injected as a comment directly in the generated code, so nothing gets lost.
 
+## How It Works
+
+Under the hood, the tool runs a **three-phase pipeline** — no files are modified until you confirm.
+
+**Phase 1 — Analyze.** For every `.vue` file in your project, the tool parses the `<script>` block, finds which mixins it uses, extracts the mixin's members (data, computed, methods, watch, lifecycle hooks), and searches for a matching composable (`authMixin` &rarr; `useAuth.js`). It then classifies each member: is it declared in the composable? Is it returned? Does the component override it? This classification determines whether the mixin is **ready** to migrate, or **blocked** (and why).
+
+**Phase 2 — Prepare composables.** Blocked entries get fixed automatically. If a composable is missing members, they're patched in. If no composable exists at all, one is generated from the mixin source — converting `data()` to `ref()`, `computed` to `computed()`, methods to plain functions, and lifecycle hooks to their Composition API equivalents. All `this.x` references are rewritten.
+
+**Phase 3 — Inject into components.** For each ready mixin, the tool removes the mixin import, removes it from the `mixins: [...]` array, adds the composable import, and injects a `setup()` function that destructures and returns the composable's members.
+
+Every change is collected as a plan object — original content paired with new content. The CLI shows you a unified diff of the full plan, and only writes files after you type `y`.
+
+For the full architectural deep-dive — parsing internals, data models, warning system, and module-by-module breakdown — see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Safety Features
 
 **Nothing changes until you confirm.** Every migration mode shows a complete change summary and asks for explicit `y/n` confirmation before writing any file.
@@ -173,7 +187,7 @@ Each warning is injected as a comment directly in the generated code, so nothing
 - **MEDIUM** — Has TODOs or warnings that need review
 - **LOW** — Remaining `this.` references or structural issues
 
-**Blocked status.** If a mixin can't be safely migrated (e.g., missing composable, incomplete coverage), the tool marks it as blocked and tells you exactly why — it never partially migrates and leaves broken code.
+**Blocked status.** If a mixin has structural issues — no matching composable, missing member declarations, or members not in the return statement — the tool marks it as blocked and tells you exactly why. Patterns that need manual attention (like `this.$emit` or `this.$router`) don't block migration — the tool proceeds and injects warning comments directly in the generated code so you know exactly what to fix.
 
 ## What It Supports
 

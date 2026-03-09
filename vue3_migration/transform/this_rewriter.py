@@ -339,3 +339,60 @@ def rewrite_this_dollar_refs(code: str) -> tuple[str, list[str]]:
         result = result[:start] + replacement + result[end:]
 
     return result, imports
+
+
+def rewrite_this_i18n_refs(code: str) -> tuple[str, set[str]]:
+    """Rewrite this.$t/tc/te/d/n patterns to composable equivalents.
+
+    Returns (rewritten_code, set_of_i18n_functions_used).
+    The caller must arrange for: import { useI18n } from 'vue-i18n'
+    and: const { t, te, ... } = useI18n()
+
+    Mapping:
+    - this.$t(   -> t(    (i18n function: t)
+    - this.$tc(  -> t(    (i18n function: t; $tc merged into t in vue-i18n v9)
+    - this.$te(  -> te(   (i18n function: te)
+    - this.$d(   -> d(    (i18n function: d)
+    - this.$n(   -> n(    (i18n function: n)
+    """
+    if not code:
+        return code, set()
+
+    # Mapping from Vue 2 pattern suffix to Vue 3 function name
+    i18n_map = {
+        '$t': 't',
+        '$tc': 't',
+        '$te': 'te',
+        '$d': 'd',
+        '$n': 'n',
+    }
+
+    used_functions: set[str] = set()
+
+    # Collect non-code spans so we only rewrite in actual code
+    non_code_spans = _collect_non_code_spans(code)
+
+    def _in_non_code(pos: int) -> bool:
+        return any(start <= pos < end for start, end in non_code_spans)
+
+    # Process replacements from end to start to preserve positions
+    replacements: list[tuple[int, int, str]] = []
+
+    # Match this.$t(, this.$tc(, this.$te(, this.$d(, this.$n(
+    # Use word boundary before 'this' and look for the opening paren
+    for m in re.finditer(r'this\.(\$t(?:c|e)?|\$[dn])\(', code):
+        if not _in_non_code(m.start()):
+            key = m.group(1)
+            func_name = i18n_map.get(key)
+            if func_name:
+                # Replace "this.$t(" with "t(" etc. — keep the opening paren
+                replacements.append((m.start(), m.end() - 1, func_name))
+                used_functions.add(func_name)
+
+    # Apply replacements from end to start
+    replacements.sort(key=lambda r: r[0], reverse=True)
+    result = code
+    for start, end, replacement in replacements:
+        result = result[:start] + replacement + result[end:]
+
+    return result, used_functions

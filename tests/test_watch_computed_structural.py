@@ -261,12 +261,32 @@ def test_watch_string_handler_auto_converted():
     assert "// watch: count" not in result
 
 
-def test_watch_quoted_key_produces_warning_comment():
-    """Quoted key watch → warning comment."""
-    # Note: quoted keys like 'nested.path' won't be extracted by extract_property_names
-    # because they use string keys, not identifiers. This is inherently handled.
-    # This test verifies that if somehow included, it would warn.
-    pass  # Quoted keys are naturally excluded from extraction
+def test_watch_quoted_key_extracted():
+    """Quoted key watch like 'nested.path' should be extracted by extract_mixin_members."""
+    result = extract_mixin_members(QUOTED_KEY_WATCH_MIXIN)
+    assert "nested.path" in result["watch"]
+
+
+def test_watch_dotted_key_generates_getter_function():
+    """Dotted watch key → watch(() => nested.value.path, ...)."""
+    members = MixinMembers(data=["nested"], watch=["nested.path"])
+    result = generate_composable_from_mixin(QUOTED_KEY_WATCH_MIXIN, "testMixin", members, [])
+    assert "watch(() => nested.value.path" in result
+    assert "(val) =>" in result
+    assert "console.log(val)" in result
+
+
+def test_watch_dotted_key_not_in_return():
+    """Dotted watch key should NOT appear in the return statement."""
+    members = MixinMembers(data=["nested"], watch=["nested.path"])
+    result = generate_composable_from_mixin(QUOTED_KEY_WATCH_MIXIN, "testMixin", members, [])
+    # 'nested' should be returned, but 'nested.path' should not
+    assert "nested" in result
+    # The return statement should not contain 'nested.path'
+    import re as _re
+    return_m = _re.search(r'return\s*\{([^}]*)\}', result)
+    assert return_m is not None
+    assert "nested.path" not in return_m.group(1)
 
 
 # ── Step 2b: Watch auto-conversion (composable_patcher) ──────────────────────
@@ -724,3 +744,75 @@ def test_handler_func_expr_generates_watch_call():
     assert "watch(searchQuery" in result
     assert "{ immediate: true }" in result
     assert "// watch: searchQuery" not in result
+
+
+# ── Dotted watch key edge cases ───────────────────────────────────────────────
+
+MIXED_WATCH_MIXIN = """
+export default {
+  data() {
+    return {
+      count: 0,
+      nested: { path: '' },
+    }
+  },
+  watch: {
+    count(val) {
+      console.log(val)
+    },
+    'nested.path': function(val) {
+      console.log('nested changed', val)
+    },
+  },
+}
+"""
+
+
+def test_mixed_dotted_and_regular_watch_extraction():
+    """Both regular and dotted watch keys should be extracted."""
+    result = extract_mixin_members(MIXED_WATCH_MIXIN)
+    assert "count" in result["watch"]
+    assert "nested.path" in result["watch"]
+
+
+def test_mixed_dotted_and_regular_watch_generation():
+    """Both regular and dotted watch keys should generate correct watch calls."""
+    members = MixinMembers(data=["count", "nested"], watch=["count", "nested.path"])
+    result = generate_composable_from_mixin(MIXED_WATCH_MIXIN, "testMixin", members, [])
+    # Regular watch key
+    assert "watch(count" in result
+    # Dotted watch key with getter
+    assert "watch(() => nested.value.path" in result
+
+
+def test_patcher_dotted_watch_generates_getter():
+    """generate_member_declaration for dotted watch key should produce getter form."""
+    mixin_src = QUOTED_KEY_WATCH_MIXIN
+    members = MixinMembers(data=["nested"], watch=["nested.path"])
+    ref_members = ["nested"]
+    plain_members: list[str] = []
+    result = generate_member_declaration("nested.path", mixin_src, members, ref_members, plain_members)
+    assert "watch(() => nested.value.path" in result
+    assert "console.log(val)" in result
+
+
+def test_dotted_watch_double_quoted_key():
+    """Double-quoted dotted watch key should also be extracted and converted."""
+    src = '''
+export default {
+  data() {
+    return { form: { name: '' } }
+  },
+  watch: {
+    "form.name"(val) {
+      console.log(val)
+    },
+  },
+}
+'''
+    result = extract_mixin_members(src)
+    assert "form.name" in result["watch"]
+
+    members = MixinMembers(data=["form"], watch=["form.name"])
+    output = generate_composable_from_mixin(src, "testMixin", members, [])
+    assert "watch(() => form.value.name" in output

@@ -21,10 +21,10 @@ from ..core.mixin_analyzer import (
     extract_lifecycle_hooks, extract_mixin_members,
     find_external_this_refs,
 )
-from ..core.warning_collector import collect_mixin_warnings, detect_name_collisions
+from ..core.warning_collector import collect_mixin_warnings, detect_name_collisions, suppress_resolved_warnings
 from ..models import (
     ComposableCoverage, FileChange, MigrationConfig, MigrationPlan, MigrationStatus,
-    MixinEntry, MixinMembers,
+    MigrationWarning, MixinEntry, MixinMembers,
 )
 from ..transform.composable_generator import (
     generate_composable_from_mixin, mixin_stem_to_composable_name,
@@ -100,6 +100,19 @@ def _analyze_mixin_silent(
     mixin_warnings = collect_mixin_warnings(mixin_source, members, hooks)
     for w in mixin_warnings:
         w.mixin_stem = entry.mixin_stem
+        w.source_context = "mixin"
+
+    # Suppress warnings already resolved by the composable
+    if entry.composable:
+        comp_source = read_source(entry.composable.file_path)
+        mixin_warnings = suppress_resolved_warnings(
+            mixin_warnings,
+            entry.composable.declared_identifiers,
+            comp_source,
+        )
+        resolved_names = set(entry.composable.declared_identifiers)
+        entry.external_deps = [d for d in entry.external_deps if d not in resolved_names]
+
     entry.warnings = mixin_warnings
 
     entry.compute_status()
@@ -362,6 +375,7 @@ def plan_component_injections(
             if collision_warnings:
                 for w in collision_warnings:
                     w.mixin_stem = "cross-composable"
+                    w.source_context = "component"
                 ready_entries[0].warnings.extend(collision_warnings)
 
         # Detect data()/setup() name collisions (Issues #14, #20)
@@ -389,6 +403,7 @@ def plan_component_injections(
                             ),
                             line_hint=None,
                             severity="warning",
+                            source_context="component",
                         ))
 
         # Pre-compute which entries will produce a composable call.
@@ -449,6 +464,7 @@ def plan_component_injections(
                         ),
                         line_hint=None,
                         severity="info",
+                        source_context="component",
                     ))
             else:
                 # Entry won't produce a composable call — keep the mixin.
@@ -470,6 +486,7 @@ def plan_component_injections(
                             ),
                             line_hint=None,
                             severity="warning",
+                            source_context="component",
                         ))
                     else:
                         entry.warnings.append(MigrationWarning(
@@ -485,6 +502,7 @@ def plan_component_injections(
                             ),
                             line_hint=None,
                             severity="warning",
+                            source_context="component",
                         ))
                 else:
                     overridden_names = ", ".join(
@@ -504,6 +522,7 @@ def plan_component_injections(
                         ),
                         line_hint=None,
                         severity="info",
+                        source_context="component",
                     ))
 
         content = comp_source
@@ -633,6 +652,65 @@ def _find_standalone_mixin_stems(
     return standalone
 
 
+def _warn_unused_mixin_members(
+    entries_by_component: list[tuple[Path, list[MixinEntry]]],
+) -> None:
+    """Attach warnings for mixin members not used by any component.
+
+    Groups entries by mixin_stem, unions all used_members across components,
+    and compares against members.all_names to find globally unused members.
+    Standalone entries (Path("<standalone>")) are skipped.
+    """
+    # Group entries by mixin_stem, excluding standalone entries
+    by_stem: dict[str, list[MixinEntry]] = {}
+    for comp_path, entry_list in entries_by_component:
+        if comp_path == Path("<standalone>"):
+            continue
+        for entry in entry_list:
+            by_stem.setdefault(entry.mixin_stem, []).append(entry)
+
+    for stem, stem_entries in by_stem.items():
+        # Union of used_members across all components for this mixin
+        all_used: set[str] = set()
+        for entry in stem_entries:
+            all_used.update(entry.used_members)
+
+        # Use the first entry's members as the canonical definition
+        members = stem_entries[0].members
+        all_defined = members.all_names
+        unused = [name for name in all_defined if name not in all_used]
+
+        if not unused:
+            continue
+
+        # Build a section lookup for readable messages
+        section_map: dict[str, str] = {}
+        for name in members.data:
+            section_map[name] = "data"
+        for name in members.computed:
+            section_map[name] = "computed"
+        for name in members.methods:
+            section_map[name] = "methods"
+        for name in members.watch:
+            section_map[name] = "watch"
+
+        warnings = []
+        for name in unused:
+            section = section_map.get(name, "unknown")
+            warnings.append(MigrationWarning(
+                mixin_stem=stem,
+                category="unused-mixin-member",
+                message=f"'{name}' ({section}) defined in mixin but not used by any component",
+                action_required=f"Review whether '{name}' is needed; remove from composable if unused",
+                line_hint=None,
+                severity="info",
+            ))
+
+        # Attach warnings to every entry for this mixin
+        for entry in stem_entries:
+            entry.warnings.extend(warnings)
+
+
 def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     """Main entry point: scan, plan composable patches, plan component injections.
 
@@ -645,6 +723,8 @@ def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     for stem in _find_standalone_mixin_stems(project_root, config, known_stems):
         standalone = _build_standalone_mixin_entry(stem, project_root)
         entries.extend(standalone)
+
+    _warn_unused_mixin_members(entries)
 
     composable_changes = _build_all_composable_changes(entries, project_root, config)
     component_changes = plan_component_injections(entries, composable_changes, config)
@@ -719,6 +799,19 @@ def _build_standalone_mixin_entry(
     mixin_warnings = collect_mixin_warnings(mixin_source, members, hooks)
     for w in mixin_warnings:
         w.mixin_stem = entry.mixin_stem
+        w.source_context = "mixin"
+
+    # Suppress warnings already resolved by the composable
+    if entry.composable:
+        comp_source = read_source(entry.composable.file_path)
+        mixin_warnings = suppress_resolved_warnings(
+            mixin_warnings,
+            entry.composable.declared_identifiers,
+            comp_source,
+        )
+        resolved_names = set(entry.composable.declared_identifiers)
+        entry.external_deps = [d for d in entry.external_deps if d not in resolved_names]
+
     entry.warnings = mixin_warnings
     entry.compute_status()
 
@@ -772,6 +865,10 @@ def run_scoped(
         if not any_composable_work:
             standalone = _build_standalone_mixin_entry(mixin_stem, project_root)
             entries.extend(standalone)
+
+    # Use all_entries for unused-member analysis so the union of used_members
+    # spans every component in the project, not just the scoped subset.
+    _warn_unused_mixin_members(all_entries)
 
     composable_changes = _build_all_composable_changes(entries, project_root, config)
     component_changes = plan_component_injections(entries, composable_changes, config)

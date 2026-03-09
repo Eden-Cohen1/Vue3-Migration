@@ -6,7 +6,7 @@ import os
 import re
 from pathlib import Path
 
-from .js_parser import extract_brace_block, extract_property_names, skip_non_code
+from .js_parser import extract_brace_block, extract_property_names, skip_non_code, strip_comments
 
 VUE_LIFECYCLE_HOOKS = [
     "beforeCreate", "created", "beforeMount", "mounted",
@@ -216,8 +216,9 @@ def filter_imports_by_usage(imports: list[dict], code: str) -> list[dict]:
     match 'itemCount').
     """
     used = []
+    stripped = strip_comments(code)
     for imp in imports:
-        if any(re.search(rf"\b{re.escape(name)}\b", code) for name in imp["identifiers"]):
+        if any(re.search(rf"\b{re.escape(name)}\b", stripped) for name in imp["identifiers"]):
             used.append(imp)
     return used
 
