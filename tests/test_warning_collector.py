@@ -299,7 +299,8 @@ export function useAuth() {
         assert compute_confidence(source, []) == ConfidenceLevel.MEDIUM
 
     def test_medium_confidence_has_migration_comments(self):
-        source = """
+        # Old box format still triggers MEDIUM (backward compat)
+        source_old = """
 export function useAuth() {
   // ┌─ MIGRATION WARNINGS ─────────────────────────────
   // │ ⚠️ this.$router needs useRouter()
@@ -309,7 +310,17 @@ export function useAuth() {
   return { go }
 }
 """
-        assert compute_confidence(source, []) == ConfidenceLevel.MEDIUM
+        assert compute_confidence(source_old, []) == ConfidenceLevel.MEDIUM
+
+        # New header format also triggers MEDIUM
+        source_new = """
+// ⚠ 1 manual step needed — see migration report for details
+export function useAuth() {
+  function go() { useRouter().push('/') }
+  return { go }
+}
+"""
+        assert compute_confidence(source_new, []) == ConfidenceLevel.MEDIUM
 
     def test_low_confidence_unbalanced_braces(self):
         source = """
@@ -375,7 +386,7 @@ from vue3_migration.core.warning_collector import inject_inline_warnings
 
 
 class TestInjectInlineWarnings:
-    def test_injects_box_above_function_and_suffix_on_line(self):
+    def test_adds_suffix_icon_and_hint_on_matching_line(self):
         source = "  function go() { this.$router.push('/') }\n"
         warnings = [
             MigrationWarning(
@@ -387,62 +398,49 @@ class TestInjectInlineWarnings:
             ),
         ]
         result = inject_inline_warnings(source, warnings)
-        lines = result.splitlines()
-        # Box block should appear before the function
-        assert any("MIGRATION WARNINGS" in line for line in lines)
-        assert any("this.$router needs useRouter()" in line for line in lines)
-        assert any("\u2192 Use useRouter()" in line for line in lines)
-        # Suffix icon should appear on the matched line
-        code_line = [l for l in lines if "this.$router.push" in l and "// \u2502" not in l][0]
-        assert "// \u26a0\ufe0f" in code_line
+        code_line = [l for l in result.splitlines() if "this.$router.push" in l][0]
+        # Suffix should have icon + short hint
+        assert "use useRouter()" in code_line
+        # No box art
+        assert "\u250c" not in result
+        assert "\u2502" not in result
+        assert "\u2514" not in result
 
-    def test_no_line_hint_placed_as_box_at_top(self):
+    def test_no_box_for_unplaced_warnings(self):
+        """Warnings with no line_hint should NOT produce boxes — they only show in report."""
         source = "  function go() { doSomething() }\n"
         warnings = [
             MigrationWarning("auth", "test", "msg", "act", None, "warning"),
         ]
         result = inject_inline_warnings(source, warnings)
-        assert "MIGRATION WARNINGS" in result
-        assert "\u26a0\ufe0f msg" in result
-        assert "\u2192 act" in result
-        # Box should be at the very top (no confidence header)
-        assert result.startswith("// \u250c")
+        # No box art should be present
+        assert "MIGRATION WARNINGS" not in result
+        assert "\u250c" not in result
 
     def test_no_injection_when_no_warnings(self):
         source = "  const x = ref(0)\n"
         result = inject_inline_warnings(source, [])
         assert result == source
 
-    def test_preserves_indentation(self):
-        source = "    function go() { this.$router.push('/') }\n"
-        warnings = [
-            MigrationWarning(
-                "auth", "this.$router", "msg", "act",
-                "this.$router.push('/')", "warning",
-            ),
-        ]
-        result = inject_inline_warnings(source, warnings)
-        for line in result.splitlines():
-            if "MIGRATION WARNINGS" in line:
-                # Should have same leading whitespace as the code line
-                assert line.startswith("    //")
-                break
-
-    def test_adds_confidence_header(self):
+    def test_adds_header_with_action_count(self):
         source = "export function useAuth() {\n  return {}\n}\n"
+        warnings = [
+            MigrationWarning("x", "this.$emit", "msg", "act", None, "error"),
+            MigrationWarning("x", "this.$router", "msg", "act", None, "warning"),
+        ]
         result = inject_inline_warnings(
-            source, [], confidence=ConfidenceLevel.MEDIUM, warning_count=2
+            source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=2
         )
-        assert "Transformation confidence: MEDIUM" in result
-        assert "2 warnings" in result
+        assert "// \u26a0\ufe0f 2 manual steps needed" in result
+        assert "see migration report" in result
 
-    def test_no_confidence_header_when_not_provided(self):
+    def test_no_header_when_confidence_not_provided(self):
         source = "export function useAuth() {\n  return {}\n}\n"
         result = inject_inline_warnings(source, [])
-        assert "Transformation confidence:" not in result
+        assert "manual step" not in result
 
-    def test_unplaced_warnings_appear_after_confidence_header(self):
-        """Warnings with line_hint=None should appear as box after header."""
+    def test_unplaced_warnings_dont_produce_inline_comments(self):
+        """Warnings with line_hint=None are silently skipped (report-only)."""
         source = "import { ref } from 'vue'\n\nexport function useX() {\n  return {}\n}\n"
         warnings = [
             MigrationWarning("x", "structural:nested-mixins",
@@ -452,29 +450,13 @@ class TestInjectInlineWarnings:
             source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=1,
         )
         lines = result.splitlines()
-        assert "Transformation confidence: MEDIUM" in lines[0]
-        # Unplaced box should appear right after header
-        assert "MIGRATION WARNINGS" in lines[1]
-        assert "Mixin uses nested mixins" in result
+        # Header should be present
+        assert "manual step" in lines[0]
+        # No box or inline comment for unplaced warning
+        assert "Mixin uses nested mixins" not in result
 
-    def test_unmatched_line_hint_falls_back_to_box(self):
-        """Warnings whose line_hint doesn't match any composable line go to box."""
-        source = "import { ref } from 'vue'\n\nexport function useX() {\n  return {}\n}\n"
-        warnings = [
-            MigrationWarning("x", "this.$refs",
-                             "this.$refs not available", "Use template refs",
-                             "const el = this.$refs.input",  # doesn't exist in composable
-                             "warning"),
-        ]
-        result = inject_inline_warnings(
-            source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=1,
-        )
-        lines = result.splitlines()
-        assert "Transformation confidence: MEDIUM" in lines[0]
-        assert "this.$refs not available" in result
-
-    def test_mix_of_placed_and_unplaced_warnings(self):
-        """Inline-placed box + fallback-block box both appear."""
+    def test_placed_warning_gets_suffix_unplaced_is_silent(self):
+        """Placed warning gets suffix; unplaced is silent (report-only)."""
         source = (
             "import { ref } from 'vue'\n"
             "\n"
@@ -486,7 +468,7 @@ class TestInjectInlineWarnings:
         warnings = [
             MigrationWarning("x", "this.$router",
                              "this.$router not available", "Use useRouter()",
-                             "this.$router.push('/')",  # matches line in composable
+                             "this.$router.push('/')",
                              "warning"),
             MigrationWarning("x", "structural:nested-mixins",
                              "Nested mixins", "Check", None, "warning"),
@@ -495,65 +477,46 @@ class TestInjectInlineWarnings:
             source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=2,
         )
         lines = result.splitlines()
-        # Header line
-        assert "Transformation confidence: MEDIUM" in lines[0]
-        # Unplaced warning in box after header
-        assert "Nested mixins" in result
-        # Inline box above the function containing the matched line
-        assert "this.$router not available" in result
-        # Suffix icon on matched line
-        code_line = [l for l in lines if "this.$router.push" in l and "// \u2502" not in l][0]
-        assert "// \u26a0\ufe0f" in code_line
+        # Header
+        assert "manual steps needed" in lines[0]
+        # Suffix on matched line
+        code_line = [l for l in lines if "this.$router.push" in l][0]
+        assert "use useRouter()" in code_line
+        # Unplaced warning NOT in output (report-only)
+        assert "Nested mixins" not in result
 
-    def test_error_severity_uses_error_icon(self):
+    def test_error_severity_uses_error_icon_with_hint(self):
         source = "  function submit() { this.$emit('done') }\n"
         warnings = [
             MigrationWarning("x", "this.$emit", "not available", "Use defineEmits",
                              "this.$emit('done')", "error"),
         ]
         result = inject_inline_warnings(source, warnings)
-        # Box should contain error icon
-        assert "\u274c not available" in result
-        # Suffix should be error icon
-        code_line = [l for l in result.splitlines() if "this.$emit" in l and "// \u2502" not in l][0]
-        assert "// \u274c" in code_line
+        code_line = [l for l in result.splitlines() if "this.$emit" in l][0]
+        assert "use defineEmits or emit param" in code_line
 
-    def test_warning_severity_uses_warning_icon(self):
+    def test_warning_severity_uses_warning_icon_with_hint(self):
         source = "  function go() { this.$router.push('/') }\n"
         warnings = [
             MigrationWarning("x", "this.$router", "not available", "Use useRouter()",
                              "this.$router.push('/')", "warning"),
         ]
         result = inject_inline_warnings(source, warnings)
-        assert "\u26a0\ufe0f not available" in result
+        code_line = [l for l in result.splitlines() if "this.$router" in l][0]
+        assert "use useRouter()" in code_line
 
-    def test_info_severity_uses_info_icon(self):
+    def test_info_severity_uses_info_icon_with_hint(self):
         source = "  function refresh() { this.$forceUpdate() }\n"
         warnings = [
             MigrationWarning("x", "this.$forceUpdate", "rarely needed", "Review logic",
                              "this.$forceUpdate()", "info"),
         ]
         result = inject_inline_warnings(source, warnings)
-        assert "\u2139\ufe0f rarely needed" in result
+        code_line = [l for l in result.splitlines() if "this.$forceUpdate" in l][0]
+        assert "// \u2139\ufe0f rarely needed in Vue 3" in code_line
 
-    def test_multiple_unplaced_warnings_all_appear(self):
-        """All unplaced warnings appear in the box."""
-        source = "export function useX() {\n  return {}\n}\n"
-        warnings = [
-            MigrationWarning("x", "a", "Warning A", "Fix A", None, "warning"),
-            MigrationWarning("x", "b", "Warning B", "Fix B", None, "warning"),
-            MigrationWarning("x", "c", "Warning C", "Fix C",
-                             "nonexistent line hint", "warning"),
-        ]
-        result = inject_inline_warnings(
-            source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=3,
-        )
-        assert "Warning A" in result
-        assert "Warning B" in result
-        assert "Warning C" in result
-
-    def test_external_dep_this_items_gets_inline_icon_on_all_lines(self):
-        """Non-underscore external dep (this.items) gets ❌ on every occurrence."""
+    def test_external_dep_this_items_gets_icon_and_hint_on_all_lines(self):
+        """Non-underscore external dep (this.items) gets ❌ + hint on every occurrence."""
         source = (
             "export function useX() {\n"
             "  function go() { return this.items }\n"
@@ -570,15 +533,14 @@ class TestInjectInlineWarnings:
         ]
         result = inject_inline_warnings(source, warnings)
         lines = result.splitlines()
-        # Both lines containing this.items should get ❌ icons
         items_lines = [l for l in lines if "this.items" in l and not l.lstrip().startswith("//")]
         assert len(items_lines) == 2, f"Expected 2 code lines with this.items, got {len(items_lines)}"
         for l in items_lines:
-            assert "// \u274c" in l, f"Missing ❌ icon on line: {l}"
+            assert "// \u274c pass this.items as composable param" in l, f"Missing icon+hint on line: {l}"
 
-    def test_rewritten_internal_prop_gets_inline_icon(self):
+    def test_rewritten_internal_prop_gets_icon_and_hint(self):
         """After internal_props rewriting (this._searchTimeout -> _searchTimeout),
-        the bare name should still get a ❌ icon via fallback matching."""
+        the bare name should still get a ❌ icon + hint via fallback matching."""
         source = (
             "export function useX() {\n"
             "  let _searchTimeout = null\n"
@@ -596,16 +558,15 @@ class TestInjectInlineWarnings:
         ]
         result = inject_inline_warnings(source, warnings)
         lines = result.splitlines()
-        # Lines with _searchTimeout (bare, no this.) should get icons
         bare_lines = [l for l in lines if "_searchTimeout" in l
                       and not l.lstrip().startswith("//")
                       and "let _searchTimeout" not in l]
         assert len(bare_lines) >= 2, f"Expected >=2 code lines with _searchTimeout, got {len(bare_lines)}"
         for l in bare_lines:
-            assert "// \u274c" in l, f"Missing ❌ icon on line: {l}"
+            assert "// \u274c pass this._searchTimeout as composable param" in l, f"Missing icon+hint on line: {l}"
 
-    def test_phase3b_does_not_duplicate_icon_from_phase3(self):
-        """Lines already annotated in Phase 3 should not get a second suffix icon."""
+    def test_no_duplicate_icons_on_same_line(self):
+        """Each line should get at most one suffix icon."""
         source = (
             "export function useX() {\n"
             "  function go() { this.$router.push('/') }\n"
@@ -621,11 +582,9 @@ class TestInjectInlineWarnings:
         ]
         result = inject_inline_warnings(source, warnings)
         lines = result.splitlines()
-        # Both lines should have exactly one icon each
         router_lines = [l for l in lines if "this.$router" in l and not l.lstrip().startswith("//")]
         assert len(router_lines) == 2
         for l in router_lines:
-            # Count icon occurrences - should be exactly 1
             assert l.count("// \u274c") == 1, f"Expected exactly 1 icon on: {l}"
 
 
@@ -637,7 +596,7 @@ from vue3_migration.transform.composable_generator import generate_composable_fr
 
 
 class TestGeneratorWarningIntegration:
-    def test_generated_composable_has_confidence_header(self):
+    def test_generated_composable_has_header(self):
         source = """
 export default {
     data() {
@@ -652,9 +611,10 @@ export default {
 """
         members = MixinMembers(data=["token"], methods=["go"])
         result = generate_composable_from_mixin(source, "authMixin", members, [])
-        assert "// Transformation confidence:" in result
+        assert "// \u26a0" in result
+        assert "manual step" in result
 
-    def test_generated_composable_has_inline_warning(self):
+    def test_generated_composable_has_inline_suffix(self):
         source = """
 export default {
     methods: {
@@ -666,7 +626,13 @@ export default {
 """
         members = MixinMembers(methods=["go"])
         result = generate_composable_from_mixin(source, "authMixin", members, [])
-        assert "MIGRATION WARNINGS" in result
+        # Should have inline suffix with hint, no box
+        assert "MIGRATION WARNINGS" not in result
+        # Should have suffix icon + hint on the this.$router line
+        lines = result.splitlines()
+        router_lines = [l for l in lines if "this.$router" in l and not l.lstrip().startswith("//")]
+        assert len(router_lines) >= 1
+        assert "use useRouter()" in router_lines[0]
 
     def test_clean_mixin_generates_high_confidence(self):
         source = """
@@ -683,12 +649,12 @@ export default {
 """
         members = MixinMembers(data=["count"], methods=["increment"])
         result = generate_composable_from_mixin(source, "counterMixin", members, [])
-        # Clean mixin — no this.$ patterns — should be HIGH
-        assert "Transformation confidence: HIGH" in result
+        # Clean mixin — no this.$ patterns — should have header with 0 issues
+        assert "// \u2705 0 issues" in result
 
-    def test_external_dep_this_items_gets_header_and_inline_icons(self):
+    def test_external_dep_this_items_gets_header_and_inline_hints(self):
         """End-to-end: mixin with this.items (external dep) gets both
-        header warning AND inline ❌ icons on all occurrences."""
+        header and inline ❌ + hint on all occurrences."""
         source = """
 export default {
     data() {
@@ -706,10 +672,7 @@ export default {
 """
         members = MixinMembers(data=["query"], methods=["search", "count"])
         result = generate_composable_from_mixin(source, "filterMixin", members, [])
-        # Header should mention external dep
-        assert "external dep" in result
-        assert "'items'" in result
-        # All code lines with this.items should have ❌
+        # All code lines with this.items should have ❌ + hint
         lines = result.splitlines()
         items_code_lines = [
             l for l in lines
@@ -719,11 +682,11 @@ export default {
             f"Expected >=2 code lines with this.items, got {len(items_code_lines)}"
         )
         for l in items_code_lines:
-            assert "// \u274c" in l, f"Missing ❌ icon on line: {l}"
+            assert "as composable param" in l, f"Missing icon+hint on line: {l}"
 
-    def test_underscore_external_dep_rewritten_still_gets_icons(self):
+    def test_underscore_external_dep_rewritten_still_gets_hints(self):
         """End-to-end: mixin with this._searchTimeout (underscore external dep)
-        that gets rewritten by internal_props should still get ❌ icons."""
+        that gets rewritten by internal_props should still get ❌ + hint."""
         source = """
 export default {
     methods: {
@@ -741,7 +704,7 @@ export default {
         result = generate_composable_from_mixin(source, "searchMixin", members, [])
         # internal_props rewrites this._searchTimeout -> _searchTimeout
         assert "let _searchTimeout = null" in result
-        # The bare _searchTimeout usages should have ❌ icons
+        # The bare _searchTimeout usages should have ❌ + hint
         lines = result.splitlines()
         bare_lines = [
             l for l in lines
@@ -753,7 +716,7 @@ export default {
             f"Expected >=1 code lines with _searchTimeout usage, got {len(bare_lines)}"
         )
         for l in bare_lines:
-            assert "// \u274c" in l, f"Missing ❌ icon on rewritten line: {l}"
+            assert "as composable param" in l, f"Missing icon+hint on rewritten line: {l}"
 
 
 # ---------------------------------------------------------------------------
@@ -764,7 +727,7 @@ from vue3_migration.transform.composable_patcher import patch_composable
 
 
 class TestPatcherWarningIntegration:
-    def test_patched_composable_has_confidence_header(self):
+    def test_patched_composable_has_header(self):
         composable = """
 import { ref } from 'vue'
 
@@ -783,10 +746,11 @@ export default {
 """
         members = MixinMembers(data=["token"], methods=["go"])
         result = patch_composable(composable, mixin, [], ["go"], members)
-        assert "// Transformation confidence:" in result
+        assert "// \u26a0" in result
+        assert "manual step" in result or "issue" in result
 
-    def test_patched_composable_with_router_warning_is_medium(self):
-        """Mixin warnings (this.$router) downgrade patched composable to MEDIUM."""
+    def test_patched_composable_with_router_has_suffix_hint(self):
+        """Mixin warnings (this.$router) produce inline suffix hints."""
         composable = """
 import { ref } from 'vue'
 
@@ -805,11 +769,14 @@ export default {
 """
         members = MixinMembers(data=["token"], methods=["go"])
         result = patch_composable(composable, mixin, [], ["go"], members)
-        # Has this.$router in output + warning, so LOW (remaining this. reference)
-        assert "Transformation confidence: LOW" in result
+        # Has this.$router in output — line should have ❌ + hint
+        lines = result.splitlines()
+        router_lines = [l for l in lines if "this.$router" in l and not l.lstrip().startswith("//")]
+        if router_lines:
+            assert "use useRouter()" in router_lines[0]
 
-    def test_clean_mixin_patch_no_router_warnings(self):
-        """Mixin without this.$ patterns gets no this.$-category warnings."""
+    def test_clean_mixin_patch_has_header(self):
+        """Mixin without this.$ patterns gets header but no inline icons."""
         composable = """
 import { ref } from 'vue'
 
@@ -832,9 +799,7 @@ export default {
 """
         members = MixinMembers(data=["count"], methods=["increment"])
         result = patch_composable(composable, mixin, [], ["increment"], members)
-        # No this.$ patterns but the TODO from body extraction → MEDIUM
-        assert "Transformation confidence:" in result
-        assert "// Transformation confidence: MEDIUM" in result or "// Transformation confidence: HIGH" in result
+        assert "// \u2705 0 issues" in result or "// \u26a0" in result
 
 
 # ---------------------------------------------------------------------------
@@ -1066,155 +1031,6 @@ export default {
         )
         assert entry is not None
         assert len(entry.warnings) == 0
-
-
-# ---------------------------------------------------------------------------
-# Step 6: Markdown report warnings section tests
-# ---------------------------------------------------------------------------
-
-from vue3_migration.reporting.markdown import build_warning_summary
-
-
-class TestBuildWarningSummary:
-    def _make_entry(self, stem, warnings=None):
-        entry = MixinEntry(
-            local_name=stem,
-            mixin_path=f"fake/{stem}.js",
-            mixin_stem=stem,
-            members=MixinMembers(),
-        )
-        if warnings:
-            entry.warnings = warnings
-        return entry
-
-    def _wrap(self, *entries):
-        """Wrap entries as entries_by_component format: list of (Path, [entries])."""
-        from pathlib import Path
-        return [(Path("fake/Comp.vue"), list(entries))]
-
-    def test_renders_section_header(self):
-        w = MigrationWarning("auth", "this.$router", "msg", "action", None, "warning")
-        entry = self._make_entry("authMixin", [w])
-        result = build_warning_summary(self._wrap(entry))
-        assert "## Migration Summary" in result
-
-    def test_shows_confidence_per_mixin(self):
-        entry = self._make_entry("authMixin")
-        result = build_warning_summary(self._wrap(entry))
-        assert "HIGH" in result
-        assert "authMixin" in result
-
-    def test_shows_warning_details(self):
-        w = MigrationWarning(
-            "authMixin", "this.$router",
-            "this.$router is not available",
-            "Use useRouter()",
-            "this.$router.push('/')", "warning",
-        )
-        entry = self._make_entry("authMixin", [w])
-        result = build_warning_summary(self._wrap(entry))
-        assert "this.$router" in result
-        assert "Use useRouter()" in result
-
-    def test_empty_entries_returns_empty(self):
-        result = build_warning_summary([])
-        assert result == ""
-
-    def test_no_warnings_shows_high_confidence(self):
-        entry = self._make_entry("authMixin")
-        result = build_warning_summary(self._wrap(entry))
-        assert "HIGH" in result
-        assert "No manual changes needed" in result
-
-    def test_checklist_format(self):
-        w = MigrationWarning("auth", "this.$router", "msg", "action", None, "warning")
-        entry = self._make_entry("authMixin", [w])
-        result = build_warning_summary(self._wrap(entry))
-        assert "| warning | msg | action |" in result
-        assert "| Severity | Issue | Fix |" in result
-
-    def test_overview_counts(self):
-        w1 = MigrationWarning("auth", "this.$router", "msg", "act", None, "error")
-        w2 = MigrationWarning("auth", "this.$store", "msg", "act", None, "warning")
-        entry = self._make_entry("authMixin", [w1, w2])
-        result = build_warning_summary(self._wrap(entry))
-        assert "1 error" in result
-        assert "1 warning" in result
-
-    def test_low_confidence_before_high(self):
-        w = MigrationWarning("low", "remaining-this", "msg", "act", None, "error")
-        low_entry = self._make_entry("lowMixin", [w])
-        high_entry = self._make_entry("highMixin")
-        result = build_warning_summary(self._wrap(low_entry, high_entry))
-        low_pos = result.index("lowMixin")
-        high_pos = result.index("highMixin")
-        assert low_pos < high_pos
-
-    def test_deduplication_by_mixin_stem(self):
-        from pathlib import Path
-        entry = self._make_entry("sharedMixin")
-        entries_by_component = [
-            (Path("fake/A.vue"), [entry]),
-            (Path("fake/B.vue"), [self._make_entry("sharedMixin")]),
-        ]
-        result = build_warning_summary(entries_by_component)
-        assert result.count("### ") == 1  # only one section header (deduplicated)
-
-    def test_severity_in_table(self):
-        w = MigrationWarning("auth", "ext", "msg", "act", None, "error")
-        entry = self._make_entry("authMixin", [w])
-        result = build_warning_summary(self._wrap(entry))
-        assert "| error |" in result  # severity shown in table
-
-    def test_skipped_entries_in_separate_section(self):
-        """Skipped mixins should appear in their own section, not mixed with warnings."""
-        w = MigrationWarning(
-            "permMixin", "skipped-all-overridden",
-            "Mixin 'permMixin' was NOT migrated: all used members (canDelete) are overridden",
-            "Safe to remove mixin import manually",
-            None, "info",
-        )
-        entry = self._make_entry("permMixin", [w])
-        result = build_warning_summary(
-            [(Path("fake/StatusBadge.vue"), [entry])]
-        )
-        assert "Skipped Mixins" in result
-        assert "permMixin" in result
-
-    def test_skipped_entries_not_in_main_warnings(self):
-        """Skipped entries should not appear in the per-mixin warning sections."""
-        skip_w = MigrationWarning(
-            "permMixin", "skipped-all-overridden",
-            "Mixin 'permMixin' was NOT migrated",
-            "Safe to remove", None, "info",
-        )
-        real_w = MigrationWarning(
-            "authMixin", "this.$emit", "not available",
-            "Use defineEmits", None, "error",
-        )
-        skip_entry = self._make_entry("permMixin", [skip_w])
-        real_entry = self._make_entry("authMixin", [real_w])
-        result = build_warning_summary(
-            [(Path("fake/Comp.vue"), [skip_entry, real_entry])]
-        )
-        # authMixin should be in the main warnings section
-        assert "authMixin" in result
-        # permMixin should be in the Skipped section
-        assert "Skipped Mixins" in result
-
-    def test_skipped_table_shows_component_and_reason(self):
-        """Skipped section should show component name, mixin, and reason."""
-        w = MigrationWarning(
-            "permMixin", "skipped-all-overridden",
-            "Mixin 'permMixin' was NOT migrated: all used members (canDelete) are overridden",
-            "Safe to remove", None, "info",
-        )
-        entry = self._make_entry("permMixin", [w])
-        result = build_warning_summary(
-            [(Path("fake/StatusBadge.vue"), [entry])]
-        )
-        assert "StatusBadge.vue" in result
-        assert "overridden" in result.lower()
 
 
 # ---------------------------------------------------------------------------

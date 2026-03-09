@@ -135,7 +135,7 @@ def _show_change_summary(plan, project_root: Path) -> None:
 
 def _apply_plan(plan, project_root: Path) -> None:
     """Write all changed files and save a diff markdown report."""
-    from .reporting.diff import write_diff_report
+    from .reporting.diff import write_migration_report
 
     written: list[Path] = []
     try:
@@ -160,7 +160,7 @@ def _apply_plan(plan, project_root: Path) -> None:
         print(f"  Run: git checkout . to undo all changes.")
         raise
 
-    report_path = write_diff_report(plan, project_root)
+    report_path = write_migration_report(plan, project_root)
     print(f"\n  {bold('Done.')} Diff report: {dim(str(report_path.name))}")
     print(f"  Review changes: git diff")
 

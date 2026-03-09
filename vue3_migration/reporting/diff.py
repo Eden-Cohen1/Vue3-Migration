@@ -6,9 +6,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from ..models import ConfidenceLevel, FileChange, MigrationPlan
-from .markdown import build_checklist, build_per_component_index, build_warning_summary
-from ..core.warning_collector import compute_confidence
+from ..models import FileChange, MigrationPlan
+from .markdown import build_action_plan, build_recipes_section
 from .terminal import bold, dim, green
 
 
@@ -172,17 +171,11 @@ def format_change_list(plan: MigrationPlan, project_root: Path) -> str:
     return "\n".join(lines)
 
 
-def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
-    """Write a full unified diff to a markdown file. Returns the file path."""
+def write_migration_report(plan: MigrationPlan, project_root: Path) -> Path:
+    """Write a migration report with recipes + action plan. Returns the file path."""
     now = datetime.now()
     timestamp = now.strftime("%Y%m%d-%H%M%S")
-    report_path = project_root / f"migration-diff-{timestamp}.md"
-
-    def _rel(path: Path) -> str:
-        try:
-            return str(path.relative_to(project_root))
-        except ValueError:
-            return str(path)
+    report_path = project_root / f"migration-report-{timestamp}.md"
 
     # Count totals for header
     all_changes = [c for c in (plan.composable_changes + plan.component_changes) if c.has_changes]
@@ -206,89 +199,37 @@ def write_diff_report(plan: MigrationPlan, project_root: Path) -> Path:
             _header_parts.append(f"{_ic} info")
 
     sections: list[str] = [
-        "# Migration Diff Report",
+        "# Migration Report",
         "",
         f"`{now.strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {' \u00b7 '.join(_header_parts)}",
+        "",
+        "> Use `git diff` to review the actual code changes.",
         "",
         "---",
         "",
     ]
 
-    # Build confidence map for per-component index
-    confidence_map: dict[str, ConfidenceLevel] = {}
-
-    # Prepend warning summary before diffs
     if plan.entries_by_component:
-        # Build composable content map for confidence computation
-        composable_content_map: dict = {}
-        if plan.composable_changes:
-            for change in plan.composable_changes:
-                if change.has_changes:
-                    composable_content_map[change.file_path] = change.new_content
-
-        # Compute confidence for per-component index
-        seen: set[str] = set()
-        for _cp, entry_list in plan.entries_by_component:
-            for entry in entry_list:
-                if entry.mixin_stem in seen:
-                    continue
-                seen.add(entry.mixin_stem)
-                comp_source = ""
-                if entry.composable and entry.composable.file_path in composable_content_map:
-                    comp_source = composable_content_map[entry.composable.file_path]
-                if comp_source:
-                    confidence_map[entry.mixin_stem] = compute_confidence(comp_source, entry.warnings)
-                elif any(w.severity == "error" for w in entry.warnings):
-                    confidence_map[entry.mixin_stem] = ConfidenceLevel.LOW
-                elif entry.warnings:
-                    confidence_map[entry.mixin_stem] = ConfidenceLevel.MEDIUM
-                else:
-                    confidence_map[entry.mixin_stem] = ConfidenceLevel.HIGH
-
-        summary = build_warning_summary(plan.entries_by_component, plan.composable_changes, project_root)
-        if summary:
-            sections.append(summary)
+        # Section 1: Migration Recipes
+        recipes = build_recipes_section(plan.entries_by_component)
+        if recipes:
+            sections.append(recipes)
             sections.append("")
 
-        # Per-component index
-        comp_index = build_per_component_index(
-            plan.entries_by_component, confidence_map, project_root
+        # Section 2: Action Plan
+        action_plan = build_action_plan(
+            plan.entries_by_component, plan.composable_changes, project_root
         )
-        if comp_index:
-            sections.append(comp_index)
+        if action_plan:
+            sections.append(action_plan)
             sections.append("")
-
-    # Diffs
-    for change in all_changes:
-        rel = _rel(change.file_path)
-        sections.append(f"## `{rel}`")
-        sections.append("")
-        if not change.original_content.strip():
-            sections.append("**New file**")
-            sections.append("")
-            sections.append("```javascript")
-            sections.append(change.new_content.rstrip())
-            sections.append("```")
-        else:
-            diff_lines = difflib.unified_diff(
-                change.original_content.splitlines(keepends=True),
-                change.new_content.splitlines(keepends=True),
-                fromfile=f"a/{rel}",
-                tofile=f"b/{rel}",
-            )
-            sections.append("```diff")
-            sections.append("".join(diff_lines).rstrip())
-            sections.append("```")
-        sections.append("")
-
-    # Actionable checklist at the end
-    if plan.entries_by_component:
-        checklist = build_checklist(plan.entries_by_component)
-        if checklist:
-            sections.append(checklist)
 
     report_path.write_text("\n".join(sections), encoding="utf-8")
     return report_path
+
+
+# Backward-compatible alias
+write_diff_report = write_migration_report
 
 
 # ---------------------------------------------------------------------------

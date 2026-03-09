@@ -697,8 +697,11 @@ export default {
     # _searchTimeout should be declared as a let variable
     assert "let _searchTimeout = null" in result
     # this._searchTimeout should be rewritten to _searchTimeout in actual code
-    # (warning comments may still reference this._searchTimeout, so only check code lines)
+    # (warning comments may still reference this._searchTimeout, so only check code lines
+    #  and strip inline suffix comments like "// ❌ pass this._searchTimeout as composable param")
+    import re as _re
     code_lines = [line for line in result.splitlines() if not line.strip().startswith("//")]
+    code_lines = [_re.sub(r"\s+//\s*[\u274c\u26a0\u2139]\ufe0f?.*$", "", l) for l in code_lines]
     code_text = "\n".join(code_lines)
     assert "this._searchTimeout" not in code_text
     assert "_searchTimeout" in result

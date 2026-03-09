@@ -10,7 +10,13 @@ from vue3_migration.models import (
     MixinMembers,
 )
 from vue3_migration.models import ConfidenceLevel, MigrationWarning
-from vue3_migration.reporting.markdown import build_audit_report, build_checklist, build_component_report, build_per_component_index
+from vue3_migration.reporting.markdown import (
+    build_action_plan,
+    build_audit_report,
+    build_component_report,
+    build_per_component_index,
+    build_recipes_section,
+)
 
 FIXTURES = Path(__file__).parent / "fixtures" / "dummy_project"
 PROJECT_ROOT = FIXTURES
@@ -352,7 +358,7 @@ class TestBuildPerComponentIndex:
         assert "B.vue" in result
 
 
-class TestBuildChecklist:
+class TestBuildActionPlan:
     def test_renders_section_header(self):
         w = MigrationWarning("auth", "this.$emit", "not available", "Fix it", None, "error")
         entry = MixinEntry(
@@ -360,25 +366,43 @@ class TestBuildChecklist:
             mixin_stem="authMixin", members=MixinMembers(),
         )
         entry.warnings = [w]
-        result = build_checklist([(Path("fake/Comp.vue"), [entry])])
-        assert "## Migration Checklist" in result
+        result = build_action_plan([(Path("fake/Comp.vue"), [entry])])
+        assert "## Action Plan" in result
 
-    def test_groups_by_severity(self):
-        w1 = MigrationWarning("auth", "this.$emit", "msg", "act", None, "error")
-        w2 = MigrationWarning("auth", "this.$router", "msg", "act", None, "warning")
-        w3 = MigrationWarning("auth", "this.$forceUpdate", "msg", "act", None, "info")
+    def test_tiers_by_severity(self):
+        """Errors go to design decisions, warnings go to drop-in fixes."""
+        w_err = MigrationWarning("auth", "this.$emit", "msg", "act", None, "error")
+        w_warn = MigrationWarning("router", "this.$router", "msg", "act", None, "warning")
+        entry_err = MixinEntry(
+            local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            mixin_stem="authMixin", members=MixinMembers(),
+        )
+        entry_err.warnings = [w_err]
+        entry_warn = MixinEntry(
+            local_name="routerMixin", mixin_path=FIXTURES / "src/mixins/routerMixin.js",
+            mixin_stem="routerMixin", members=MixinMembers(),
+        )
+        entry_warn.warnings = [w_warn]
+        result = build_action_plan([
+            (Path("fake/A.vue"), [entry_err]),
+            (Path("fake/B.vue"), [entry_warn]),
+        ])
+        assert "Design decisions" in result or "design" in result.lower()
+        assert "Drop-in fixes" in result or "drop-in" in result.lower()
+
+    def test_quick_wins_for_clean_entries(self):
+        """Entries with only info warnings go to quick wins."""
+        w = MigrationWarning("auth", "unused-mixin-member", "msg", "act", None, "info")
         entry = MixinEntry(
             local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
             mixin_stem="authMixin", members=MixinMembers(),
         )
-        entry.warnings = [w1, w2, w3]
-        result = build_checklist([(Path("fake/Comp.vue"), [entry])])
-        assert "Blockers" in result
-        assert "Manual Fixes" in result or "manual" in result.lower()
-        assert "Advisory" in result or "advisory" in result.lower()
+        entry.warnings = [w]
+        result = build_action_plan([(Path("fake/Comp.vue"), [entry])])
+        assert "Quick Wins" in result or "quick win" in result.lower()
 
     def test_empty_entries_returns_empty(self):
-        result = build_checklist([])
+        result = build_action_plan([])
         assert result == ""
 
     def test_summary_tallies(self):
@@ -389,16 +413,65 @@ class TestBuildChecklist:
             mixin_stem="authMixin", members=MixinMembers(),
         )
         entry.warnings = [w1, w2]
-        result = build_checklist([(Path("fake/Comp.vue"), [entry])])
-        assert "2" in result or "this.$" in result
+        result = build_action_plan([(Path("fake/Comp.vue"), [entry])])
+        assert "2" in result  # 2 blockers
 
-    def test_no_warnings_no_checklist(self):
+    def test_no_warnings_still_shows_quick_wins(self):
+        """Entries with no warnings appear as quick wins in the action plan."""
         entry = MixinEntry(
             local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
             mixin_stem="authMixin", members=MixinMembers(),
         )
-        result = build_checklist([(Path("fake/Comp.vue"), [entry])])
+        result = build_action_plan([(Path("fake/Comp.vue"), [entry])])
+        assert "Quick Wins" in result
+
+    def test_recipe_links_in_steps(self):
+        """Steps should link to recipes when available."""
+        w = MigrationWarning("auth", "this.$router", "not available", "Use useRouter()", None, "warning")
+        entry = MixinEntry(
+            local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            mixin_stem="authMixin", members=MixinMembers(),
+        )
+        entry.warnings = [w]
+        result = build_action_plan([(Path("fake/Comp.vue"), [entry])])
+        assert "see recipe" in result
+        assert "#recipe-" in result
+
+
+class TestBuildRecipesSection:
+    def test_renders_recipes_for_present_categories(self):
+        w = MigrationWarning("auth", "this.$router", "msg", "act", None, "warning")
+        entry = MixinEntry(
+            local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            mixin_stem="authMixin", members=MixinMembers(),
+        )
+        entry.warnings = [w]
+        result = build_recipes_section([(Path("fake/Comp.vue"), [entry])])
+        assert "## Migration Recipes" in result
+        assert "useRouter()" in result
+        assert "```js" in result
+
+    def test_no_recipes_for_empty_warnings(self):
+        entry = MixinEntry(
+            local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            mixin_stem="authMixin", members=MixinMembers(),
+        )
+        result = build_recipes_section([(Path("fake/Comp.vue"), [entry])])
         assert result == ""
+
+    def test_deduplicates_alias_categories(self):
+        """this.$off should map to same recipe as this.$on."""
+        w1 = MigrationWarning("auth", "this.$on", "msg", "act", None, "warning")
+        w2 = MigrationWarning("auth", "this.$off", "msg", "act", None, "warning")
+        entry = MixinEntry(
+            local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
+            mixin_stem="authMixin", members=MixinMembers(),
+        )
+        entry.warnings = [w1, w2]
+        result = build_recipes_section([(Path("fake/Comp.vue"), [entry])])
+        # Should only have one recipe heading for event bus, not two
+        assert result.count("event bus") >= 1
+        assert result.count("## Migration Recipes") == 1
 
 
 class TestBuildAuditReportWarnings:

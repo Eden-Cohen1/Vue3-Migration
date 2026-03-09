@@ -192,7 +192,7 @@ class TestExternalDepWarningsInComposable:
         result = generate_composable_from_mixin(
             MIXIN_WITH_EXTERNAL_DEPS, "commentMixin", members, hooks,
         )
-        assert "external dep" in result
+        assert "as composable param" in result
         assert "entityId" in result
 
     def test_generated_composable_confidence_is_low(self):
@@ -203,7 +203,7 @@ class TestExternalDepWarningsInComposable:
         result = generate_composable_from_mixin(
             MIXIN_WITH_EXTERNAL_DEPS, "commentMixin", members, hooks,
         )
-        assert "LOW" in result
+        assert "manual step" in result  # header indicates manual steps needed
 
     def test_no_warning_for_mixin_without_external_deps(self):
         """Clean mixin should not have external-dep warnings."""

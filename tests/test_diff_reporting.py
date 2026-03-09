@@ -4,7 +4,7 @@ import pytest
 from vue3_migration.models import (
     FileChange, MigrationPlan, MigrationWarning, MixinEntry, MixinMembers,
 )
-from vue3_migration.reporting.diff import format_change_list, write_diff_report
+from vue3_migration.reporting.diff import format_change_list, write_migration_report
 
 
 def _change(path, original, new):
@@ -79,29 +79,31 @@ def test_skips_unchanged_files():
     assert "useTable.js" not in out
 
 
-def test_write_diff_report_creates_md_file(tmp_path):
+def test_write_migration_report_creates_md_file(tmp_path):
     original = "export function useTable() {\n  return {}\n}"
     new = "export function useTable() {\n  const data = ref([])\n  return { data }\n}"
     change = _change(str(tmp_path / "useTable.js"), original, new)
     plan = MigrationPlan(composable_changes=[change], component_changes=[])
 
-    report_path = write_diff_report(plan, tmp_path)
+    report_path = write_migration_report(plan, tmp_path)
 
     assert report_path.exists()
+    assert "migration-report-" in report_path.name
     content = report_path.read_text()
-    assert "useTable.js" in content
-    assert "```diff" in content
+    assert "# Migration Report" in content
 
 
-def test_write_diff_report_new_file_uses_code_block(tmp_path):
-    change = _change(str(tmp_path / "useAuth.js"), "", "export function useAuth() { return {} }")
+def test_write_migration_report_no_diffs(tmp_path):
+    """Report should NOT contain diff sections — developers use git diff."""
+    original = "export function useTable() {\n  return {}\n}"
+    new = "export function useTable() {\n  const data = ref([])\n  return { data }\n}"
+    change = _change(str(tmp_path / "useTable.js"), original, new)
     plan = MigrationPlan(composable_changes=[change], component_changes=[])
 
-    report_path = write_diff_report(plan, tmp_path)
-
+    report_path = write_migration_report(plan, tmp_path)
     content = report_path.read_text()
-    assert "New file" in content
-    assert "```javascript" in content
+    assert "```diff" not in content
+    assert "```javascript" not in content
 
 
 def test_no_false_positive_for_existing_ref():
@@ -117,8 +119,8 @@ def test_no_false_positive_for_existing_ref():
     assert "tableData" not in out  # already existed, should not appear
 
 
-def test_diff_report_has_checklist_at_end(tmp_path):
-    """Diff report should include a checklist section at the bottom."""
+def test_report_has_action_plan(tmp_path):
+    """Report should include an action plan section."""
     change = _change(str(tmp_path / "useAuth.js"), "", "export function useAuth() { return {} }")
     w = MigrationWarning("authMixin", "this.$emit", "not available", "Fix it", None, "error")
     entry = MixinEntry(
@@ -133,39 +135,13 @@ def test_diff_report_has_checklist_at_end(tmp_path):
         component_changes=[],
         entries_by_component=[(Path("fake/Comp.vue"), [entry])],
     )
-    report_path = write_diff_report(plan, tmp_path)
+    report_path = write_migration_report(plan, tmp_path)
     content = report_path.read_text(encoding="utf-8")
-    assert "Migration Checklist" in content
-    # Checklist should be AFTER the diffs
-    if "```diff" in content or "```javascript" in content:
-        last_code_block = max(content.rfind("```diff"), content.rfind("```javascript"))
-        checklist_pos = content.index("Migration Checklist")
-        assert checklist_pos > last_code_block
+    assert "## Action Plan" in content
 
 
-def test_diff_report_has_per_component_index(tmp_path):
-    """Diff report should include a per-component index section."""
-    change = _change(str(tmp_path / "useAuth.js"), "", "export function useAuth() { return {} }")
-    w = MigrationWarning("authMixin", "this.$router", "not available", "Use useRouter()", None, "warning")
-    entry = MixinEntry(
-        local_name="authMixin",
-        mixin_path="fake/authMixin.js",
-        mixin_stem="authMixin",
-        members=MixinMembers(),
-    )
-    entry.warnings = [w]
-    plan = MigrationPlan(
-        composable_changes=[change],
-        component_changes=[],
-        entries_by_component=[(Path("fake/Comp.vue"), [entry])],
-    )
-    report_path = write_diff_report(plan, tmp_path)
-    content = report_path.read_text(encoding="utf-8")
-    assert "Per-Component Guide" in content
-
-
-def test_write_diff_report_includes_warning_summary(tmp_path):
-    """When entries_by_component has warnings, the summary appears before diffs."""
+def test_report_has_recipes_section(tmp_path):
+    """When warnings exist, the report includes migration recipes."""
     change = _change(str(tmp_path / "useAuth.js"), "", "export function useAuth() { return {} }")
     w = MigrationWarning("authMixin", "this.$router", "not available", "Use useRouter()", None, "warning")
     entry = MixinEntry(
@@ -181,13 +157,37 @@ def test_write_diff_report_includes_warning_summary(tmp_path):
         entries_by_component=[(Path("fake/Comp.vue"), [entry])],
     )
 
-    report_path = write_diff_report(plan, tmp_path)
+    report_path = write_migration_report(plan, tmp_path)
     content = report_path.read_text(encoding="utf-8")
 
-    assert "## Migration Summary" in content
-    assert "this.$router" in content
-    assert "Use useRouter()" in content
-    # Summary should appear before the diff
-    summary_pos = content.index("## Migration Summary")
-    diff_pos = content.index("## `")
-    assert summary_pos < diff_pos
+    assert "## Migration Recipes" in content
+    assert "useRouter()" in content
+    # Recipes should appear before Action Plan
+    recipes_pos = content.index("## Migration Recipes")
+    action_pos = content.index("## Action Plan")
+    assert recipes_pos < action_pos
+
+
+def test_report_section_order(tmp_path):
+    """Verify section order: Recipes → Action Plan."""
+    change = _change(str(tmp_path / "useAuth.js"), "", "export function useAuth() { return {} }")
+    w = MigrationWarning("authMixin", "this.$router", "not available", "Use useRouter()", None, "warning")
+    entry = MixinEntry(
+        local_name="authMixin",
+        mixin_path="fake/authMixin.js",
+        mixin_stem="authMixin",
+        members=MixinMembers(),
+    )
+    entry.warnings = [w]
+    plan = MigrationPlan(
+        composable_changes=[change],
+        component_changes=[],
+        entries_by_component=[(Path("fake/Comp.vue"), [entry])],
+    )
+
+    report_path = write_migration_report(plan, tmp_path)
+    content = report_path.read_text(encoding="utf-8")
+
+    recipes_pos = content.index("## Migration Recipes")
+    action_pos = content.index("## Action Plan")
+    assert recipes_pos < action_pos

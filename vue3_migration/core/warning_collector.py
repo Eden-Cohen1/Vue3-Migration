@@ -263,7 +263,7 @@ def compute_confidence(
     if re.search(r"//\s*TODO\b", composable_source):
         return ConfidenceLevel.MEDIUM
 
-    if "MIGRATION WARNINGS" in composable_source:
+    if "MIGRATION WARNINGS" in composable_source or "manual step" in composable_source:
         return ConfidenceLevel.MEDIUM
 
     # Check for warnings (MEDIUM)
@@ -280,7 +280,8 @@ _OLD_INLINE_RE = re.compile(
 )
 _BOX_LINE_RE = re.compile(r"^\s*//\s*[\u250c\u2502\u2514]")
 _CONFIDENCE_RE = re.compile(r"^//\s*Transformation confidence:")
-_SUFFIX_ICON_RE = re.compile(r"\s+//\s*[\u274c\u26a0\u2139]\ufe0f?\s*$")
+_HEADER_RE = re.compile(r"^//\s*[\u26a0\u2705]\ufe0f?\s*(?:\d+\s+(?:manual step|issue|advisory note)|0 issues)")
+_SUFFIX_ICON_RE = re.compile(r"\s+//\s*[\u274c\u26a0\u2139]\ufe0f?(?:\s+\S.*)?\s*$")
 
 
 def _strip_old_inline_warnings(source: str) -> str:
@@ -294,6 +295,8 @@ def _strip_old_inline_warnings(source: str) -> str:
         if _BOX_LINE_RE.match(stripped):
             continue
         if _CONFIDENCE_RE.match(stripped):
+            continue
+        if _HEADER_RE.match(stripped):
             continue
         # Remove suffix icons from code lines
         cleaned = _SUFFIX_ICON_RE.sub("", stripped)
@@ -312,35 +315,54 @@ _INLINE_ICON = {
 
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 
-_FUNC_RE = re.compile(
-    r"^\s*(?:async\s+)?function\s+\w+|^\s*const\s+\w+\s*=\s*(?:async\s*)?\("
-)
+# Short hints for inline suffix comments (icon + hint on the code line itself)
+_SHORT_HINT: dict[str, str] = {
+    "this.$emit": "not available in composable — use defineEmits or emit param",
+    "this.$refs": "not available in composable — use template refs",
+    "this.$on": "removed in Vue 3 — use event bus or provide/inject",
+    "this.$off": "removed in Vue 3 — use event bus or provide/inject",
+    "this.$once": "removed in Vue 3 — use event bus or provide/inject",
+    "this.$el": "not available in composable — use template ref on root",
+    "this.$parent": "not available in composable — use provide/inject",
+    "this.$children": "removed in Vue 3 — use template refs",
+    "this.$listeners": "removed in Vue 3 — merged into $attrs",
+    "this.$router": "not available in composable — use useRouter()",
+    "this.$route": "not available in composable — use useRoute()",
+    "this.$store": "not available in composable — use Pinia store",
+    "this.$t": "not available in composable — use useI18n()",
+    "this.$tc": "not available in composable — use useI18n()",
+    "this.$te": "not available in composable — use useI18n()",
+    "this.$d": "not available in composable — use useI18n()",
+    "this.$n": "not available in composable — use useI18n()",
+    "this.$attrs": "not available in composable — use useAttrs()",
+    "this.$slots": "not available in composable — use useSlots()",
+    "this.$watch": "not available in composable — use watch() from vue",
+    "this.$forceUpdate": "rarely needed in Vue 3",
+    "this-alias": "this alias won't work — replace with direct refs",
+    "mixin-option:props": "mixin props — use defineProps() in component",
+    "mixin-option:inject": "mixin inject — use inject() from vue",
+    "mixin-option:provide": "mixin provide — use provide() from vue",
+    "mixin-option:filters": "filters removed in Vue 3 — convert to functions",
+    "mixin-option:directives": "mixin directives — register in component",
+    "mixin-option:model": "mixin model — use modelValue + update:modelValue",
+}
 
 
-def _find_containing_function(lines: list[str], line_idx: int) -> int:
-    """Scan backward from *line_idx* to find the nearest function declaration."""
-    for i in range(line_idx, -1, -1):
-        if _FUNC_RE.match(lines[i]):
-            return i
-    return line_idx
-
-
-def _build_warning_box(
-    warnings_with_lines: list[tuple[MigrationWarning, int]],
-    indent: str,
-) -> str:
-    """Build a box-style warning block (open right — emoji widths render
-    inconsistently across editors/terminals so right border is omitted)."""
-    box = [f"{indent}// \u250c\u2500 MIGRATION WARNINGS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n"]
-    for w, _ in warnings_with_lines:
-        icon = _INLINE_ICON.get(w.severity, "\u26a0\ufe0f")
-        # Use only the first line of the message (guard against embedded newlines)
-        msg = w.message.split("\n")[0]
-        box.append(f"{indent}// \u2502 {icon} {msg}\n")
-        if w.action_required:
-            box.append(f"{indent}// \u2502    \u2192 {w.action_required}\n")
-    box.append(f"{indent}// \u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n")
-    return "".join(box)
+def _get_short_hint(warning: MigrationWarning) -> str:
+    """Get a short hint for inline suffix from a warning."""
+    # External-dependency: include the member name for specificity
+    if warning.category == "external-dependency":
+        m = re.match(r"'(\w+)'", warning.message)
+        member = f"this.{m.group(1)}" if m else "external dep"
+        return f"pass {member} as composable param"
+    hint = _SHORT_HINT.get(warning.category)
+    if hint:
+        return hint
+    # Fallback: truncate action_required to ~30 chars
+    action = warning.action_required
+    if len(action) > 35:
+        return action[:32] + "..."
+    return action
 
 
 def inject_inline_warnings(
@@ -351,140 +373,74 @@ def inject_inline_warnings(
 ) -> str:
     """Inject inline warning comments into generated composable source.
 
-    For each warning with a line_hint, finds the first matching line and:
-    1. Groups all warnings by their containing function
-    2. Inserts a box-style warning block above each function
-    3. Adds a severity suffix icon on the matched line
+    Adds a severity icon + short hint suffix on every line matching a warning
+    pattern (e.g. ``this.$emit('done')  // ❌ use defineEmits or emit param``).
 
-    Warnings that cannot be placed inline (no line_hint or no matching line)
-    are collected and inserted as a box block after the confidence header.
-
-    Optionally prepends a confidence header comment at the top.
+    Optionally prepends a header with action count at the top.
     """
     # Strip any existing inline warnings from previous runs
     source = _strip_old_inline_warnings(source)
 
+    # Build header: count of error+warning severity (not info)
     if confidence is not None:
-        header = f"// Transformation confidence: {confidence.value} ({warning_count} warnings \u2014 see migration report)\n"
+        actionable = sum(1 for w in warnings if w.severity in ("error", "warning"))
+        if actionable:
+            header = f"// \u26a0\ufe0f {actionable} manual step{'s' if actionable != 1 else ''} needed \u2014 see migration report for details\n"
+        elif warning_count:
+            header = f"// \u26a0\ufe0f {warning_count} advisory note{'s' if warning_count != 1 else ''} \u2014 see migration report for details\n"
+        else:
+            header = "// \u2705 0 issues \u2014 all mixin members have composable equivalents\n"
         source = header + source
+
+    if not warnings:
+        return source
 
     lines = source.splitlines(keepends=True)
 
-    # Phase 1: Match warnings to source lines
-    placed: list[tuple[MigrationWarning, int]] = []
-    unplaced: list[MigrationWarning] = []
+    # Build pattern→(severity, hint) map for suffix annotation
+    # For this.$ categories: use the category itself as the pattern
+    # For external-dependency: use "this.<name>" as the pattern
+    pattern_info: dict[str, tuple[str, str]] = {}  # pat -> (severity, hint)
+    pattern_fallbacks: dict[str, str] = {}  # pat -> bare fallback name
 
-    for w in warnings:
-        if not w.line_hint:
-            unplaced.append(w)
-            continue
-        matched = None
-        # Try exact line_hint match on code lines first
-        for i, line in enumerate(lines):
-            if w.line_hint in line and not line.lstrip().startswith("//"):
-                matched = i
-                break
-        # Fallback: match using the category (e.g. "this.$emit") on code lines
-        if matched is None and w.category.startswith("this.$"):
-            for i, line in enumerate(lines):
-                if w.category in line and not line.lstrip().startswith("//"):
-                    matched = i
-                    break
-        if matched is None:
-            unplaced.append(w)
-        else:
-            placed.append((w, matched))
-
-    # Phase 2: Group placed warnings by containing function
-    func_groups: dict[int, list[tuple[MigrationWarning, int]]] = {}
-    for w, matched_idx in placed:
-        func_idx = _find_containing_function(lines, matched_idx)
-        func_groups.setdefault(func_idx, []).append((w, matched_idx))
-
-    # Phase 3: Add suffix icons on matched lines (best severity per line)
-    line_severity: dict[int, str] = {}
-    for w, matched_idx in placed:
-        current = line_severity.get(matched_idx)
-        if current is None or _SEVERITY_ORDER.get(w.severity, 2) < _SEVERITY_ORDER.get(current, 2):
-            line_severity[matched_idx] = w.severity
-
-    for line_idx, severity in line_severity.items():
-        icon = _INLINE_ICON.get(severity, "\u26a0\ufe0f")
-        line = lines[line_idx]
-        lines[line_idx] = line.rstrip("\n") + f"  // {icon}\n"
-
-    # Phase 3b: Add suffix icons on ALL lines matching a warning category,
-    # not just the first matched line.  This ensures every this.$emit, this.$router,
-    # external deps (this.entityId), etc. gets a visible ❌ even if it didn't get
-    # its own warning box.
-    category_severity: dict[str, str] = {}
-    # Pattern to match in source lines: for this.$ categories use the category
-    # itself (e.g. "this.$emit"); for external-dependency use "this.<name>".
-    # Also store fallback patterns for names that may have had `this.` stripped
-    # by internal_props rewriting (e.g. this._searchTimeout -> _searchTimeout).
-    category_fallbacks: dict[str, str] = {}  # pat -> bare fallback name
     for w in warnings:
         if w.category.startswith("this.$"):
             pat = w.category
         elif w.category == "external-dependency":
-            # Extract the dep name from the message: "'entityId' — external dep..."
             m = re.match(r"'(\w+)'", w.message)
             if m:
                 dep_name = m.group(1)
                 pat = f"this.{dep_name}"
-                # For underscore-prefixed names, internal_props rewriting strips
-                # `this.` — add a bare-name fallback so we can still find them.
                 if dep_name.startswith("_"):
-                    category_fallbacks[pat] = dep_name
+                    pattern_fallbacks[pat] = dep_name
             else:
-                pat = None
+                continue
         else:
-            pat = None
-        if pat:
-            cur = category_severity.get(pat)
-            if cur is None or _SEVERITY_ORDER.get(w.severity, 2) < _SEVERITY_ORDER.get(cur, 2):
-                category_severity[pat] = w.severity
+            continue
+
+        cur = pattern_info.get(pat)
+        if cur is None or _SEVERITY_ORDER.get(w.severity, 2) < _SEVERITY_ORDER.get(cur[0], 2):
+            pattern_info[pat] = (w.severity, _get_short_hint(w))
+
+    # Annotate every code line that matches a warning pattern
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         if stripped.startswith("//"):
             continue
-        # Skip lines that already have a suffix icon (from Phase 3 or earlier 3b match)
         if _SUFFIX_ICON_RE.search(line):
             continue
-        for pat, sev in category_severity.items():
+        for pat, (sev, hint) in pattern_info.items():
             matched = pat in line
-            # Fallback: for rewritten internal props, try bare name with word boundary
-            if not matched and pat in category_fallbacks:
-                bare = category_fallbacks[pat]
+            if not matched and pat in pattern_fallbacks:
+                bare = pattern_fallbacks[pat]
                 if re.search(rf'\b{re.escape(bare)}\b', line):
                     matched = True
             if matched:
                 icon = _INLINE_ICON.get(sev, "\u26a0\ufe0f")
-                lines[i] = line.rstrip("\n") + f"  // {icon}\n"
+                lines[i] = line.rstrip("\n") + f"  // {icon} {hint}\n"
                 break
 
-    # Phase 4: Insert box blocks above functions (bottom to top to preserve indices)
-    for func_idx in sorted(func_groups.keys(), reverse=True):
-        group = func_groups[func_idx]
-        indent = lines[func_idx][: len(lines[func_idx]) - len(lines[func_idx].lstrip())]
-        box = _build_warning_box(group, indent)
-        # Add blank line before box if previous line is not already blank
-        if func_idx > 0 and lines[func_idx - 1].strip():
-            box = "\n" + box
-        lines.insert(func_idx, box)
-
-    source = "".join(lines)
-
-    # Phase 5: Place unplaced warnings as box block
-    if unplaced:
-        box = _build_warning_box([(w, -1) for w in unplaced], "")
-        if confidence is not None:
-            idx = source.index("\n") + 1
-            source = source[:idx] + box + source[idx:]
-        else:
-            source = box + source
-
-    return source
+    return "".join(lines)
 
 
 def post_generation_check(composable_source: str) -> list[MigrationWarning]:
