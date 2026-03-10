@@ -434,7 +434,7 @@ class TestBuildActionPlan:
         )
         entry.warnings = [w]
         result = build_action_plan([(Path("fake/Comp.vue"), [entry])])
-        assert "see recipe" in result
+        assert "see how" in result
         assert "#recipe-" in result
 
 

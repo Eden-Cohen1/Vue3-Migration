@@ -490,7 +490,7 @@ def _recipe_link(category: str) -> str:
     if key not in _MIGRATION_RECIPES:
         return ""
     anchor = key.replace("$", "").replace(".", "").replace(":", "-").replace("/", "-")
-    return f"[see recipe](#recipe-{anchor})"
+    return f"[see how](#recipe-{anchor})"
 
 
 def _rel_link(path: "Path | str", project_root: Path, label: str | None = None) -> str:
