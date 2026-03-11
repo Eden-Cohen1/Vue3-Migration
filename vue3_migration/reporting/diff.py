@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..models import FileChange, MigrationPlan
-from .markdown import build_action_plan, build_recipes_section
+from .markdown import build_action_plan, build_recipes_section, build_summary_section
 from .terminal import bold, dim, green
 
 
@@ -210,10 +210,10 @@ def write_migration_report(plan: MigrationPlan, project_root: Path) -> Path:
     ]
 
     if plan.entries_by_component:
-        # Section 1: Migration Recipes
-        recipes = build_recipes_section(plan.entries_by_component)
-        if recipes:
-            sections.append(recipes)
+        # Section 1: Summary (enhanced, at the top)
+        summary = build_summary_section(plan.entries_by_component)
+        if summary:
+            sections.append(summary)
             sections.append("")
 
         # Section 2: Action Plan
@@ -222,6 +222,12 @@ def write_migration_report(plan: MigrationPlan, project_root: Path) -> Path:
         )
         if action_plan:
             sections.append(action_plan)
+            sections.append("")
+
+        # Section 3: Migration Patterns (reference, at the end)
+        patterns = build_recipes_section(plan.entries_by_component)
+        if patterns:
+            sections.append(patterns)
             sections.append("")
 
     report_path.write_text("\n".join(sections), encoding="utf-8")

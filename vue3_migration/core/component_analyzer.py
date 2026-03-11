@@ -48,10 +48,13 @@ def find_used_members(component_source: str, member_names: list[str]) -> list[st
     Uses word-boundary regex to avoid partial matches.
     """
     sections = []
-    for tag in ("script", "template"):
-        tag_match = re.search(rf"<{tag}[^>]*>(.*)</{tag}>", component_source, re.DOTALL)
-        if tag_match:
-            sections.append(tag_match.group(1))
+    # Script: use findall to capture ALL <script> blocks (e.g. <script> + <script setup>)
+    script_matches = re.findall(r"<script[^>]*>(.*?)</script>", component_source, re.DOTALL)
+    sections.extend(script_matches)
+    # Template: use greedy match to handle nested <template> tags (e.g. <template v-if>)
+    template_match = re.search(r"<template[^>]*>(.*)</template>", component_source, re.DOTALL)
+    if template_match:
+        sections.append(template_match.group(1))
     search_text = "\n".join(sections) if sections else component_source
     search_text = strip_comments(search_text)
 

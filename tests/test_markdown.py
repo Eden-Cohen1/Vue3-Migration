@@ -447,7 +447,7 @@ class TestBuildRecipesSection:
         )
         entry.warnings = [w]
         result = build_recipes_section([(Path("fake/Comp.vue"), [entry])])
-        assert "## Migration Recipes" in result
+        assert "## Migration Patterns" in result
         assert "useRouter()" in result
         assert "```js" in result
 
@@ -471,7 +471,7 @@ class TestBuildRecipesSection:
         result = build_recipes_section([(Path("fake/Comp.vue"), [entry])])
         # Should only have one recipe heading for event bus, not two
         assert result.count("event bus") >= 1
-        assert result.count("## Migration Recipes") == 1
+        assert result.count("## Migration Patterns") == 1
 
 
 class TestBuildAuditReportWarnings:

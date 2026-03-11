@@ -37,6 +37,8 @@ class MigrationWarning:
     line_hint: str | None     # Source line context (for inline comment)
     severity: str             # "error" | "warning" | "info"
     source_context: str = ""  # "mixin" | "component" | "" (legacy)
+    source_line: int | None = None  # 1-based line number in mixin/composable source
+    source_file: Path | None = None  # File path where the warning originates
 
 
 @dataclass

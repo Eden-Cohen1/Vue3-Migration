@@ -292,10 +292,10 @@ _MIGRATION_RECIPES: dict[str, dict[str, str]] = {
         ),
     },
     "external-dependency": {
-        "title": "External dependency → composable parameter",
+        "title": "External dependency → 3 options",
         "why": (
             "The mixin accesses `this.someVar` where `someVar` is not defined in the mixin itself "
-            "(it comes from the component's data/props). Pass it as a parameter to the composable."
+            "(it comes from the component's data/props). There are three ways to resolve this."
         ),
         "before": (
             "// In mixin — uses this.items which is defined in the component, not the mixin\n"
@@ -306,16 +306,33 @@ _MIGRATION_RECIPES: dict[str, dict[str, str]] = {
             "}"
         ),
         "after": (
-            "// In composable — accept items as a parameter\n"
+            "// Option 1: Composable parameter (best for data shared across methods)\n"
             "export function useSearch(items) {\n"
             "  function search() {\n"
             "    return items.value.filter(i => i.name.includes(query.value))\n"
             "  }\n"
             "  return { search }\n"
             "}\n"
+            "// In component: const { search } = useSearch(toRef(props, 'items'))\n"
             "\n"
-            "// In component\n"
-            "const { search } = useSearch(toRef(props, 'items'))"
+            "// Option 2: Function argument (best when used in only one method)\n"
+            "export function useSearch() {\n"
+            "  function search(items) {\n"
+            "    return items.filter(i => i.name.includes(query.value))\n"
+            "  }\n"
+            "  return { search }\n"
+            "}\n"
+            "// In component: search(this.items)\n"
+            "\n"
+            "// Option 3: Import from another composable\n"
+            "import { useStore } from './useStore'\n"
+            "export function useSearch() {\n"
+            "  const { items } = useStore()\n"
+            "  function search() {\n"
+            "    return items.value.filter(i => i.name.includes(query.value))\n"
+            "  }\n"
+            "  return { search }\n"
+            "}"
         ),
     },
     "this-alias": {
@@ -407,6 +424,42 @@ _MIGRATION_RECIPES: dict[str, dict[str, str]] = {
             "provide('theme', themeRef)"
         ),
     },
+    "data-setup-collision": {
+        "title": "Data / Setup Name Collision",
+        "why": (
+            "In Vue 3, when a component has both `data()` and `setup()` returning "
+            "a property with the same name, `data()` wins — the `setup()` value is "
+            "silently ignored. After migration, composable values returned via "
+            "`setup()` can be shadowed by leftover `data()` properties."
+        ),
+        "before": (
+            "export default {\n"
+            "  mixins: [searchMixin],  // provides 'query' via composable\n"
+            "  data() {\n"
+            "    return { query: '' }  // shadows the composable value!\n"
+            "  },\n"
+            "  setup() {\n"
+            "    const { query } = useSearch()\n"
+            "    return { query }\n"
+            "  }\n"
+            "}"
+        ),
+        "after": (
+            "export default {\n"
+            "  // Option A: Remove from data() — use the composable value\n"
+            "  data() {\n"
+            "    return { /* query removed — now comes from composable */ }\n"
+            "  },\n"
+            "  setup() {\n"
+            "    const { query } = useSearch()\n"
+            "    return { query }\n"
+            "  }\n"
+            "}\n"
+            "\n"
+            "// Option B: Remove from composable return — keep data() version\n"
+            "// Only if the component intentionally manages its own 'query'"
+        ),
+    },
 }
 
 # Categories that share a recipe (all i18n variants point to this.$t)
@@ -460,7 +513,7 @@ def build_recipes_section(
 
     lines: list[str] = []
     a = lines.append
-    a("## Migration Recipes\n")
+    a("## Migration Patterns\n")
 
     for key in recipe_keys:
         recipe = _MIGRATION_RECIPES[key]
@@ -922,6 +975,66 @@ def build_per_component_index(
     return "\n".join(lines)
 
 
+def build_summary_section(
+    entries_by_component: "list[tuple[Path, list[MixinEntry]]]",
+) -> str:
+    """Build an enhanced summary section for the top of the report."""
+    # De-duplicate entries by mixin_stem
+    seen_stems: set[str] = set()
+    entries: list[MixinEntry] = []
+    skipped_count = 0
+    for _comp_path, entry_list in entries_by_component:
+        for entry in entry_list:
+            if entry.mixin_stem in seen_stems:
+                continue
+            seen_stems.add(entry.mixin_stem)
+            entry_cats = {w.category for w in entry.warnings}
+            if entry_cats and entry_cats <= _SKIPPED_CATEGORIES:
+                skipped_count += 1
+                continue
+            entries.append(entry)
+
+    if not entries:
+        return ""
+
+    # Separate unused mixins from active entries
+    active_entries = [e for e in entries if not any(w.category == "unused-mixin" for w in e.warnings)]
+    unused_count = len(entries) - len(active_entries)
+
+    total_errors = sum(1 for e in active_entries for w in e.warnings
+                       if w.severity == "error" and w.category not in _AUTO_REWRITTEN_CATEGORIES)
+    total_warns = sum(1 for e in active_entries for w in e.warnings
+                      if w.severity == "warning" and w.category not in _AUTO_REWRITTEN_CATEGORIES)
+    quick = sum(1 for e in active_entries
+                if not any(w.severity in ("error", "warning") and w.category not in _AUTO_REWRITTEN_CATEGORIES
+                           for w in e.warnings))
+    needs_work = len(active_entries) - quick
+
+    lines: list[str] = []
+    a = lines.append
+    a("## Summary\n")
+
+    # Overview sentence
+    a(f"This report covers **{len(active_entries)}** composable{'s' if len(active_entries) != 1 else ''}.\n")
+
+    if quick:
+        a(f"- \U0001f7e2 **{quick}** can be applied as-is — no manual steps needed")
+    if needs_work:
+        a(f"- \U0001f7e1 **{needs_work}** need{'s' if needs_work == 1 else ''} manual attention before the migration is complete")
+    if total_errors:
+        a(f"- \u274c **{total_errors}** blocker{'s' if total_errors != 1 else ''} must be resolved — code won't run until fixed")
+    if total_warns:
+        a(f"- \u26a0\ufe0f **{total_warns}** warning{'s' if total_warns != 1 else ''} — known patterns with documented fixes")
+    if unused_count:
+        a(f"- \U0001f5d1\ufe0f **{unused_count}** mixin{'s' if unused_count != 1 else ''} not imported by any component — safe to delete")
+    if skipped_count:
+        a(f"- \u2139\ufe0f **{skipped_count}** mixin{'s' if skipped_count != 1 else ''} skipped (unused or fully overridden by component)")
+    a("")
+    a("> Start with the **Action Plan** below for step-by-step guidance on each composable.\n")
+
+    return "\n".join(lines)
+
+
 def build_action_plan(
     entries_by_component: "list[tuple[Path, list[MixinEntry]]]",
     composable_changes: "list[FileChange] | None" = None,
@@ -964,8 +1077,14 @@ def build_action_plan(
     quick_wins: list[MixinEntry] = []    # HIGH confidence, no error/warning
     dropin_fixes: list[MixinEntry] = []  # MEDIUM confidence, only warnings
     design_decisions: list[MixinEntry] = []  # LOW confidence or errors
+    unused_mixins: list[MixinEntry] = []  # Not imported by any component
 
     for entry in entries:
+        # Standalone mixins not imported by any component get their own section
+        if any(w.category == "unused-mixin" for w in entry.warnings):
+            unused_mixins.append(entry)
+            continue
+
         non_info = [w for w in entry.warnings
                     if w.severity in ("error", "warning") and w.category not in _AUTO_REWRITTEN_CATEGORIES]
         has_errors = any(w.severity == "error" and w.category not in _AUTO_REWRITTEN_CATEGORIES
@@ -984,13 +1103,19 @@ def build_action_plan(
     a("## Action Plan\n")
 
     a("### Recommended Order\n")
+    idx = 0
     if quick_wins:
-        a(f"1. \U0001f7e2 **Quick wins** ({len(quick_wins)} composable{'s' if len(quick_wins) != 1 else ''}) \u2014 apply changes as-is, no manual steps")
+        idx += 1
+        a(f"{idx}. \U0001f7e2 **Quick wins** ({len(quick_wins)} composable{'s' if len(quick_wins) != 1 else ''}) \u2014 apply changes as-is, no manual steps")
     if dropin_fixes:
-        a(f"{'2' if quick_wins else '1'}. \U0001f7e1 **Drop-in fixes** ({len(dropin_fixes)} composable{'s' if len(dropin_fixes) != 1 else ''}) \u2014 mechanical replacements")
+        idx += 1
+        a(f"{idx}. \U0001f7e1 **Drop-in fixes** ({len(dropin_fixes)} composable{'s' if len(dropin_fixes) != 1 else ''}) \u2014 mechanical replacements")
     if design_decisions:
-        idx = 1 + bool(quick_wins) + bool(dropin_fixes)
+        idx += 1
         a(f"{idx}. \U0001f534 **Design decisions** ({len(design_decisions)} composable{'s' if len(design_decisions) != 1 else ''}) \u2014 require architectural choices")
+    if unused_mixins:
+        idx += 1
+        a(f"{idx}. \U0001f5d1\ufe0f **Unused mixins** ({len(unused_mixins)} file{'s' if len(unused_mixins) != 1 else ''}) \u2014 not imported by any component, safe to delete")
     a("")
 
     # Quick wins — just list names
@@ -1014,19 +1139,23 @@ def build_action_plan(
         for entry in design_decisions:
             _append_composable_steps(a, entry, "\U0001f534", composable_content_map, composable_path_by_stem)
 
-    # Summary
-    a("### Summary\n")
-    total_errors = sum(1 for e in entries for w in e.warnings
-                       if w.severity == "error" and w.category not in _AUTO_REWRITTEN_CATEGORIES)
-    total_warns = sum(1 for e in entries for w in e.warnings
-                      if w.severity == "warning" and w.category not in _AUTO_REWRITTEN_CATEGORIES)
-    if total_errors:
-        a(f"- **{total_errors}** blocker(s) must be fixed before code will run")
-    if total_warns:
-        a(f"- **{total_warns}** this.$ reference(s) need known replacements")
-    if skipped_count:
-        a(f"- **{skipped_count}** mixin(s) were skipped ([see why](#skipped-mixins-not-migrated))")
-    a("")
+    # Unused mixins — not imported by any component
+    if unused_mixins:
+        a("---\n")
+        a("### \U0001f5d1\ufe0f Unused Mixins \u2014 safe to delete\n")
+        a("These mixin files are not imported by any component in the project.\n")
+        for entry in unused_mixins:
+            mixin_path = entry.mixin_path
+            if mixin_path and project_root:
+                try:
+                    rel = mixin_path.relative_to(project_root)
+                except ValueError:
+                    rel = mixin_path
+                a(f"- **`{entry.mixin_stem}`** \u2014 [`{rel}`]({rel})")
+            else:
+                a(f"- **`{entry.mixin_stem}`**")
+            a(f"  - Delete this file, or keep it if used outside this project (shared library, dynamic import, etc.)")
+        a("")
 
     return "\n".join(lines)
 
@@ -1034,25 +1163,69 @@ def build_action_plan(
 def _find_warning_lines(
     source: str, warning: MigrationWarning,
 ) -> list[int]:
-    """Find 1-based line numbers in composable source matching a warning pattern."""
+    """Find 1-based line numbers in composable source matching a warning pattern.
+
+    Uses a multi-strategy approach:
+    1. Category-specific pattern search in composable source
+    2. Fallback to line_hint text search
+    3. Fallback to source_line from the warning model
+    """
     import re
     lines = source.splitlines()
     result: list[int] = []
+
+    # Build a search pattern based on the warning category
+    pat = None
     if warning.category.startswith("this.$"):
         pat = warning.category
     elif warning.category == "external-dependency":
         m = re.match(r"'(\w+)'", warning.message)
         if m:
             pat = f"this.{m.group(1)}"
-        else:
-            return []
-    else:
-        return []
-    for i, line in enumerate(lines, 1):
-        if line.lstrip().startswith("//"):
-            continue
-        if pat in line:
-            result.append(i)
+    elif warning.category == "this-alias":
+        pat = "= this"
+    elif warning.category == "remaining-this":
+        pat = "this."
+    elif warning.category.startswith("mixin-option:"):
+        option = warning.category.split(":")[1]
+        pat = f"{option}:"
+    elif warning.category == "structural:factory-function":
+        pat = "export default function"
+    elif warning.category == "structural:nested-mixins":
+        pat = "mixins:"
+    elif warning.category == "structural:render-function":
+        pat = "render("
+    elif warning.category == "structural:serverPrefetch":
+        pat = "serverPrefetch"
+    elif warning.category == "structural:class-component":
+        pat = "@Component"
+    elif warning.category == "todo-marker":
+        pat = "TODO"
+    elif warning.category == "data-setup-collision":
+        m = re.match(r"'(\w+)'", warning.message)
+        if m:
+            pat = m.group(1)
+
+    # Search composable source for the pattern
+    if pat:
+        for i, line in enumerate(lines, 1):
+            if line.lstrip().startswith("//"):
+                continue
+            if pat in line:
+                result.append(i)
+        if result:
+            return result
+
+    # Fallback: search for line_hint text in composable source
+    if warning.line_hint:
+        hint = warning.line_hint.strip()
+        if len(hint) > 5:  # skip very short hints that could match noise
+            for i, line in enumerate(lines, 1):
+                if hint in line:
+                    result.append(i)
+            if result:
+                return result
+
     return result
 
 
@@ -1068,7 +1241,7 @@ def _step_label(warning: MigrationWarning) -> str:
     if warning.category == "external-dependency":
         m = re.match(r"'(\w+)'", warning.message)
         member = f"`this.{m.group(1)}`" if m else "external dep"
-        return f"Pass {member} as composable param"
+        return f"Resolve {member} — composable param, function arg, or import"
     if warning.category == "this-alias":
         return "`this` alias won't work \u2014 replace with direct refs"
     if warning.category.startswith("mixin-option:"):
@@ -1127,6 +1300,11 @@ def _append_composable_steps(
             if line_nums:
                 vscode_links = [_vscode_link(comp_path, ln, f"L{ln}") for ln in line_nums[:5]]
                 line_refs = f" ({', '.join(vscode_links)})"
+        # Fallback: link to mixin source if we have source_line
+        if not line_refs and w.source_line and hasattr(entry, 'mixin_path'):
+            mixin_path = entry.mixin_path
+            if mixin_path and mixin_path.exists():
+                line_refs = f" ({_vscode_link(mixin_path, w.source_line, f'mixin L{w.source_line}')})"
 
         if link:
             steps.append(f"{label} \u2192 {link}{line_refs}")
@@ -1139,18 +1317,35 @@ def _append_composable_steps(
     for i, step_text in enumerate(steps, 1):
         a(f"- **Step {i}:** {step_text}")
 
-    # Collapse info warnings (unused members, etc.)
+    # Info section — grouped by category for clarity
     if info_warnings:
-        # Group unused-mixin-member separately
         unused = [w for w in info_warnings if w.category == "unused-mixin-member"]
-        other_info = [w for w in info_warnings if w.category != "unused-mixin-member"]
+        overridden = [w for w in info_warnings if w.category == "overridden-member"]
+        other_info = [w for w in info_warnings
+                      if w.category not in ("unused-mixin-member", "overridden-member")]
+
+        a("")
 
         if unused:
-            names = ", ".join(w.message.split("`")[1] if "`" in w.message else w.message for w in unused)
-            a(f"\n> \u2139\ufe0f {len(unused)} unused member{'s' if len(unused) != 1 else ''}: {names}")
+            names = ", ".join(
+                f"`{w.message.split('`')[1]}`" if "`" in w.message
+                else f"`{w.message.split(chr(39))[1]}`" if "'" in w.message
+                else w.message
+                for w in unused
+            )
+            a(f"> **Unused members:** {names} — consider removing from composable return")
+
+        if overridden:
+            names = ", ".join(
+                f"`{m.strip()}`"
+                for w in overridden
+                for part in [w.message.split(":")[1] if ":" in w.message else w.message]
+                for m in part.split(".")[0].split(",")
+            )
+            a(f"> **Overridden by component:** {names} — composable version won't be used")
 
         for w in other_info:
-            a(f"\n> \u2139\ufe0f {w.message}")
+            a(f"> \u2139\ufe0f {w.message}")
 
     a("")
 

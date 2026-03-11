@@ -8,6 +8,11 @@ import re
 from ..models import ConfidenceLevel, MigrationWarning, MixinMembers
 
 
+def _line_number(source: str, position: int) -> int:
+    """Compute 1-based line number from a character offset."""
+    return source[:position].count("\n") + 1
+
+
 # Patterns: (regex, category, message, action_required, severity)
 _THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str, str]] = [
     # --- error: will crash, requires architectural change ---
@@ -145,6 +150,7 @@ def collect_mixin_warnings(
                 action_required=action,
                 line_hint=line_hint,
                 severity=severity,
+                source_line=_line_number(mixin_source, match.start()),
             ))
 
     # External dependencies (this.X where X is not in this mixin)
@@ -181,20 +187,27 @@ def detect_external_dependencies(
         # Find the first line containing this.<name> for line_hint
         match = re.search(rf"\bthis\.{re.escape(name)}\b", mixin_source)
         line_hint = None
+        src_line = None
         if match:
             line_start = mixin_source.rfind("\n", 0, match.start()) + 1
             line_end = mixin_source.find("\n", match.end())
             if line_end == -1:
                 line_end = len(mixin_source)
             line_hint = mixin_source[line_start:line_end].strip()
+            src_line = _line_number(mixin_source, match.start())
 
         warnings.append(MigrationWarning(
             mixin_stem="",
             category="external-dependency",
             message=f"'{name}' — external dep, not available in composable scope",
-            action_required=f"Accept '{name}' as a composable parameter and rewrite this.{name}",
+            action_required=(
+                f"Options: (1) pass '{name}' as a composable parameter, "
+                f"(2) accept it as a function argument if only used in one method, "
+                f"(3) import it from another composable (e.g. useStore, useRouter)"
+            ),
             line_hint=line_hint,
             severity="error",
+            source_line=src_line,
         ))
 
     return warnings
@@ -226,6 +239,7 @@ def detect_this_aliasing(
             action_required=f"Manually replace {alias}.x with composable equivalents",
             line_hint=line_hint,
             severity="warning",
+            source_line=_line_number(mixin_source, m.start()),
         ))
     return warnings
 
@@ -353,8 +367,8 @@ def _get_short_hint(warning: MigrationWarning) -> str:
     # External-dependency: include the member name for specificity
     if warning.category == "external-dependency":
         m = re.match(r"'(\w+)'", warning.message)
-        member = f"this.{m.group(1)}" if m else "external dep"
-        return f"pass {member} as composable param"
+        member = m.group(1) if m else "dep"
+        return f"external dep — pass {member} as param, function arg, or import from composable"
     hint = _SHORT_HINT.get(warning.category)
     if hint:
         return hint
@@ -403,6 +417,10 @@ def inject_inline_warnings(
     pattern_info: dict[str, tuple[str, str]] = {}  # pat -> (severity, hint)
     pattern_fallbacks: dict[str, str] = {}  # pat -> bare fallback name
 
+    # Collect this-alias patterns separately — they produce multiple
+    # patterns (declaration + every usage line) from a single warning.
+    alias_usage_patterns: dict[str, tuple[str, str]] = {}
+
     for w in warnings:
         if w.category.startswith("this.$"):
             pat = w.category
@@ -415,12 +433,29 @@ def inject_inline_warnings(
                     pattern_fallbacks[pat] = dep_name
             else:
                 continue
+        elif w.category == "this-alias":
+            # Extract alias name from message: "'this' is aliased as '{alias}'"
+            m = re.search(r"aliased as '(\w+)'", w.message)
+            if m:
+                alias = m.group(1)
+                hint = _get_short_hint(w)
+                # Match the declaration line
+                pat = f"= this"
+                pattern_info[pat] = (w.severity, hint)
+                # Also match all alias.x usage lines
+                alias_usage_patterns[f"{alias}."] = (w.severity, f"{alias}.x won't auto-rewrite — use direct refs")
+            continue
         else:
             continue
 
         cur = pattern_info.get(pat)
         if cur is None or _SEVERITY_ORDER.get(w.severity, 2) < _SEVERITY_ORDER.get(cur[0], 2):
             pattern_info[pat] = (w.severity, _get_short_hint(w))
+
+    # Merge alias usage patterns (lower priority than direct this.$ patterns)
+    for pat, val in alias_usage_patterns.items():
+        if pat not in pattern_info:
+            pattern_info[pat] = val
 
     # Annotate every code line that matches a warning pattern
     for i, line in enumerate(lines):
@@ -454,7 +489,7 @@ def post_generation_check(composable_source: str) -> list[MigrationWarning]:
     warnings: list[MigrationWarning] = []
 
     # Remaining this. references (skip comment lines)
-    for line in composable_source.splitlines():
+    for line_idx, line in enumerate(composable_source.splitlines(), 1):
         stripped = line.lstrip()
         if stripped.startswith("//"):
             continue
@@ -466,6 +501,7 @@ def post_generation_check(composable_source: str) -> list[MigrationWarning]:
                 action_required="Replace this.x with composable variable references",
                 line_hint=stripped.strip(),
                 severity="error",
+                source_line=line_idx,
             ))
             break  # one warning is enough
 
@@ -531,15 +567,17 @@ def post_generation_check(composable_source: str) -> list[MigrationWarning]:
                 ))
 
     # Count TODO markers
-    todo_count = len(re.findall(r"//\s*TODO\b", composable_source))
-    if todo_count:
+    todo_matches = list(re.finditer(r"//\s*TODO\b", composable_source))
+    if todo_matches:
+        first_line = _line_number(composable_source, todo_matches[0].start())
         warnings.append(MigrationWarning(
             mixin_stem="",
             category="todo-marker",
-            message=f"{todo_count} TODO marker(s) remain in generated composable",
+            message=f"{len(todo_matches)} TODO marker(s) remain in generated composable",
             action_required="Implement the TODO items manually",
             line_hint=None,
             severity="info",
+            source_line=first_line,
         ))
 
     return warnings
@@ -624,6 +662,7 @@ def detect_mixin_options(
                 action_required=action,
                 line_hint=None,
                 severity=severity,
+                source_line=_line_number(mixin_source, m.start()),
             ))
             break  # one warning per option is enough
     return warnings
@@ -652,16 +691,20 @@ def detect_structural_patterns(
             action_required=action,
             line_hint=None,
             severity="warning",
+            source_line=_line_number(mixin_source, factory_m.start()),
         ))
-    elif re.search(r'\bexport\s+default\s+function\b', mixin_source):
-        warnings.append(MigrationWarning(
-            mixin_stem=mixin_stem,
-            category="structural:factory-function",
-            message="Mixin factory function — cannot auto-convert",
-            action_required="Manually convert factory function to composable",
-            line_hint=None,
-            severity="warning",
-        ))
+    else:
+        factory_m2 = re.search(r'\bexport\s+default\s+function\b', mixin_source)
+        if factory_m2:
+            warnings.append(MigrationWarning(
+                mixin_stem=mixin_stem,
+                category="structural:factory-function",
+                message="Mixin factory function — cannot auto-convert",
+                action_required="Manually convert factory function to composable",
+                line_hint=None,
+                severity="warning",
+                source_line=_line_number(mixin_source, factory_m2.start()),
+            ))
 
     # Nested mixins: mixins: [...] inside the mixin source
     nested_mixins_m = re.search(r'\bmixins\s*:\s*\[([^\]]+)\]', mixin_source)
@@ -674,19 +717,24 @@ def detect_structural_patterns(
             action_required="Ensure all transitive mixin members are accounted for",
             line_hint=None,
             severity="warning",
+            source_line=_line_number(mixin_source, nested_mixins_m.start()),
         ))
-    elif re.search(r'\bmixins\s*:', mixin_source):
-        warnings.append(MigrationWarning(
-            mixin_stem=mixin_stem,
-            category="structural:nested-mixins",
-            message="Mixin uses nested mixins — transitive members may be missed",
-            action_required="Ensure all transitive mixin members are accounted for",
-            line_hint=None,
-            severity="warning",
-        ))
+    else:
+        nested_m2 = re.search(r'\bmixins\s*:', mixin_source)
+        if nested_m2:
+            warnings.append(MigrationWarning(
+                mixin_stem=mixin_stem,
+                category="structural:nested-mixins",
+                message="Mixin uses nested mixins — transitive members may be missed",
+                action_required="Ensure all transitive mixin members are accounted for",
+                line_hint=None,
+                severity="warning",
+                source_line=_line_number(mixin_source, nested_m2.start()),
+            ))
 
     # render() in mixin
-    if re.search(r'\brender\s*\(', mixin_source):
+    render_m = re.search(r'\brender\s*\(', mixin_source)
+    if render_m:
         warnings.append(MigrationWarning(
             mixin_stem=mixin_stem,
             category="structural:render-function",
@@ -694,10 +742,12 @@ def detect_structural_patterns(
             action_required="Move render logic to component template or setup",
             line_hint=None,
             severity="warning",
+            source_line=_line_number(mixin_source, render_m.start()),
         ))
 
     # serverPrefetch hook
-    if re.search(r'\bserverPrefetch\b', mixin_source):
+    sp_m = re.search(r'\bserverPrefetch\b', mixin_source)
+    if sp_m:
         warnings.append(MigrationWarning(
             mixin_stem=mixin_stem,
             category="structural:serverPrefetch",
@@ -705,10 +755,12 @@ def detect_structural_patterns(
             action_required="Manually add onServerPrefetch() in composable",
             line_hint=None,
             severity="warning",
+            source_line=_line_number(mixin_source, sp_m.start()),
         ))
 
     # Class-component decorators: @Component or @Prop
-    if re.search(r'@(?:Component|Prop)\b', mixin_source):
+    class_m = re.search(r'@(?:Component|Prop)\b', mixin_source)
+    if class_m:
         warnings.append(MigrationWarning(
             mixin_stem=mixin_stem,
             category="structural:class-component",
@@ -716,6 +768,7 @@ def detect_structural_patterns(
             action_required="Convert from class-component to Options API first, then migrate",
             line_hint=None,
             severity="warning",
+            source_line=_line_number(mixin_source, class_m.start()),
         ))
 
     return warnings

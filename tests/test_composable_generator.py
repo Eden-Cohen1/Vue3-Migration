@@ -192,7 +192,7 @@ class TestExternalDepWarningsInComposable:
         result = generate_composable_from_mixin(
             MIXIN_WITH_EXTERNAL_DEPS, "commentMixin", members, hooks,
         )
-        assert "as composable param" in result
+        assert "as param" in result
         assert "entityId" in result
 
     def test_generated_composable_confidence_is_low(self):

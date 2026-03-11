@@ -395,11 +395,15 @@ def plan_component_injections(
                             mixin_stem=entry.mixin_stem,
                             category="data-setup-collision",
                             message=(
-                                f"'{name}' exists in both setup() return and data() "
-                                "— data() will shadow the setup() value"
+                                f"'{name}' is returned by both setup() and data(). "
+                                "In Vue 3, data() properties take precedence over "
+                                "setup() return values with the same name, so the "
+                                "composable's value will be silently ignored."
                             ),
                             action_required=(
-                                f"Remove '{name}' from data() or rename it to avoid collision"
+                                f"Remove '{name}' from data() to use the composable "
+                                "value, or remove it from the composable return if the "
+                                "component's data() version is intended."
                             ),
                             line_hint=None,
                             severity="warning",
@@ -493,15 +497,18 @@ def plan_component_injections(
                             mixin_stem=entry.mixin_stem,
                             category="skipped-no-usage",
                             message=(
-                                f"Mixin '{entry.mixin_stem}' was NOT migrated: "
-                                "no members are referenced by the component."
+                                f"Mixin '{entry.mixin_stem}' import and mixins "
+                                "array entry removed: no members are referenced "
+                                "by the component."
                             ),
                             action_required=(
-                                "Remove the mixin if unused, or manually convert "
-                                "if it provides side-effect functionality."
+                                "Verify the mixin was only used for members. "
+                                "If it provides side-effect functionality "
+                                "(e.g. event listeners, global state), "
+                                "restore and manually convert."
                             ),
                             line_hint=None,
-                            severity="warning",
+                            severity="info",
                             source_context="component",
                         ))
                 else:
@@ -525,6 +532,13 @@ def plan_component_injections(
                         source_context="component",
                     ))
 
+        # Collect entries whose mixin import/array entry should be removed
+        # even though they won't get a composable call (no members used).
+        removable_unused_entries = [
+            e for e in ready_entries
+            if e not in migratable_entries and not e.used_members
+        ]
+
         content = comp_source
         changes_desc = []
 
@@ -539,10 +553,24 @@ def plan_component_injections(
                     changes_desc.append(f"Added import {{{entry.composable.fn_name}}}")
                     content = new
 
+        # Remove imports for unused mixins (no members referenced by component)
+        for entry in removable_unused_entries:
+            new = remove_import_line(content, entry.mixin_stem)
+            if new != content:
+                changes_desc.append(f"Removed unused import {entry.mixin_stem}")
+                content = new
+
         for entry in migratable_entries:
             new = remove_mixin_from_array(content, entry.local_name)
             if new != content:
                 changes_desc.append(f"Removed {entry.local_name} from mixins")
+                content = new
+
+        # Remove unused mixins from the mixins array
+        for entry in removable_unused_entries:
+            new = remove_mixin_from_array(content, entry.local_name)
+            if new != content:
+                changes_desc.append(f"Removed unused {entry.local_name} from mixins")
                 content = new
 
         if composable_calls:
@@ -813,6 +841,24 @@ def _build_standalone_mixin_entry(
         entry.external_deps = [d for d in entry.external_deps if d not in resolved_names]
 
     entry.warnings = mixin_warnings
+
+    # Flag this mixin as unused by any component — safe to delete
+    entry.warnings.insert(0, MigrationWarning(
+        mixin_stem=entry.mixin_stem,
+        category="unused-mixin",
+        message=(
+            f"No component imports '{mixin_stem}'. "
+            "This mixin file can be safely deleted."
+        ),
+        action_required=(
+            f"Delete the mixin file or keep it if used outside "
+            "this project (shared library, dynamic import, etc.)"
+        ),
+        line_hint=None,
+        severity="info",
+        source_context="mixin",
+    ))
+
     entry.compute_status()
 
     # Use a sentinel path to indicate no real component

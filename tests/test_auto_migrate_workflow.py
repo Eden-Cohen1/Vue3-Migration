@@ -276,8 +276,8 @@ def test_run_scoped_zero_members_generates_composable(project):
     assert "export function useLoading" in gen.new_content
 
 
-def test_run_scoped_zero_members_no_component_changes(project):
-    """Component with zero used members should NOT be modified."""
+def test_run_scoped_zero_members_removes_unused_import(project):
+    """Component with zero used members should have its mixin import and array entry removed."""
     _add_zero_member_component(project)
     composable = project / "src" / "composables" / "useLoading.js"
     if composable.exists():
@@ -288,7 +288,13 @@ def test_run_scoped_zero_members_no_component_changes(project):
         (c for c in plan.component_changes if "EmptyUsage" in str(c.file_path) and c.has_changes),
         None,
     )
-    assert comp_change is None, "Component should not be modified when no members are used"
+    assert comp_change is not None, "Component should be modified to remove unused mixin"
+    # The import line should be gone
+    assert "import loadingMixin" not in comp_change.new_content
+    # The mixins array entry should be gone
+    assert "mixins:" not in comp_change.new_content or "loadingMixin" not in comp_change.new_content
+    # Changes should describe the removal
+    assert any("Removed unused" in c for c in comp_change.changes)
 
 
 # ---------------------------------------------------------------------------

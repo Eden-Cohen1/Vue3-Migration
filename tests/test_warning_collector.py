@@ -536,7 +536,7 @@ class TestInjectInlineWarnings:
         items_lines = [l for l in lines if "this.items" in l and not l.lstrip().startswith("//")]
         assert len(items_lines) == 2, f"Expected 2 code lines with this.items, got {len(items_lines)}"
         for l in items_lines:
-            assert "// \u274c pass this.items as composable param" in l, f"Missing icon+hint on line: {l}"
+            assert "// \u274c external dep" in l and "as param" in l, f"Missing icon+hint on line: {l}"
 
     def test_rewritten_internal_prop_gets_icon_and_hint(self):
         """After internal_props rewriting (this._searchTimeout -> _searchTimeout),
@@ -563,7 +563,7 @@ class TestInjectInlineWarnings:
                       and "let _searchTimeout" not in l]
         assert len(bare_lines) >= 2, f"Expected >=2 code lines with _searchTimeout, got {len(bare_lines)}"
         for l in bare_lines:
-            assert "// \u274c pass this._searchTimeout as composable param" in l, f"Missing icon+hint on line: {l}"
+            assert "// \u274c external dep" in l and "as param" in l, f"Missing icon+hint on line: {l}"
 
     def test_no_duplicate_icons_on_same_line(self):
         """Each line should get at most one suffix icon."""
@@ -586,6 +586,66 @@ class TestInjectInlineWarnings:
         assert len(router_lines) == 2
         for l in router_lines:
             assert l.count("// \u274c") == 1, f"Expected exactly 1 icon on: {l}"
+
+
+class TestThisAliasInlineWarnings:
+    """Verify that self=this inline comments appear on ALL alias usage lines."""
+
+    def test_alias_usage_lines_annotated(self):
+        """self.x usage lines should get inline warning comments."""
+        source = (
+            "export function useFoo() {\n"
+            "  const self = this\n"
+            "  function doWork() {\n"
+            "    self.count++\n"
+            "    self.getData()\n"
+            "    console.log('done')\n"
+            "  }\n"
+            "  return { doWork }\n"
+            "}\n"
+        )
+        warnings = [MigrationWarning(
+            mixin_stem="fooMixin",
+            category="this-alias",
+            message="'this' is aliased as 'self' — references via self.x won't be auto-rewritten",
+            action_required="Manually replace self.x with composable equivalents",
+            line_hint="const self = this",
+            severity="warning",
+        )]
+        result = inject_inline_warnings(source, warnings)
+        lines = result.splitlines()
+        # Declaration line should be annotated
+        decl_line = next(l for l in lines if "= this" in l and not l.lstrip().startswith("//"))
+        assert "// \u26a0\ufe0f" in decl_line
+        # Both self.x usage lines should be annotated
+        usage_lines = [l for l in lines if "self." in l and not l.lstrip().startswith("//")]
+        assert len(usage_lines) >= 2, f"Expected at least 2 annotated self.x lines, got {len(usage_lines)}"
+        for l in usage_lines:
+            assert "// \u26a0\ufe0f" in l, f"Missing annotation on: {l}"
+        # Non-alias line should NOT be annotated
+        console_line = next(l for l in lines if "console.log" in l)
+        assert "// \u26a0\ufe0f" not in console_line
+
+    def test_alias_vm_usage_annotated(self):
+        """var vm = this should also annotate vm.x usage lines."""
+        source = (
+            "export function useBar() {\n"
+            "  var vm = this\n"
+            "  vm.refresh()\n"
+            "}\n"
+        )
+        warnings = [MigrationWarning(
+            mixin_stem="barMixin",
+            category="this-alias",
+            message="'this' is aliased as 'vm' — references via vm.x won't be auto-rewritten",
+            action_required="Manually replace vm.x with composable equivalents",
+            line_hint="var vm = this",
+            severity="warning",
+        )]
+        result = inject_inline_warnings(source, warnings)
+        lines = result.splitlines()
+        vm_usage = next(l for l in lines if "vm.refresh" in l)
+        assert "// \u26a0\ufe0f" in vm_usage
 
 
 # ---------------------------------------------------------------------------
@@ -682,7 +742,7 @@ export default {
             f"Expected >=2 code lines with this.items, got {len(items_code_lines)}"
         )
         for l in items_code_lines:
-            assert "as composable param" in l, f"Missing icon+hint on line: {l}"
+            assert "as param" in l, f"Missing icon+hint on line: {l}"
 
     def test_underscore_external_dep_rewritten_still_gets_hints(self):
         """End-to-end: mixin with this._searchTimeout (underscore external dep)
@@ -716,7 +776,7 @@ export default {
             f"Expected >=1 code lines with _searchTimeout usage, got {len(bare_lines)}"
         )
         for l in bare_lines:
-            assert "as composable param" in l, f"Missing icon+hint on rewritten line: {l}"
+            assert "as param" in l, f"Missing icon+hint on rewritten line: {l}"
 
 
 # ---------------------------------------------------------------------------

@@ -160,16 +160,17 @@ def test_report_has_recipes_section(tmp_path):
     report_path = write_migration_report(plan, tmp_path)
     content = report_path.read_text(encoding="utf-8")
 
-    assert "## Migration Recipes" in content
+    assert "## Migration Patterns" in content
     assert "useRouter()" in content
-    # Recipes should appear before Action Plan
-    recipes_pos = content.index("## Migration Recipes")
+    # Summary should appear first, then Action Plan, then Migration Patterns
+    summary_pos = content.index("## Summary")
     action_pos = content.index("## Action Plan")
-    assert recipes_pos < action_pos
+    patterns_pos = content.index("## Migration Patterns")
+    assert summary_pos < action_pos < patterns_pos
 
 
 def test_report_section_order(tmp_path):
-    """Verify section order: Recipes → Action Plan."""
+    """Verify section order: Summary → Action Plan → Migration Patterns."""
     change = _change(str(tmp_path / "useAuth.js"), "", "export function useAuth() { return {} }")
     w = MigrationWarning("authMixin", "this.$router", "not available", "Use useRouter()", None, "warning")
     entry = MixinEntry(
@@ -188,6 +189,7 @@ def test_report_section_order(tmp_path):
     report_path = write_migration_report(plan, tmp_path)
     content = report_path.read_text(encoding="utf-8")
 
-    recipes_pos = content.index("## Migration Recipes")
+    summary_pos = content.index("## Summary")
     action_pos = content.index("## Action Plan")
-    assert recipes_pos < action_pos
+    patterns_pos = content.index("## Migration Patterns")
+    assert summary_pos < action_pos < patterns_pos
