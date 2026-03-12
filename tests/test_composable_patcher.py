@@ -717,3 +717,94 @@ def test_add_members_skips_duplicate_unnamed_lines():
     )
     result = add_members_to_composable(composable, ["  doSomething()"])
     assert result.count("doSomething()") == 1
+
+
+# ---------------------------------------------------------------------------
+# Indirect return support (const obj = { ... }; return obj)
+# ---------------------------------------------------------------------------
+
+COMPOSABLE_INDIRECT_RETURN = (
+    "import { ref } from 'vue'\n\n"
+    "export function useSearch() {\n"
+    "  function search() {\n"
+    "    console.log('searching')\n"
+    "  }\n\n"
+    "  const api = { search }\n"
+    "  return api\n"
+    "}\n"
+)
+
+
+def test_add_keys_to_indirect_return():
+    """add_keys_to_return should add keys to the variable's object literal."""
+    result = add_keys_to_return(COMPOSABLE_INDIRECT_RETURN, ["query"])
+    assert "query" in result
+    # Key should be in the api object, not a bare return {
+    assert "{ search, query }" in result
+
+
+def test_add_keys_to_indirect_return_idempotent():
+    """Keys already in the object literal should not be duplicated."""
+    result = add_keys_to_return(COMPOSABLE_INDIRECT_RETURN, ["search"])
+    assert result.count("search") == COMPOSABLE_INDIRECT_RETURN.count("search")
+
+
+def test_add_keys_to_indirect_return_multiline():
+    """Indirect return with multi-line object literal should work."""
+    src = (
+        "export function useX() {\n"
+        "  const a = ref(1)\n"
+        "  const result = {\n"
+        "    a,\n"
+        "  }\n"
+        "  return result\n"
+        "}\n"
+    )
+    patched = add_keys_to_return(src, ["b"])
+    assert "b," in patched
+    assert "return result" in patched
+
+
+def test_add_members_to_composable_indirect_return():
+    """add_members_to_composable should insert before an indirect return."""
+    result = add_members_to_composable(
+        COMPOSABLE_INDIRECT_RETURN, ["  const query = ref('')"]
+    )
+    assert "const query" in result
+    assert result.index("const query") < result.index("return api")
+
+
+def test_patch_composable_indirect_return_missing_member():
+    """Full patch_composable should handle indirect returns end-to-end."""
+    mixin = "export default { data() { return { query: '' } }, methods: { search() {} } }"
+    members = MixinMembers(data=["query"], methods=["search"])
+    result = patch_composable(
+        COMPOSABLE_INDIRECT_RETURN, mixin,
+        not_returned=[], missing=["query"],
+        mixin_members=members,
+    )
+    assert "const query = ref(" in result
+    assert "query" in result.split("const api")[1].split("}")[0]
+
+
+def test_patch_composable_indirect_return_not_returned():
+    """patch_composable should add not-returned keys to indirect return object."""
+    src = (
+        "import { ref } from 'vue'\n\n"
+        "export function useX() {\n"
+        "  const a = ref(1)\n"
+        "  function reset() { a.value = 0 }\n"
+        "  const api = { a }\n"
+        "  return api\n"
+        "}\n"
+    )
+    mixin = "export default { data() { return { a: 1 } }, methods: { reset() {} } }"
+    members = MixinMembers(data=["a"], methods=["reset"])
+    result = patch_composable(
+        src, mixin,
+        not_returned=["reset"], missing=[],
+        mixin_members=members,
+    )
+    # reset should be added to the api object
+    api_section = result.split("const api")[1].split("}")[0]
+    assert "reset" in api_section

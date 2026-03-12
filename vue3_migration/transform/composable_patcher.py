@@ -85,6 +85,78 @@ def _add_vue_import(content: str, name: str) -> str:
     return f"import {{ {name} }} from 'vue'\n" + content
 
 
+def _add_keys_to_indirect_return(content: str, keys: list[str]) -> str:
+    """Handle indirect return pattern: ``const obj = { ... }; return obj``.
+
+    Finds ``return varName``, locates the variable's object literal, and adds
+    missing keys to that literal.  Falls back to a warning if no match.
+    """
+    noise = {"const", "let", "var", "function", "return", "true", "false",
+             "null", "undefined", "new", "value"}
+    ret_var = re.search(r'\breturn\s+(\w+)\s*;?\s*$', content, re.MULTILINE)
+    if not ret_var or ret_var.group(1) in noise:
+        print(
+            "  [composable_patcher] WARNING: No 'return {' found. "
+            "Composable may use a variable return -- manual migration required."
+        )
+        return content
+    var_name = ret_var.group(1)
+    var_def = re.search(
+        rf'\b(?:const|let|var)\s+{re.escape(var_name)}\s*=\s*\{{',
+        content,
+    )
+    if not var_def:
+        print(
+            f"  [composable_patcher] WARNING: Could not find definition of '{var_name}'. "
+            "Manual migration required."
+        )
+        return content
+    # Reuse add_keys_to_return on a synthetic direct-return form:
+    # We treat the variable assignment's object literal the same way.
+    brace_start = var_def.end() - 1
+    obj_block = extract_brace_block(content, brace_start)
+    existing = set(re.findall(r'\b(\w+)\b', obj_block))
+    new_keys = [k for k in keys if k not in existing]
+    if not new_keys:
+        return content
+    # Find closing brace
+    depth = 0
+    close_pos = brace_start
+    for i in range(brace_start, len(content)):
+        if content[i] == '{':
+            depth += 1
+        elif content[i] == '}':
+            depth -= 1
+            if depth == 0:
+                close_pos = i
+                break
+    full_obj = content[var_def.start():close_pos + 1]
+    # Detect indentation of the variable line
+    line_start = content.rfind('\n', 0, var_def.start()) + 1
+    var_indent = content[line_start:var_def.start()]
+    is_multiline = '\n' in full_obj
+    if is_multiline:
+        member_indent = var_indent + "  "
+        for line in full_obj.splitlines()[1:]:
+            stripped = line.lstrip()
+            if stripped and not stripped.startswith('}'):
+                member_indent = line[:len(line) - len(stripped)]
+                break
+        before_close = content[:close_pos].rstrip()
+        if before_close and before_close[-1] not in (',', '{'):
+            before_close += ','
+        line_start_of_close = content.rfind('\n', 0, close_pos)
+        close_indent = content[line_start_of_close + 1:close_pos] if line_start_of_close >= 0 else ''
+        new_key_lines = "\n".join(f"{member_indent}{k}," for k in new_keys)
+        return before_close + "\n" + new_key_lines + "\n" + close_indent + content[close_pos:]
+    else:
+        inner = obj_block[1:-1].strip()
+        all_items = inner + ", " + ", ".join(new_keys) if inner else ", ".join(new_keys)
+        # Rebuild the single-line object literal with new keys
+        new_obj = f"{{ {all_items} }}"
+        return content[:brace_start] + new_obj + content[close_pos + 1:]
+
+
 def add_keys_to_return(content: str, keys: list[str]) -> str:
     """Add missing keys to the composable's return { } statement.
 
@@ -98,11 +170,8 @@ def add_keys_to_return(content: str, keys: list[str]) -> str:
     """
     matches = list(re.finditer(r'\breturn\s*\{', content))
     if not matches:
-        print(
-            "  [composable_patcher] WARNING: No 'return {' found. "
-            "Composable may use a variable return -- manual migration required."
-        )
-        return content
+        # Case 2: indirect return — return varName where varName = { ... }
+        return _add_keys_to_indirect_return(content, keys)
     m = matches[-1]  # use LAST return (R-3 fix)
     return_block = extract_brace_block(content, m.end() - 1)
     existing = set(re.findall(r'\b(\w+)\b', return_block))
@@ -190,7 +259,10 @@ def add_members_to_composable(content: str, member_lines: list[str]) -> str:
     content = content.replace('\r\n', '\n').replace('\r', '\n')
     matches = list(re.finditer(r'\n([ \t]*)\breturn\s*\{', content))
     if not matches:
-        return content
+        # Fallback: indirect return (return varName) — insert before return line
+        matches = list(re.finditer(r'\n([ \t]*)\breturn\s+\w+', content))
+        if not matches:
+            return content
     m = matches[-1]
     existing_ids = set(extract_declared_identifiers(content))
     lines_to_add = []
@@ -556,16 +628,8 @@ def patch_composable(
     Step 3 (lifecycle_hooks): Convert and insert lifecycle hooks that the
                               composable doesn't already contain.
 
-    Returns modified composable content (unchanged if reactive() guard triggered).
+    Returns modified composable content.
     """
-    # R-6: reactive() guard
-    if 'reactive(' in composable_content:
-        print(
-            "  [composable_patcher] WARNING: Composable uses reactive() -- "
-            "skipping auto-patch, manual migration required."
-        )
-        return composable_content
-
     content = composable_content
     ref_members = mixin_members.data + mixin_members.computed + mixin_members.watch
     plain_members = mixin_members.methods
