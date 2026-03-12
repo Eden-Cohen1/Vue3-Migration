@@ -968,7 +968,12 @@ def build_per_component_index(
                 else:
                     a(f"- {dot} {comp_link} \u2014 No issues")
             else:
-                a(f"- \U0001f534 **{entry.mixin_stem}** \u2014 composable not found")
+                blocked_w = next(
+                    (w for w in entry.warnings if w.category.startswith("blocked-")),
+                    None,
+                )
+                reason = blocked_w.message if blocked_w else "composable not found"
+                a(f"- \U0001f534 **{entry.mixin_stem}** \u2014 {reason}")
 
         a("")
 
