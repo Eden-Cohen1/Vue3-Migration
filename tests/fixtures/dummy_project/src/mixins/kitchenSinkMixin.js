@@ -97,6 +97,17 @@ export default {
     watchManual() {
       this.$watch('query', (n) => console.log(n))
     },
+    watchDotted() {
+      this.$watch('user.name', (val) => {
+        this.isLoading = true
+      })
+    },
+    watchGetter() {
+      this.$watch(() => this.query + this.count, (sum) => console.log(sum))
+    },
+    watchWithOptions() {
+      this.$watch('query', (val) => { this.fetchResults(val) }, { deep: true })
+    },
     // --- info ---
     forceRefresh() {
       this.$forceUpdate()

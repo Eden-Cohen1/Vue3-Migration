@@ -284,6 +284,124 @@ def rewrite_this_refs(
     return code
 
 
+def _extract_paren_args(code: str, open_paren_pos: int) -> tuple[str, int] | None:
+    """Extract content between matching ( ) parens, skipping strings/comments.
+
+    Args:
+        code: The full source text.
+        open_paren_pos: Index of the opening '('.
+
+    Returns:
+        (content_between_parens, closing_paren_pos) or None if unmatched.
+    """
+    depth = 0
+    pos = open_paren_pos
+    while pos < len(code):
+        new_pos, skipped = skip_non_code(code, pos)
+        if skipped:
+            pos = new_pos
+            continue
+        ch = code[pos]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return code[open_paren_pos + 1: pos], pos
+        pos += 1
+    return None
+
+
+def _split_top_level_args(args_str: str) -> list[str]:
+    """Split argument string at top-level commas, respecting all bracket types.
+
+    Tracks depth across (), [], {} and skips strings/comments.
+    """
+    args: list[str] = []
+    depth = 0
+    current_start = 0
+    pos = 0
+    while pos < len(args_str):
+        new_pos, skipped = skip_non_code(args_str, pos)
+        if skipped:
+            pos = new_pos
+            continue
+        ch = args_str[pos]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            args.append(args_str[current_start:pos].strip())
+            current_start = pos + 1
+        pos += 1
+    # Last argument
+    last = args_str[current_start:].strip()
+    if last:
+        args.append(last)
+    return args
+
+
+def _rewrite_watch_call(args_str: str) -> str | None:
+    """Convert this.$watch() arguments to watch() arguments.
+
+    Handles:
+    - String key: 'prop' -> prop  (bare ref, matching generate_watch_call convention)
+    - Dotted string key: 'a.b' -> () => a.value.b
+    - Function getter: () => this.x -> () => x.value  (this. refs rewritten)
+
+    Returns the rewritten argument string, or None if unparseable.
+    """
+    args = _split_top_level_args(args_str)
+    if len(args) < 2:
+        return None
+
+    first_arg = args[0].strip()
+
+    # Case 1: String literal key
+    if (len(first_arg) >= 2 and
+            first_arg[0] in ("'", '"') and first_arg[-1] == first_arg[0]):
+        key = first_arg[1:-1]
+        if not key or not all(c.isalnum() or c in "._$" for c in key):
+            return None  # unparseable key
+        if "." in key:
+            # Dotted key -> getter function
+            parts = key.split(".")
+            root = parts[0]
+            rest = ".".join(parts[1:])
+            watch_source = f"() => {root}.value.{rest}"
+        else:
+            # Simple key -> bare ref name
+            watch_source = key
+        remaining = ", ".join(args[1:])
+        return f"{watch_source}, {remaining}"
+
+    # Case 2: Function expression getter (arrow or function keyword)
+    # Detect arrow function or function keyword
+    stripped = first_arg.lstrip()
+    is_fn_expr = (
+        stripped.startswith("(") or  # arrow: (params) => ...
+        stripped.startswith("function") or  # function() { ... }
+        re.match(r"^\w+\s*=>", stripped)  # arrow: x => ...
+    )
+    if is_fn_expr:
+        # Best-effort rewrite of this.X -> X.value in the getter expression.
+        # In the real pipeline, rewrite_this_refs() runs BEFORE this function
+        # and handles member-aware rewriting (refs get .value, methods don't).
+        # By the time we get here, most this.X references are already gone.
+        # This catch-all only handles residual cases that rewrite_this_refs missed.
+        # It doesn't skip strings/comments — acceptable since getters are typically
+        # short expressions, not multi-line code with string literals.
+        def _rewrite_this_in_getter(getter: str) -> str:
+            return re.sub(r"\bthis\.(\w+)", lambda m: f"{m.group(1)}.value", getter)
+
+        rewritten_getter = _rewrite_this_in_getter(first_arg)
+        remaining = ", ".join(args[1:])
+        return f"{rewritten_getter}, {remaining}"
+
+    return None  # unparseable first argument
+
+
 def rewrite_this_dollar_refs(code: str) -> tuple[str, list[str]]:
     """Rewrite this.$xxx patterns that have direct Vue 3 equivalents.
 
@@ -291,6 +409,7 @@ def rewrite_this_dollar_refs(code: str) -> tuple[str, list[str]]:
     - this.$nextTick(cb)         -> nextTick(cb)
     - this.$set(obj, key, val)   -> obj[key] = val
     - this.$delete(obj, key)     -> delete obj[key]
+    - this.$watch(key, handler)  -> watch(key, handler)
 
     Skips matches inside strings and comments.
 
@@ -332,10 +451,37 @@ def rewrite_this_dollar_refs(code: str) -> tuple[str, list[str]]:
             key = m.group(2).strip()
             replacements.append((m.start(), m.end(), f"delete {obj}[{key}]"))
 
-    # Apply replacements from end to start
-    replacements.sort(key=lambda r: r[0], reverse=True)
+    # 4. this.$watch(key/fn, handler[, options]) -> watch(source, handler[, options])
+    for m in re.finditer(r"this\.\$watch\(", code):
+        if _in_non_code(m.start()):
+            continue
+        open_paren = m.end() - 1  # index of '('
+        result_args = _extract_paren_args(code, open_paren)
+        if result_args is None:
+            continue
+        args_content, close_paren = result_args
+        rewritten_args = _rewrite_watch_call(args_content)
+        if rewritten_args is None:
+            continue  # unparseable — leave unchanged, warning still fires
+        replacements.append((m.start(), close_paren + 1, f"watch({rewritten_args})"))
+        if "watch" not in imports:
+            imports.append("watch")
+
+    # Filter out replacements that overlap with larger ones (e.g. a $nextTick
+    # match inside a $watch span would conflict — the $watch replacement already
+    # covers the entire call including its arguments).
+    replacements.sort(key=lambda r: (r[0], -(r[1] - r[0])))  # by start, largest first
+    filtered: list[tuple[int, int, str]] = []
+    for repl in replacements:
+        start, end, text = repl
+        if filtered and start >= filtered[-1][0] and end <= filtered[-1][1]:
+            continue  # contained within the previous (larger) replacement
+        filtered.append(repl)
+
+    # Apply replacements from end to start to preserve positions
+    filtered.sort(key=lambda r: r[0], reverse=True)
     result = code
-    for start, end, replacement in replacements:
+    for start, end, replacement in filtered:
         result = result[:start] + replacement + result[end:]
 
     return result, imports

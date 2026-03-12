@@ -348,6 +348,87 @@ this.$nextTick(cb)"""
         assert len(imports) == 0
 
 
+class TestRewriteWatch:
+    """this.$watch(key, handler) -> watch(source, handler) with import."""
+
+    def test_rewrite_watch_string_key(self):
+        code = "this.$watch('query', (val) => { console.log(val) })"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "this.$watch" not in result
+        assert "watch(query," in result
+        assert "watch" in imports
+
+    def test_rewrite_watch_dotted_key(self):
+        code = "this.$watch('user.name', handler)"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "this.$watch" not in result
+        assert "watch(() => user.value.name, handler)" in result
+        assert "watch" in imports
+
+    def test_rewrite_watch_function_getter(self):
+        code = "this.$watch(() => this.x + this.y, handler)"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "this.$watch" not in result
+        assert "x.value" in result
+        assert "y.value" in result
+        assert "watch(" in result
+        assert "watch" in imports
+
+    def test_rewrite_watch_with_options(self):
+        code = "this.$watch('query', handler, { deep: true, immediate: true })"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "this.$watch" not in result
+        assert "watch(query, handler, { deep: true, immediate: true })" in result
+
+    def test_rewrite_watch_unwatch_capture(self):
+        code = "const unwatch = this.$watch('query', handler)"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "const unwatch = watch(query, handler)" in result
+        assert "watch" in imports
+
+    def test_rewrite_watch_plain_member_key(self):
+        """Method names used as watch keys should not get .value treatment.
+
+        Note: rewrite_this_dollar_refs doesn't have ref/plain member context,
+        so string keys are always emitted as bare names (matching generate_watch_call
+        convention where Vue 3's watch() auto-unwraps refs).
+        """
+        code = "this.$watch('fetchResults', handler)"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "watch(fetchResults, handler)" in result
+
+    def test_rewrite_watch_in_string_not_rewritten(self):
+        code = '''const msg = "this.$watch('x', handler)"'''
+        result, imports = rewrite_this_dollar_refs(code)
+        assert result == code
+        assert "watch" not in imports
+
+    def test_rewrite_watch_unparseable_fallback(self):
+        """Dynamic variable as first arg — leave unchanged."""
+        code = "this.$watch(dynamicKey, handler)"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "this.$watch" in result  # left unchanged
+        assert "watch" not in imports
+
+    def test_rewrite_watch_adds_import(self):
+        code = "this.$watch('x', fn)"
+        _, imports = rewrite_this_dollar_refs(code)
+        assert "watch" in imports
+
+    def test_rewrite_watch_import_not_duplicated(self):
+        code = "this.$watch('x', fn1)\nthis.$watch('y', fn2)"
+        _, imports = rewrite_this_dollar_refs(code)
+        assert imports.count("watch") == 1
+
+    def test_rewrite_watch_with_nested_nextTick(self):
+        """$nextTick inside $watch handler should not cause overlapping replacements."""
+        code = "this.$watch('x', () => { this.$nextTick(fn) })"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "this.$watch" not in result
+        assert "watch(x, () => { this.$nextTick(fn) })" in result
+        assert "watch" in imports
+
+
 class TestRewriteEdgeCases:
     """Edge cases for auto-rewriting."""
 

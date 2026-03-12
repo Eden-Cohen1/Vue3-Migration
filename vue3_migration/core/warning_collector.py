@@ -59,8 +59,10 @@ _THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str, str]] = [
      "Add const slots = useSlots() and import from 'vue'", "warning"),
     (r"this\.\$watch\b", "this.$watch", "this.$watch — use watch() from vue instead",
      "Import watch from 'vue' and use watch() directly", "warning"),
-    # $nextTick, $set, $delete are auto-migrated by rewrite_this_dollar_refs()
-    # in this_rewriter.py — no warning needed.
+    # $nextTick, $set, $delete, $watch are auto-migrated by rewrite_this_dollar_refs()
+    # in this_rewriter.py — no warning needed for nextTick/set/delete.
+    # $watch still emits a warning at detection time, but the warning disappears
+    # after rewrite because the this.$watch pattern is gone from the output.
     # --- info: probably removable, low urgency ---
     (r"this\.\$forceUpdate\b", "this.$forceUpdate", "$forceUpdate — rarely needed in Vue 3",
      "Reactive system usually handles it; review logic", "info"),
