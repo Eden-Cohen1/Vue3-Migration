@@ -66,6 +66,12 @@ _THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str, str]] = [
      "Reactive system usually handles it; review logic", "info"),
 ]
 
+# Identifiers handled by _THIS_DOLLAR_PATTERNS or auto-rewritten — skip in catch-all
+_KNOWN_DOLLAR_IDENTS: frozenset[str] = frozenset(
+    {cat.removeprefix("this.$") for _, cat, *_ in _THIS_DOLLAR_PATTERNS}
+    | {"nextTick", "set", "delete"}  # auto-rewritten by this_rewriter.py
+)
+
 
 _RESOLVED_PATTERNS: dict[str, str] = {
     "this.$router": "useRouter",
@@ -152,6 +158,28 @@ def collect_mixin_warnings(
                 severity=severity,
                 source_line=_line_number(mixin_source, match.start()),
             ))
+
+    # Catch-all: flag any this.$<ident> not already covered above
+    for m in re.finditer(r"this\.\$(\w+)", mixin_source):
+        ident = m.group(1)
+        cat = f"this.${ident}"
+        if ident in _KNOWN_DOLLAR_IDENTS or cat in seen_categories:
+            continue
+        seen_categories.add(cat)
+        line_start = mixin_source.rfind("\n", 0, m.start()) + 1
+        line_end = mixin_source.find("\n", m.end())
+        if line_end == -1:
+            line_end = len(mixin_source)
+        line_hint = mixin_source[line_start:line_end].strip()
+        warnings.append(MigrationWarning(
+            mixin_stem="",
+            category=cat,
+            message=f"this.${ident} (plugin/instance property) is not available in composables",
+            action_required=f"Use inject() or a Vue 3 composable equivalent for ${ident}",
+            line_hint=line_hint,
+            severity="warning",
+            source_line=_line_number(mixin_source, m.start()),
+        ))
 
     # External dependencies (this.X where X is not in this mixin)
     warnings.extend(detect_external_dependencies(mixin_source, mixin_members))
@@ -372,6 +400,9 @@ def _get_short_hint(warning: MigrationWarning) -> str:
     hint = _SHORT_HINT.get(warning.category)
     if hint:
         return hint
+    # Catch-all this.$ plugin properties
+    if warning.category.startswith("this.$"):
+        return "plugin property — not available in composable, use inject() or a composable"
     # Fallback: truncate action_required to ~30 chars
     action = warning.action_required
     if len(action) > 35:

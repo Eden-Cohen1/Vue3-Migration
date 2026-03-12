@@ -1651,3 +1651,141 @@ export function useMyMixin() {
         ]
         result = suppress_resolved_warnings(warnings, [], composable_source=None)
         assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Catch-all unknown this.$xxx warnings
+# ---------------------------------------------------------------------------
+
+class TestUnknownThisDollarCatchAll:
+    """Tests for the catch-all that flags unknown this.$<ident> patterns."""
+
+    def _make_members(self):
+        return MixinMembers()
+
+    def test_unknown_plugin_property_triggers_warning(self):
+        """this.$toast should produce a catch-all warning."""
+        source = """
+export default {
+    methods: {
+        showError() {
+            this.$toast.error('Something went wrong')
+        }
+    }
+}
+"""
+        warnings = collect_mixin_warnings(source, self._make_members(), [])
+        cats = [w.category for w in warnings]
+        assert "this.$toast" in cats
+        w = next(w for w in warnings if w.category == "this.$toast")
+        assert w.severity == "warning"
+        assert "$toast" in w.message
+        assert "inject()" in w.action_required
+
+    def test_unknown_confirm_plugin(self):
+        """this.$confirm() should produce a catch-all warning."""
+        source = """
+export default {
+    methods: {
+        remove() {
+            this.$confirm('Are you sure?')
+        }
+    }
+}
+"""
+        warnings = collect_mixin_warnings(source, self._make_members(), [])
+        cats = [w.category for w in warnings]
+        assert "this.$confirm" in cats
+
+    def test_known_patterns_no_duplicate(self):
+        """Known patterns like this.$router should NOT produce a catch-all duplicate."""
+        source = """
+export default {
+    methods: {
+        go() {
+            this.$router.push('/home')
+        }
+    }
+}
+"""
+        warnings = collect_mixin_warnings(source, self._make_members(), [])
+        router_warnings = [w for w in warnings if w.category == "this.$router"]
+        assert len(router_warnings) == 1
+
+    def test_auto_rewritten_skipped(self):
+        """$nextTick, $set, $delete are auto-rewritten — no warning."""
+        source = """
+export default {
+    methods: {
+        update() {
+            this.$nextTick(() => {})
+            this.$set(this.obj, 'key', 'val')
+            this.$delete(this.obj, 'key')
+        }
+    }
+}
+"""
+        warnings = collect_mixin_warnings(source, self._make_members(), [])
+        cats = [w.category for w in warnings]
+        assert "this.$nextTick" not in cats
+        assert "this.$set" not in cats
+        assert "this.$delete" not in cats
+
+    def test_deduplication_same_identifier(self):
+        """this.$toast used 3 times should produce only 1 warning."""
+        source = """
+export default {
+    methods: {
+        a() { this.$toast.info('a') },
+        b() { this.$toast.error('b') },
+        c() { this.$toast.success('c') },
+    }
+}
+"""
+        warnings = collect_mixin_warnings(source, self._make_members(), [])
+        toast_warnings = [w for w in warnings if w.category == "this.$toast"]
+        assert len(toast_warnings) == 1
+
+    def test_multiple_unknown_identifiers(self):
+        """this.$toast + this.$modal should produce 2 separate warnings."""
+        source = """
+export default {
+    methods: {
+        show() {
+            this.$toast.info('hi')
+            this.$modal.open('dialog')
+        }
+    }
+}
+"""
+        warnings = collect_mixin_warnings(source, self._make_members(), [])
+        cats = {w.category for w in warnings}
+        assert "this.$toast" in cats
+        assert "this.$modal" in cats
+
+    def test_line_hint_captured(self):
+        """The catch-all warning should capture the source line."""
+        source = """
+export default {
+    methods: {
+        notify() {
+            this.$modalMessageBx.show('hello')
+        }
+    }
+}
+"""
+        warnings = collect_mixin_warnings(source, self._make_members(), [])
+        w = next(w for w in warnings if w.category == "this.$modalMessageBx")
+        assert w.line_hint is not None
+        assert "$modalMessageBx" in w.line_hint
+
+    def test_short_hint_fallback(self):
+        """Unknown this.$ categories should get a generic short hint."""
+        from vue3_migration.core.warning_collector import _get_short_hint
+        w = MigrationWarning(
+            mixin_stem="", category="this.$customThing",
+            message="test", action_required="test",
+            line_hint=None, severity="warning",
+        )
+        hint = _get_short_hint(w)
+        assert "plugin property" in hint
