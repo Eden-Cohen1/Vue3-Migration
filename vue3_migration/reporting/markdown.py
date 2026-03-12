@@ -1006,14 +1006,22 @@ def build_summary_section(
     active_entries = [e for e in entries if not any(w.category == "unused-mixin" for w in e.warnings)]
     unused_count = len(entries) - len(active_entries)
 
-    total_errors = sum(1 for e in active_entries for w in e.warnings
-                       if w.severity == "error" and w.category not in _AUTO_REWRITTEN_CATEGORIES)
-    total_warns = sum(1 for e in active_entries for w in e.warnings
-                      if w.severity == "warning" and w.category not in _AUTO_REWRITTEN_CATEGORIES)
-    quick = sum(1 for e in active_entries
-                if not any(w.severity in ("error", "warning") and w.category not in _AUTO_REWRITTEN_CATEGORIES
-                           for w in e.warnings))
-    needs_work = len(active_entries) - quick
+    # Classify into tiers matching the Action Plan (🟢/🟡/🔴)
+    quick_wins: list[MixinEntry] = []
+    dropin_fixes: list[MixinEntry] = []
+    design_decisions: list[MixinEntry] = []
+
+    for entry in active_entries:
+        non_info = [w for w in entry.warnings
+                    if w.severity in ("error", "warning") and w.category not in _AUTO_REWRITTEN_CATEGORIES]
+        has_errors = any(w.severity == "error" and w.category not in _AUTO_REWRITTEN_CATEGORIES
+                         for w in entry.warnings)
+        if not non_info:
+            quick_wins.append(entry)
+        elif has_errors:
+            design_decisions.append(entry)
+        else:
+            dropin_fixes.append(entry)
 
     lines: list[str] = []
     a = lines.append
@@ -1022,14 +1030,16 @@ def build_summary_section(
     # Overview sentence
     a(f"This report covers **{len(active_entries)}** composable{'s' if len(active_entries) != 1 else ''}.\n")
 
-    if quick:
-        a(f"- \U0001f7e2 **{quick}** can be applied as-is — no manual steps needed")
-    if needs_work:
-        a(f"- \U0001f7e1 **{needs_work}** need{'s' if needs_work == 1 else ''} manual attention before the migration is complete")
-    if total_errors:
-        a(f"- \u274c **{total_errors}** blocker{'s' if total_errors != 1 else ''} must be resolved — code won't run until fixed")
-    if total_warns:
-        a(f"- \u26a0\ufe0f **{total_warns}** warning{'s' if total_warns != 1 else ''} — known patterns with documented fixes")
+    if quick_wins:
+        a(f"- \U0001f7e2 **{len(quick_wins)}** ready to apply — no manual steps needed")
+    if dropin_fixes:
+        warn_count = sum(1 for e in dropin_fixes for w in e.warnings
+                         if w.severity == "warning" and w.category not in _AUTO_REWRITTEN_CATEGORIES)
+        a(f"- \U0001f7e1 **{len(dropin_fixes)}** need drop-in fixes ({warn_count} warning{'s' if warn_count != 1 else ''})")
+    if design_decisions:
+        err_count = sum(1 for e in design_decisions for w in e.warnings
+                        if w.severity == "error" and w.category not in _AUTO_REWRITTEN_CATEGORIES)
+        a(f"- \U0001f534 **{len(design_decisions)}** need design decisions ({err_count} blocker{'s' if err_count != 1 else ''})")
     if unused_count:
         a(f"- \U0001f5d1\ufe0f **{unused_count}** mixin{'s' if unused_count != 1 else ''} not imported by any component — safe to delete")
     if skipped_count:
