@@ -211,9 +211,9 @@ class TestCrossFlowConsistency:
                     f"[{label}] onMounted leaked into component"
                 )
 
-    def test_reactive_guard_prevents_patching_all_flows(self, project):
-        """D1: useStorage.js uses reactive() — no composable changes should
-        be produced in any flow."""
+    def test_reactive_composable_patched_with_warning_all_flows(self, project):
+        """D1: useStorage.js uses reactive() — patcher should still add missing
+        members and produce a mixed-reactivity-pattern warning."""
         for run_fn, label in [
             (lambda p: _run_full(p), "full"),
             (lambda p: _run_component(p, "ReactiveGuard.vue"), "component"),
@@ -225,10 +225,25 @@ class TestCrossFlowConsistency:
                  if "useStorage" in str(c.file_path)),
                 None,
             )
-            if storage:
-                assert not storage.has_changes, (
-                    f"[{label}] reactive() guard failed — useStorage was modified"
-                )
+            assert storage is not None, f"[{label}] useStorage not in composable_changes"
+            assert storage.has_changes, (
+                f"[{label}] useStorage should be patched with missing members"
+            )
+            # The patched content should have the new ref declarations
+            assert "const cache = ref(" in storage.new_content, (
+                f"[{label}] patched useStorage missing 'cache' ref"
+            )
+            assert "const ttl = ref(" in storage.new_content, (
+                f"[{label}] patched useStorage missing 'ttl' ref"
+            )
+            # Entry should carry a mixed-reactivity-pattern warning
+            for _cp, entries in plan.entries_by_component:
+                for e in entries:
+                    if e.mixin_stem == "storageMixin":
+                        cats = [w.category for w in e.warnings]
+                        assert "mixed-reactivity-pattern" in cats, (
+                            f"[{label}] storageMixin entry missing mixed-reactivity-pattern warning"
+                        )
 
 
 # ---------------------------------------------------------------------------

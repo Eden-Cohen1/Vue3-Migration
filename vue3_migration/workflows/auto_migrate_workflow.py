@@ -193,6 +193,37 @@ def plan_composable_patches(
                     "mixin_path": entry.mixin_path,
                 }
             rec = patch_map[comp_path]
+
+            # Warn when the composable uses reactive() — the patcher will add
+            # standalone ref()/computed() declarations alongside the existing
+            # reactive() state, which creates two competing reactivity patterns
+            # in the same file.
+            if has_blocked and "reactive(" in rec["content"]:
+                missing_names = sorted(
+                    entry.classification.truly_missing
+                    + entry.classification.truly_not_returned
+                )
+                if missing_names:
+                    names_str = ", ".join(missing_names)
+                    entry.warnings.append(MigrationWarning(
+                        mixin_stem=entry.mixin_stem,
+                        category="mixed-reactivity-pattern",
+                        message=(
+                            f"Composable '{entry.composable.fn_name}' uses reactive() but "
+                            f"the patched members ({names_str}) were added as standalone "
+                            "ref()/computed() declarations. This mixes two reactivity "
+                            "patterns in the same file."
+                        ),
+                        action_required=(
+                            f"Consolidate '{entry.composable.fn_name}' to use one pattern: "
+                            f"either move {names_str} into the existing reactive() object, "
+                            "or convert the reactive() state to individual ref() calls."
+                        ),
+                        line_hint=None,
+                        severity="warning",
+                        source_context="composable",
+                    ))
+
             if has_blocked:
                 rec["not_returned"].update(entry.classification.truly_not_returned)
                 rec["missing"].update(entry.classification.truly_missing)
@@ -359,6 +390,81 @@ def plan_component_injections(
 
             if entry.status == MigrationStatus.READY:
                 ready_entries.append(entry)
+
+        # Attach diagnostic warnings to blocked entries so the report
+        # explains WHY each mixin was not migrated.
+        blocked_entries = [e for e in entries if e.status not in (
+            MigrationStatus.READY, MigrationStatus.FORCE_UNBLOCKED,
+        )]
+        for entry in blocked_entries:
+            from ..models import MigrationWarning
+            if entry.status == MigrationStatus.BLOCKED_NO_COMPOSABLE:
+                if entry.composable:
+                    detail = (
+                        f"Composable '{entry.composable.fn_name}' was found "
+                        "but could not be matched to this mixin's members."
+                    )
+                else:
+                    detail = (
+                        "No composable file was found for this mixin. "
+                        "Generate one with the mixin command, or create it manually."
+                    )
+                entry.warnings.append(MigrationWarning(
+                    mixin_stem=entry.mixin_stem,
+                    category="blocked-no-composable",
+                    message=(
+                        f"Mixin '{entry.mixin_stem}' was NOT migrated: {detail}"
+                    ),
+                    action_required=(
+                        "Create or generate a composable that covers this mixin's members, "
+                        "then re-run the migration."
+                    ),
+                    line_hint=None,
+                    severity="warning",
+                    source_context="component",
+                ))
+            elif entry.status == MigrationStatus.BLOCKED_MISSING_MEMBERS:
+                missing = (
+                    ", ".join(entry.classification.truly_missing)
+                    if entry.classification else "unknown"
+                )
+                fn_name = entry.composable.fn_name if entry.composable else "composable"
+                entry.warnings.append(MigrationWarning(
+                    mixin_stem=entry.mixin_stem,
+                    category="blocked-missing-members",
+                    message=(
+                        f"Mixin '{entry.mixin_stem}' was NOT migrated: "
+                        f"composable '{fn_name}' is missing members: {missing}."
+                    ),
+                    action_required=(
+                        f"Add the missing members ({missing}) to '{fn_name}', "
+                        "then re-run the migration."
+                    ),
+                    line_hint=None,
+                    severity="warning",
+                    source_context="component",
+                ))
+            elif entry.status == MigrationStatus.BLOCKED_NOT_RETURNED:
+                not_returned = (
+                    ", ".join(entry.classification.truly_not_returned)
+                    if entry.classification else "unknown"
+                )
+                fn_name = entry.composable.fn_name if entry.composable else "composable"
+                entry.warnings.append(MigrationWarning(
+                    mixin_stem=entry.mixin_stem,
+                    category="blocked-not-returned",
+                    message=(
+                        f"Mixin '{entry.mixin_stem}' was NOT migrated: "
+                        f"composable '{fn_name}' declares but does not return: {not_returned}."
+                    ),
+                    action_required=(
+                        f"Add {not_returned} to the return statement of '{fn_name}', "
+                        "then re-run the migration."
+                    ),
+                    line_hint=None,
+                    severity="warning",
+                    source_context="component",
+                ))
 
         if not ready_entries:
             continue

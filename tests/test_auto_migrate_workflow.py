@@ -106,6 +106,91 @@ def test_no_file_io_during_run(project):
 
 
 # ---------------------------------------------------------------------------
+# BLOCKED → patched → READY: composable with indirect return
+# ---------------------------------------------------------------------------
+
+
+def test_blocked_missing_patched_then_mixin_removed(tmp_path):
+    """A mixin blocked due to a missing member should become READY after
+    composable patching, and the mixin import + mixins array entry should be
+    removed from the component.
+
+    Regression test for the indirect-return bug where add_members_to_composable
+    and add_keys_to_return silently failed on ``const obj = {...}; return obj``.
+    """
+    proj = tmp_path / "proj"
+    (proj / "src" / "components").mkdir(parents=True)
+    (proj / "src" / "mixins").mkdir(parents=True)
+    (proj / "src" / "composables").mkdir(parents=True)
+
+    # Mixin with 'query' (data) and 'search' (method)
+    (proj / "src" / "mixins" / "searchMixin.js").write_text(
+        "export default {\n"
+        "  data() { return { query: '' } },\n"
+        "  methods: { search() { console.log(this.query) } }\n"
+        "}\n"
+    )
+
+    # Composable using indirect return — 'query' is MISSING
+    (proj / "src" / "composables" / "useSearch.js").write_text(
+        "import { ref } from 'vue'\n\n"
+        "export function useSearch() {\n"
+        "  function search() {\n"
+        "    console.log('searching')\n"
+        "  }\n"
+        "  const api = { search }\n"
+        "  return api\n"
+        "}\n"
+    )
+
+    # Component uses both query and search from the mixin
+    (proj / "src" / "components" / "SearchComp.vue").write_text(
+        "<template><div>{{ query }} <button @click=\"search\">Go</button></div></template>\n"
+        "<script>\n"
+        "import searchMixin from '@/mixins/searchMixin'\n"
+        "export default {\n"
+        "  name: 'SearchComp',\n"
+        "  mixins: [searchMixin],\n"
+        "}\n"
+        "</script>\n"
+    )
+
+    config = MigrationConfig(project_root=proj)
+    with patch("builtins.print"):
+        plan = run(proj, config)
+
+    # Composable should be patched to add 'query'
+    composable_change = next(
+        (c for c in plan.composable_changes if "useSearch" in str(c.file_path)), None
+    )
+    assert composable_change is not None
+    assert composable_change.has_changes
+    assert "const query = ref(" in composable_change.new_content
+    # 'query' should be in the indirect return object
+    assert "query" in composable_change.new_content.split("const api")[1].split("}")[0]
+
+    # Component should have mixin removed and composable injected
+    comp_change = next(
+        (c for c in plan.component_changes if "SearchComp" in str(c.file_path)), None
+    )
+    assert comp_change is not None
+    assert comp_change.has_changes
+    assert "useSearch" in comp_change.new_content
+    assert "setup()" in comp_change.new_content
+    assert "mixins:" not in comp_change.new_content
+    assert "searchMixin" not in comp_change.new_content
+
+    # Entry should have transitioned to READY
+    search_entry = None
+    for _path, entries in plan.entries_by_component:
+        for e in entries:
+            if getattr(e, "mixin_stem", None) == "searchMixin":
+                search_entry = e
+    assert search_entry is not None
+    assert search_entry.status.value == "ready"
+
+
+# ---------------------------------------------------------------------------
 # plan_new_composables — no composables/ directory in project
 # ---------------------------------------------------------------------------
 
@@ -421,3 +506,124 @@ class TestWarnUnusedMixinMembers:
         _warn_unused_mixin_members(entries)
 
         assert len([w for w in entry.warnings if w.category == "unused-mixin-member"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Blocked entry diagnostic warnings
+# ---------------------------------------------------------------------------
+
+from vue3_migration.models import (
+    ComposableCoverage,
+    MemberClassification,
+    MigrationStatus,
+)
+
+
+def _make_blocked_entry(mixin_stem, status, composable=None, classification=None, used_members=None):
+    """Build a MixinEntry pre-set to a blocked status."""
+    entry = MixinEntry(
+        local_name=mixin_stem,
+        mixin_path=Path(f"/fake/mixins/{mixin_stem}.js"),
+        mixin_stem=mixin_stem,
+        members=MixinMembers(data=["x"], methods=["y"]),
+        used_members=used_members or ["x", "y"],
+        composable=composable,
+        classification=classification,
+        status=status,
+    )
+    return entry
+
+
+class TestBlockedEntryDiagnostics:
+    """Blocked entries should get diagnostic warnings explaining why they were skipped."""
+
+    SIMPLE_VUE = '<template><div/></template>\n<script>\nexport default { mixins: [myMixin] }\n</script>\n'
+
+    def _run(self, tmp_path, entries):
+        """Write a minimal .vue file and call plan_component_injections."""
+        comp = tmp_path / "Comp.vue"
+        comp.write_text(self.SIMPLE_VUE)
+        config = MigrationConfig(project_root=tmp_path)
+        plan_component_injections([(comp, entries)], [], config)
+
+    def test_blocked_no_composable_warns(self, tmp_path):
+        entry = _make_blocked_entry(
+            "myMixin", MigrationStatus.BLOCKED_NO_COMPOSABLE,
+        )
+        self._run(tmp_path, [entry])
+
+        blocked = [w for w in entry.warnings if w.category == "blocked-no-composable"]
+        assert len(blocked) == 1
+        assert "was NOT migrated" in blocked[0].message
+        assert "No composable file was found" in blocked[0].message
+        assert blocked[0].severity == "warning"
+
+    def test_blocked_missing_members_warns(self, tmp_path):
+        composable = ComposableCoverage(
+            file_path=tmp_path / "useMyMixin.js",
+            fn_name="useMyMixin",
+            import_path="@/composables/useMyMixin",
+            all_identifiers=["x"],
+            declared_identifiers=["x"],
+            return_keys=["x"],
+        )
+        classification = MemberClassification(
+            missing=["y"],
+            truly_missing=["y"],
+            injectable=["x"],
+        )
+        entry = _make_blocked_entry(
+            "myMixin", MigrationStatus.BLOCKED_MISSING_MEMBERS,
+            composable=composable, classification=classification,
+        )
+        self._run(tmp_path, [entry])
+
+        blocked = [w for w in entry.warnings if w.category == "blocked-missing-members"]
+        assert len(blocked) == 1
+        assert "was NOT migrated" in blocked[0].message
+        assert "y" in blocked[0].message
+        assert "useMyMixin" in blocked[0].message
+
+    def test_blocked_not_returned_warns(self, tmp_path):
+        composable = ComposableCoverage(
+            file_path=tmp_path / "useMyMixin.js",
+            fn_name="useMyMixin",
+            import_path="@/composables/useMyMixin",
+            all_identifiers=["x", "y"],
+            declared_identifiers=["x", "y"],
+            return_keys=["x"],
+        )
+        classification = MemberClassification(
+            not_returned=["y"],
+            truly_not_returned=["y"],
+            injectable=["x"],
+        )
+        entry = _make_blocked_entry(
+            "myMixin", MigrationStatus.BLOCKED_NOT_RETURNED,
+            composable=composable, classification=classification,
+        )
+        self._run(tmp_path, [entry])
+
+        blocked = [w for w in entry.warnings if w.category == "blocked-not-returned"]
+        assert len(blocked) == 1
+        assert "was NOT migrated" in blocked[0].message
+        assert "y" in blocked[0].message
+        assert "does not return" in blocked[0].message
+
+    def test_ready_entries_get_no_blocked_warning(self, tmp_path):
+        entry = _make_blocked_entry(
+            "myMixin", MigrationStatus.READY, used_members=[],
+        )
+        entry.members = MixinMembers()
+        self._run(tmp_path, [entry])
+
+        blocked = [w for w in entry.warnings if w.category.startswith("blocked-")]
+        assert len(blocked) == 0
+
+    def test_multiple_blocked_entries_each_get_warning(self, tmp_path):
+        entry1 = _make_blocked_entry("mixA", MigrationStatus.BLOCKED_NO_COMPOSABLE)
+        entry2 = _make_blocked_entry("mixB", MigrationStatus.BLOCKED_NO_COMPOSABLE)
+        self._run(tmp_path, [entry1, entry2])
+
+        assert any(w.category == "blocked-no-composable" for w in entry1.warnings)
+        assert any(w.category == "blocked-no-composable" for w in entry2.warnings)
