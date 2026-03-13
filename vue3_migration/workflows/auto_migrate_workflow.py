@@ -523,6 +523,7 @@ def plan_component_injections(
         # skipped and flagged for manual review.
         migratable_entries = []
         composable_calls = []
+        seen_members: set[str] = set()
 
         for entry in ready_entries:
             injectable = list(entry.classification.injectable if entry.classification else entry.used_members)
@@ -570,9 +571,35 @@ def plan_component_injections(
                     if m not in setup_ids or m in lifecycle_members_set
                 ]
 
+            # Deduplicate cross-composable name collisions (first-wins)
+            collision_skipped: list[str] = []
+            if injectable and entry.composable:
+                collision_skipped = [m for m in injectable if m in seen_members]
+                injectable = [m for m in injectable if m not in seen_members]
+
             if injectable and entry.composable:
                 migratable_entries.append(entry)
                 composable_calls.append((entry.composable.fn_name, injectable))
+                seen_members.update(injectable)
+                # Warn about cross-composable collision dedup
+                if collision_skipped:
+                    from ..models import MigrationWarning
+                    skipped_names = ", ".join(collision_skipped)
+                    entry.warnings.append(MigrationWarning(
+                        mixin_stem=entry.mixin_stem,
+                        category="name-collision-skipped",
+                        message=(
+                            f"Skipped destructuring: {skipped_names} "
+                            "(already provided by an earlier composable)."
+                        ),
+                        action_required=(
+                            f"Verify the kept version of {skipped_names} is correct, "
+                            "or rename in one composable."
+                        ),
+                        line_hint=None,
+                        severity="warning",
+                        source_context="component",
+                    ))
                 # Warn about setup() identifier conflicts
                 if setup_conflicts_in_injectable:
                     from ..models import MigrationWarning

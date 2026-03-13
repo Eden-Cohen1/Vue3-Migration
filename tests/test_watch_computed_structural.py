@@ -553,6 +553,88 @@ def test_collision_multiple_overlaps():
     assert any("bar" in n for n in names)
 
 
+# ── Cross-composable name collision dedup tests ──────────────────────────────
+
+from vue3_migration.transform.injector import inject_setup
+
+
+def test_collision_dedup_first_wins():
+    """First composable keeps the colliding member, second does not."""
+    component = """<script>
+export default {
+  name: 'Test',
+}
+</script>"""
+    # Simulate what the workflow should produce AFTER dedup: isLoading only in first call
+    calls = [
+        ("useLoading", ["isLoading", "startLoading"]),
+        ("useStatus", ["statusMessage", "clearStatus"]),  # isLoading removed by dedup
+    ]
+    result = inject_setup(component, calls)
+    assert "const { isLoading, startLoading } = useLoading()" in result
+    assert "const { statusMessage, clearStatus } = useStatus()" in result
+    # isLoading should appear in exactly one const destructuring
+    import re
+    destructures = re.findall(r"const \{[^}]+\} = \w+\(\)", result)
+    isloading_destructures = [d for d in destructures if "isLoading" in d]
+    assert len(isloading_destructures) == 1, (
+        f"isLoading should be destructured once, found in: {isloading_destructures}"
+    )
+
+
+def test_collision_dedup_preserves_unique_members():
+    """Non-colliding members from the second composable are kept."""
+    component = """<script>
+export default {
+  name: 'Test',
+}
+</script>"""
+    calls = [
+        ("useA", ["shared", "uniqueA"]),
+        ("useB", ["uniqueB"]),  # 'shared' removed by dedup
+    ]
+    result = inject_setup(component, calls)
+    assert "uniqueA" in result
+    assert "uniqueB" in result
+    assert "const { uniqueB } = useB()" in result
+
+
+def test_collision_dedup_all_members_collide_no_empty_destructure():
+    """If all members of a composable collide, no empty destructure is emitted."""
+    component = """<script>
+export default {
+  name: 'Test',
+}
+</script>"""
+    # After dedup, useB would have zero members → should not be in calls at all
+    calls = [
+        ("useA", ["foo", "bar"]),
+        # useB not included because dedup removed all its members
+    ]
+    result = inject_setup(component, calls)
+    assert "useA()" in result
+    assert "useB" not in result
+
+
+def test_collision_dedup_three_composables():
+    """Member appearing in 3 composables: only first gets it."""
+    component = """<script>
+export default {
+  name: 'Test',
+}
+</script>"""
+    calls = [
+        ("useA", ["shared", "a1"]),
+        ("useB", ["b1"]),       # 'shared' removed
+        ("useC", ["c1"]),       # 'shared' removed
+    ]
+    result = inject_setup(component, calls)
+    # 'shared' appears only in useA's destructure
+    assert "const { shared, a1 } = useA()" in result
+    assert "const { b1 } = useB()" in result
+    assert "const { c1 } = useC()" in result
+
+
 # ── Phase 3 Regression Tests: Watch conversion bugs ──────────────────────────
 
 from vue3_migration.transform.composable_patcher import (

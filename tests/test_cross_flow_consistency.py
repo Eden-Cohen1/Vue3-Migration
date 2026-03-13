@@ -328,3 +328,59 @@ class TestDivergencePoints:
         assert "detect_name_collisions(" in source, (
             "detect_name_collisions() should be called in plan_component_injections"
         )
+
+
+class TestCollisionDedup:
+    """Verify that cross-composable name collisions produce valid code."""
+
+    def test_collision_dedup_full_flow(self, project):
+        """CollisionTest.vue uses loadingMixin + statusMixin which both provide
+        isLoading. The generated setup() must destructure isLoading only once."""
+        plan = _run_full(project)
+        collision_change = [
+            c for c in plan.all_changes
+            if "CollisionTest" in str(c.file_path)
+        ]
+        assert collision_change, "CollisionTest.vue should be in the migration plan"
+        new_content = collision_change[0].new_content
+        # isLoading must appear in exactly one destructure statement
+        import re
+        destructures = re.findall(r"const \{[^}]+\} = \w+\(\)", new_content)
+        isloading_destructures = [d for d in destructures if "isLoading" in d]
+        assert len(isloading_destructures) == 1, (
+            f"isLoading should be destructured exactly once, found in: {isloading_destructures}"
+        )
+        # Both composable calls should still appear
+        assert "useLoading()" in new_content
+        assert "useStatus()" in new_content
+
+    def test_collision_dedup_component_flow(self, project):
+        """Single-component flow also deduplicates colliding members."""
+        plan = _run_component(project, "CollisionTest.vue")
+        collision_change = [
+            c for c in plan.all_changes
+            if "CollisionTest" in str(c.file_path)
+        ]
+        assert collision_change, "CollisionTest.vue should be in the migration plan"
+        new_content = collision_change[0].new_content
+        import re
+        destructures = re.findall(r"const \{[^}]+\} = \w+\(\)", new_content)
+        isloading_destructures = [d for d in destructures if "isLoading" in d]
+        assert len(isloading_destructures) == 1, (
+            f"isLoading should be destructured exactly once, found in: {isloading_destructures}"
+        )
+
+    def test_collision_warning_emitted(self, project):
+        """A name-collision warning should be emitted for the colliding member."""
+        plan = _run_full(project)
+        all_warnings = []
+        for _comp_path, entry_list in plan.entries_by_component:
+            for entry in entry_list:
+                all_warnings.extend(entry.warnings)
+        collision_warnings = [
+            w for w in all_warnings
+            if "collision" in w.category.lower()
+        ]
+        assert collision_warnings, (
+            "At least one name-collision warning should be emitted for CollisionTest.vue"
+        )

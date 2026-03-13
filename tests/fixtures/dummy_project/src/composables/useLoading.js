@@ -1,3 +1,4 @@
+// ✅ 0 issues — all mixin members have composable equivalents
 import { ref, computed } from 'vue'
 
 export function useLoading() {
@@ -35,5 +36,6 @@ export function useLoading() {
     startLoading,
     stopLoading,
     setError,
+    loadingMessage,
   }
 }

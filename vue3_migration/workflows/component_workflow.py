@@ -217,11 +217,18 @@ def plan_injection(
             content = new
 
     # Step 3: Create or merge setup()
-    composable_calls = [
-        (entry.composable.fn_name, _get_injectable_members(entry))
-        for entry in entries_to_inject
-        if entry.composable and _get_injectable_members(entry)
-    ]
+    seen_members: set[str] = set()
+    composable_calls = []
+    for entry in entries_to_inject:
+        if not entry.composable:
+            continue
+        injectable = _get_injectable_members(entry)
+        if not injectable:
+            continue
+        deduped = [m for m in injectable if m not in seen_members]
+        seen_members.update(deduped)
+        if deduped:
+            composable_calls.append((entry.composable.fn_name, deduped))
 
     if composable_calls:
         new = inject_setup(content, composable_calls)
