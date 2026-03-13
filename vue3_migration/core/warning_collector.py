@@ -128,6 +128,9 @@ def collect_mixin_warnings(
     mixin_source: str,
     mixin_members: MixinMembers,
     lifecycle_hooks: list[str],
+    mixin_path: "Path | None" = None,
+    project_root: "Path | None" = None,
+    all_mixin_members: "dict[str, dict[str, list[str]]] | None" = None,
 ) -> list[MigrationWarning]:
     """Scan mixin source for known problematic patterns.
 
@@ -193,7 +196,43 @@ def collect_mixin_warnings(
     warnings.extend(detect_mixin_options(mixin_source, ""))
 
     # Structural patterns (factory functions, nested mixins, render, etc.)
-    warnings.extend(detect_structural_patterns(mixin_source, ""))
+    warnings.extend(detect_structural_patterns(
+        mixin_source, "",
+        mixin_path=mixin_path,
+        project_root=project_root,
+        all_mixin_members=all_mixin_members,
+    ))
+
+    # Enrich external-dependency warnings with transitive chain info
+    chains = resolve_nested_member_chains(
+        mixin_source, mixin_path, project_root,
+        all_mixin_members=all_mixin_members,
+    )
+    for w in warnings:
+        if w.category != "external-dependency":
+            continue
+        m = re.match(r"'(\w+)'", w.message)
+        if not m:
+            continue
+        member = m.group(1)
+        if member in chains:
+            source_mixin, chain = chains[member]
+            chain_str = " \u2192 ".join(chain)
+            w.message = (
+                f"'{member}' \u2014 from {source_mixin} ({chain_str}), "
+                f"use param, function arg, or another composable"
+            )
+            w.action_required = (
+                f"'{member}' is provided by nested mixin `{source_mixin}` "
+                f"({chain_str}). Use as param, function arg, or import from another composable"
+            )
+        else:
+            w.message = (
+                f"'{member}' \u2014 pass {member} as param, function arg, or use another composable"
+            )
+            w.action_required = (
+                f"Pass '{member}' as param, function arg, or use another composable"
+            )
 
     return warnings
 
@@ -398,7 +437,17 @@ def _get_short_hint(warning: MigrationWarning) -> str:
     if warning.category == "external-dependency":
         m = re.match(r"'(\w+)'", warning.message)
         member = m.group(1) if m else "dep"
-        return f"external dep — pass {member} as param, function arg, or import from composable"
+        # Check if message contains chain info (enriched by transitive resolution)
+        chain_match = re.search(r"from (\w+) \((.+?)\),", warning.message)
+        if chain_match:
+            source_mixin = chain_match.group(1)
+            chain_str = chain_match.group(2)
+            arrow_count = chain_str.count("\u2192")
+            if arrow_count <= 1:
+                return f"external dep \u2014 {member} from {source_mixin} ({chain_str}), use param, function arg, or another composable"
+            else:
+                return f"external dep \u2014 {member} from {source_mixin}, use param, function arg, or another composable"
+        return f"external dep \u2014 pass {member} as param, function arg, or use another composable"
     hint = _SHORT_HINT.get(warning.category)
     if hint:
         return hint
@@ -490,23 +539,35 @@ def inject_inline_warnings(
         if pat not in pattern_info:
             pattern_info[pat] = val
 
-    # Annotate every code line that matches a warning pattern
+    # Annotate every code line that matches a warning pattern.
+    # A single line may match multiple patterns (e.g. this.$on + this.handleCustom),
+    # so we collect all matches and combine them.
     for i, line in enumerate(lines):
         stripped = line.lstrip()
         if stripped.startswith("//"):
             continue
         if _SUFFIX_ICON_RE.search(line):
             continue
+        matched_hints: list[tuple[str, str]] = []  # (severity, hint)
         for pat, (sev, hint) in pattern_info.items():
-            matched = pat in line
+            if pat.startswith("this.$") or pat == "= this":
+                # Word-boundary matching for this.$ patterns to avoid substring
+                # false positives (e.g. this.$on matching this.$once)
+                matched = bool(re.search(rf'{re.escape(pat)}(?![a-zA-Z_$])', line))
+            else:
+                matched = pat in line
             if not matched and pat in pattern_fallbacks:
                 bare = pattern_fallbacks[pat]
                 if re.search(rf'\b{re.escape(bare)}\b', line):
                     matched = True
             if matched:
-                icon = _INLINE_ICON.get(sev, "\u26a0\ufe0f")
-                lines[i] = line.rstrip("\n") + f"  // {icon} {hint}\n"
-                break
+                matched_hints.append((sev, hint))
+        if matched_hints:
+            # Use highest-severity icon for the primary annotation
+            best_sev = min(matched_hints, key=lambda x: _SEVERITY_ORDER.get(x[0], 2))[0]
+            icon = _INLINE_ICON.get(best_sev, "\u26a0\ufe0f")
+            combined = " · ".join(h for _, h in matched_hints)
+            lines[i] = line.rstrip("\n") + f"  // {icon} {combined}\n"
 
     return "".join(lines)
 
@@ -701,8 +762,180 @@ def detect_mixin_options(
     return warnings
 
 
+def resolve_nested_mixin_members(
+    mixin_source: str,
+    mixin_path: "Path | None",
+    project_root: "Path | None",
+    all_mixin_members: "dict[str, dict[str, list[str]]] | None" = None,
+    _visited: "set[str] | None" = None,
+    _depth: int = 0,
+    _max_depth: int = 10,
+) -> "dict[str, dict[str, list[str]] | None]":
+    """Resolve nested mixin files and extract their members.
+
+    Returns a dict mapping each nested mixin name to its members dict
+    (with keys 'data', 'computed', 'methods', 'watch'), or None if the
+    mixin file could not be resolved.
+    """
+    from pathlib import Path as _Path
+    from .component_analyzer import parse_imports, parse_mixins_array
+    from .file_resolver import resolve_import_path
+    from .mixin_analyzer import extract_mixin_members
+
+    if mixin_path is None or project_root is None:
+        return {}
+
+    nested_names = parse_mixins_array(mixin_source)
+    if not nested_names:
+        return {}
+
+    if _visited is None:
+        _visited = set()
+
+    # Add current mixin to visited set (use resolved path string for uniqueness)
+    current_key = str(_Path(mixin_path).resolve())
+    _visited.add(current_key)
+
+    imports = parse_imports(mixin_source)
+    result: dict[str, dict[str, list[str]] | None] = {}
+
+    for name in nested_names:
+        # Try cache first
+        if all_mixin_members and name in all_mixin_members:
+            result[name] = all_mixin_members[name]
+            continue
+
+        # Resolve import path to file
+        import_path = imports.get(name)
+        if import_path is None:
+            result[name] = None
+            continue
+
+        resolved_file = resolve_import_path(import_path, mixin_path)
+        if resolved_file is None or not resolved_file.is_file():
+            result[name] = None
+            continue
+
+        resolved_key = str(resolved_file.resolve())
+        if resolved_key in _visited:
+            # Cycle detected — skip to avoid infinite recursion
+            continue
+
+        # Read and parse the nested mixin
+        try:
+            nested_source = resolved_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            result[name] = None
+            continue
+
+        members = extract_mixin_members(nested_source)
+        result[name] = members
+
+        # Recurse into the nested mixin if depth allows
+        if _depth + 1 < _max_depth:
+            transitive = resolve_nested_mixin_members(
+                nested_source, resolved_file, project_root,
+                all_mixin_members=all_mixin_members,
+                _visited=_visited,
+                _depth=_depth + 1,
+                _max_depth=_max_depth,
+            )
+            for t_name, t_members in transitive.items():
+                if t_name not in result:
+                    result[t_name] = t_members
+
+    return result
+
+
+def resolve_nested_member_chains(
+    mixin_source: str,
+    mixin_path: "Path | None",
+    project_root: "Path | None",
+    all_mixin_members: "dict[str, dict[str, list[str]]] | None" = None,
+) -> "dict[str, tuple[str, list[str]]]":
+    """Map each transitive member name to (source_mixin, chain_path).
+
+    Returns e.g. {"midFlag": ("mixinB", ["mixinA", "mixinB"]),
+                  "deepVal": ("mixinC", ["mixinA", "mixinB", "mixinC"])}
+    """
+    from pathlib import Path as _Path
+    from .component_analyzer import parse_imports, parse_mixins_array
+    from .file_resolver import resolve_import_path
+    from .mixin_analyzer import extract_mixin_members
+
+    if mixin_path is None or project_root is None:
+        return {}
+
+    stem = _Path(mixin_path).stem
+    resolved = resolve_nested_mixin_members(
+        mixin_source, mixin_path, project_root,
+        all_mixin_members=all_mixin_members,
+    )
+    if not resolved:
+        return {}
+
+    result: dict[str, tuple[str, list[str]]] = {}
+
+    def _traverse(source, path, parent_chain, visited):
+        names = parse_mixins_array(source)
+        imp = parse_imports(source)
+        for name in names:
+            members = resolved.get(name)
+            if members is None:
+                continue
+            chain = parent_chain + [name]
+            for kind in ("data", "computed", "methods", "watch"):
+                for member_name in members.get(kind, []):
+                    if member_name not in result:
+                        result[member_name] = (name, list(chain))
+
+            imp_path = imp.get(name)
+            if imp_path is None:
+                continue
+            nested_file = resolve_import_path(imp_path, path)
+            if nested_file and nested_file.is_file():
+                file_key = str(nested_file.resolve())
+                if file_key in visited:
+                    continue
+                visited.add(file_key)
+                try:
+                    nested_src = nested_file.read_text(encoding="utf-8")
+                    _traverse(nested_src, nested_file, chain, visited)
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+    _traverse(mixin_source, mixin_path, [stem], {str(_Path(mixin_path).resolve())})
+    return result
+
+
+def _format_resolved_nested_warning(
+    raw_names: str,
+    resolved: "dict[str, dict[str, list[str]] | None]",
+) -> str:
+    """Format an enriched nested mixin warning message with resolved members."""
+    parts = []
+    for name, members in resolved.items():
+        if members is None:
+            parts.append(f"{name} (file not found — check manually)")
+        else:
+            member_parts = []
+            for kind in ("data", "computed", "methods", "watch"):
+                names = members.get(kind, [])
+                if names:
+                    member_parts.append(f"{kind}({', '.join(names)})")
+            if member_parts:
+                parts.append(f"{name}: {', '.join(member_parts)}")
+            else:
+                parts.append(f"{name}: (no members found)")
+    detail = "; ".join(parts)
+    return f"Nested mixins [{raw_names}] — transitive members: {detail}"
+
+
 def detect_structural_patterns(
-    mixin_source: str, mixin_stem: str
+    mixin_source: str, mixin_stem: str,
+    mixin_path: "Path | None" = None,
+    project_root: "Path | None" = None,
+    all_mixin_members: "dict[str, dict[str, list[str]]] | None" = None,
 ) -> list[MigrationWarning]:
     """Detect structural patterns the tool can't auto-migrate."""
     warnings: list[MigrationWarning] = []
@@ -743,15 +976,47 @@ def detect_structural_patterns(
     nested_mixins_m = re.search(r'\bmixins\s*:\s*\[([^\]]+)\]', mixin_source)
     if nested_mixins_m:
         mixin_names = nested_mixins_m.group(1).strip()
-        warnings.append(MigrationWarning(
-            mixin_stem=mixin_stem,
-            category="structural:nested-mixins",
-            message=f"Nested mixins [{mixin_names}] — transitive members may be missed",
-            action_required="Ensure all transitive mixin members are accounted for",
-            line_hint=None,
-            severity="warning",
-            source_line=_line_number(mixin_source, nested_mixins_m.start()),
-        ))
+
+        # Try to resolve nested mixin members when path context is available
+        resolved = resolve_nested_mixin_members(
+            mixin_source, mixin_path, project_root,
+            all_mixin_members=all_mixin_members,
+        )
+
+        if resolved:
+            # Partition into resolved (members dict) and unresolved (None)
+            unresolved = {n: v for n, v in resolved.items() if v is None}
+            # Only warn about unresolvable mixins — resolved ones are already
+            # covered by external-dependency warnings with chain info.
+            if unresolved:
+                unresolved_names = ", ".join(unresolved)
+                message = (
+                    f"Nested mixins [{unresolved_names}] "
+                    f"— could not resolve (file not found — check manually)"
+                )
+                action = "Locate these mixin files and verify their members are accounted for"
+                warnings.append(MigrationWarning(
+                    mixin_stem=mixin_stem,
+                    category="structural:nested-mixins",
+                    message=message,
+                    action_required=action,
+                    line_hint=None,
+                    severity="warning",
+                    source_line=_line_number(mixin_source, nested_mixins_m.start()),
+                ))
+            # If all resolved → suppress warning (external-dep covers it)
+        else:
+            message = f"Nested mixins [{mixin_names}] — transitive members may be missed"
+            action = "Ensure all transitive mixin members are accounted for"
+            warnings.append(MigrationWarning(
+                mixin_stem=mixin_stem,
+                category="structural:nested-mixins",
+                message=message,
+                action_required=action,
+                line_hint=None,
+                severity="warning",
+                source_line=_line_number(mixin_source, nested_mixins_m.start()),
+            ))
     else:
         nested_m2 = re.search(r'\bmixins\s*:', mixin_source)
         if nested_m2:

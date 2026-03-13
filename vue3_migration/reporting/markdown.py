@@ -1095,10 +1095,19 @@ def build_action_plan(
     unused_mixins: list[MixinEntry] = []  # Not imported by any component
 
     for entry in entries:
-        # Standalone mixins not imported by any component get their own section
-        if any(w.category == "unused-mixin" for w in entry.warnings):
-            unused_mixins.append(entry)
-            continue
+        is_unused = any(w.category == "unused-mixin" for w in entry.warnings)
+
+        # Only put in unused bucket if there's no migration work to show
+        # (no composable and no warnings beyond unused-mixin itself)
+        if is_unused:
+            has_migration_work = any(
+                w.category != "unused-mixin" and w.severity in ("error", "warning")
+                and w.category not in _AUTO_REWRITTEN_CATEGORIES
+                for w in entry.warnings
+            )
+            if not has_migration_work:
+                unused_mixins.append(entry)
+                continue
 
         non_info = [w for w in entry.warnings
                     if w.severity in ("error", "warning") and w.category not in _AUTO_REWRITTEN_CATEGORIES]
@@ -1137,7 +1146,12 @@ def build_action_plan(
     if quick_wins:
         a("---\n")
         a("### \U0001f7e2 Quick Wins \u2014 no manual steps needed\n")
-        names = ", ".join(f"`{e.composable.fn_name}`" if e.composable else f"`{e.mixin_stem}`" for e in quick_wins)
+        from ..transform.composable_generator import mixin_stem_to_composable_name
+        names = ", ".join(
+            f"`{e.composable.fn_name}`" if e.composable
+            else f"`{mixin_stem_to_composable_name(e.mixin_stem)}`"
+            for e in quick_wins
+        )
         a(names)
         a("")
         a(f"These {len(quick_wins)} composable{'s are' if len(quick_wins) != 1 else ' is'} fully migrated. Apply the diff and test.\n")
@@ -1256,7 +1270,20 @@ def _step_label(warning: MigrationWarning) -> str:
     if warning.category == "external-dependency":
         m = re.match(r"'(\w+)'", warning.message)
         member = f"`this.{m.group(1)}`" if m else "external dep"
-        return f"Resolve {member} — composable param, function arg, or import"
+        # Check for chain info in enriched message
+        chain_match = re.search(r"from (\w+) \((.+?)\),", warning.message)
+        if chain_match:
+            source_mixin = chain_match.group(1)
+            chain_str = chain_match.group(2)
+            return (
+                f"Resolve {member} \u2014 from `{source_mixin}`"
+                f" ({chain_str})."
+                f" Use as param, function arg, or import from another composable"
+            )
+        return (
+            f"Resolve {member} \u2014 not defined in this mixin."
+            f" Pass as param, function arg, or use another composable"
+        )
     if warning.category == "this-alias":
         return "`this` alias won't work \u2014 replace with direct refs"
     if warning.category.startswith("mixin-option:"):
@@ -1274,7 +1301,8 @@ def _append_composable_steps(
     composable_path_by_stem: "dict[str, Path] | None" = None,
 ) -> None:
     """Append numbered action steps for one composable to the output."""
-    name = entry.composable.fn_name if entry.composable else entry.mixin_stem
+    from ..transform.composable_generator import mixin_stem_to_composable_name
+    name = entry.composable.fn_name if entry.composable else mixin_stem_to_composable_name(entry.mixin_stem)
     comp_source = ""
     comp_path = None
     if composable_content_map:
@@ -1360,7 +1388,7 @@ def _append_composable_steps(
             a(f"> **Overridden by component:** {names} — composable version won't be used")
 
         for w in other_info:
-            a(f"> \u2139\ufe0f {w.message}")
+            a(f"- \u2139\ufe0f {w.message}")
 
     a("")
 

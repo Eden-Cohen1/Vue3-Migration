@@ -510,3 +510,68 @@ class TestBuildAuditReportWarnings:
             usage_map={},
         )
         assert "authMixin" in report
+
+
+class TestUnusedMixinWithMigrationWork:
+    """Standalone mixin entries with actual migration warnings should show
+    composable steps in the report, not just 'safe to delete'."""
+
+    def test_unused_mixin_with_warnings_shows_composable_steps(self):
+        """When a mixin is unused but has migration warnings (external deps,
+        this.$ patterns, etc.), the action plan should include composable
+        steps — not just 'safe to delete'."""
+        entry = MixinEntry(
+            local_name='kitchenSinkMixin',
+            mixin_path=FIXTURES / 'src/mixins/kitchenSinkMixin.js',
+            mixin_stem='kitchenSinkMixin',
+            members=MixinMembers(
+                data=['items', 'config'],
+                computed=['filteredItems'],
+                methods=['fetchResults', 'handleCustom'],
+            ),
+            lifecycle_hooks=['created'],
+            used_members=['items', 'filteredItems', 'fetchResults'],
+            composable=ComposableCoverage(
+                file_path=FIXTURES / 'src/composables/useKitchenSink.js',
+                fn_name='useKitchenSink',
+                import_path='@/composables/useKitchenSink',
+                all_identifiers=['items', 'config', 'filteredItems', 'fetchResults'],
+                return_keys=['items', 'config', 'filteredItems', 'fetchResults'],
+            ),
+            classification=MemberClassification(
+                missing=[], truly_missing=[], not_returned=[],
+                truly_not_returned=[], overridden=[],
+                overridden_not_returned=[], injectable=[],
+            ),
+            status=MigrationStatus.READY,
+            warnings=[
+                MigrationWarning(
+                    "kitchenSinkMixin", "unused-mixin",
+                    "No component imports 'kitchenSinkMixin'.",
+                    "Delete the mixin file or keep if used outside this project",
+                    None, "info",
+                ),
+                MigrationWarning(
+                    "kitchenSinkMixin", "this.$emit",
+                    "this.$emit not available in composable",
+                    "Use defineEmits",
+                    "this.$emit('search', q)",
+                    "error",
+                ),
+                MigrationWarning(
+                    "kitchenSinkMixin", "external-dependency",
+                    "'handleCustom' — pass handleCustom as param",
+                    "Accept as param",
+                    "this.handleCustom",
+                    "error",
+                ),
+            ],
+        )
+
+        entries = [(Path("<standalone>"), [entry])]
+        report = build_action_plan(entries, project_root=PROJECT_ROOT)
+
+        # Should NOT just say "safe to delete" — should include composable steps
+        assert "useKitchenSink" in report
+        assert "this.$emit" in report or "defineEmits" in report
+        assert "handleCustom" in report

@@ -141,6 +141,7 @@ def generate_composable_from_mixin(
     indent: str = "  ",
     mixin_path: Path | None = None,
     composable_path: Path | None = None,
+    project_root: "Path | None" = None,
 ) -> str:
     """Generate a complete Vue 3 composable file from a mixin.
 
@@ -376,7 +377,10 @@ def generate_composable_from_mixin(
     result = f"{external_block}{import_line}{i18n_import_line}export function {fn_name}() {{\n{body}\n}}\n"
 
     # Collect warnings and suppress those already resolved by the generated code
-    warnings = collect_mixin_warnings(mixin_source, mixin_members, lifecycle_hooks)
+    warnings = collect_mixin_warnings(
+        mixin_source, mixin_members, lifecycle_hooks,
+        mixin_path=mixin_path, project_root=project_root,
+    )
     warnings = suppress_resolved_warnings(warnings, [], result)
 
     # Add nested-lifecycle warnings from post-generation validation

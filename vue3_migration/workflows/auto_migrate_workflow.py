@@ -97,7 +97,11 @@ def _analyze_mixin_silent(
             entry.classification = coverage.classify_members(used, component_own_members)
 
     # Collect migration warnings
-    mixin_warnings = collect_mixin_warnings(mixin_source, members, hooks)
+    mixin_warnings = collect_mixin_warnings(
+        mixin_source, members, hooks,
+        mixin_path=mixin_file,
+        project_root=project_root,
+    )
     for w in mixin_warnings:
         w.mixin_stem = entry.mixin_stem
         w.source_context = "mixin"
@@ -158,6 +162,7 @@ def collect_all_mixin_entries(
 
 def plan_composable_patches(
     entries_by_component: list[tuple[Path, list[MixinEntry]]],
+    project_root: "Path | None" = None,
 ) -> list[FileChange]:
     """Plan all composable patches needed across the project.
 
@@ -244,6 +249,7 @@ def plan_composable_patches(
             lifecycle_hooks=rec["lifecycle_hooks"] or None,
             mixin_path=rec["mixin_path"],
             composable_path=comp_path,
+            project_root=project_root,
         )
         change_descs = []
         if rec["not_returned"]:
@@ -300,6 +306,7 @@ def plan_new_composables(
                 lifecycle_hooks=entry.lifecycle_hooks,
                 mixin_path=entry.mixin_path,
                 composable_path=composable_path,
+                project_root=project_root,
             )
             changes.append(FileChange(
                 file_path=composable_path,
@@ -796,6 +803,7 @@ def plan_regenerated_composables(
                 lifecycle_hooks=entry.lifecycle_hooks,
                 mixin_path=entry.mixin_path,
                 composable_path=entry.composable.file_path,
+                project_root=project_root,
             )
             original = read_source(entry.composable.file_path)
             if content != original:
@@ -818,7 +826,7 @@ def _build_all_composable_changes(
         regenerated = plan_regenerated_composables(entries, project_root)
         generated = plan_new_composables(entries, project_root)
         return regenerated + generated
-    patched = plan_composable_patches(entries)
+    patched = plan_composable_patches(entries, project_root=project_root)
     generated = plan_new_composables(entries, project_root)
     return patched + generated
 
@@ -992,7 +1000,11 @@ def _build_standalone_mixin_entry(
                 members.all_names, set(),
             )
 
-    mixin_warnings = collect_mixin_warnings(mixin_source, members, hooks)
+    mixin_warnings = collect_mixin_warnings(
+        mixin_source, members, hooks,
+        mixin_path=mixin_file,
+        project_root=project_root,
+    )
     for w in mixin_warnings:
         w.mixin_stem = entry.mixin_stem
         w.source_context = "mixin"

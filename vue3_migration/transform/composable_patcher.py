@@ -617,6 +617,7 @@ def patch_composable(
     indent: str = "  ",
     mixin_path: Path | None = None,
     composable_path: Path | None = None,
+    project_root: "Path | None" = None,
 ) -> str:
     """Orchestrate composable patching for both blocked cases.
 
@@ -760,7 +761,10 @@ def patch_composable(
     content = _remove_stale_comments(content)
 
     # Collect warnings and suppress those already resolved by the generated code
-    warnings = collect_mixin_warnings(mixin_content, mixin_members, lifecycle_hooks or [])
+    warnings = collect_mixin_warnings(
+        mixin_content, mixin_members, lifecycle_hooks or [],
+        mixin_path=mixin_path, project_root=project_root,
+    )
     warnings = suppress_resolved_warnings(warnings, [], content)
     confidence = compute_confidence(content, warnings)
     content = inject_inline_warnings(content, warnings, confidence, len(warnings))

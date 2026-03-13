@@ -1789,3 +1789,902 @@ export default {
         )
         hint = _get_short_hint(w)
         assert "plugin property" in hint
+
+
+# ---------------------------------------------------------------------------
+# Resolve nested mixin members
+# ---------------------------------------------------------------------------
+
+import os
+import tempfile
+from vue3_migration.core.warning_collector import resolve_nested_mixin_members
+
+
+def _write_mixin_file(directory, name, source):
+    """Helper to write a mixin file and return its path."""
+    path = os.path.join(directory, f"{name}.js")
+    with open(path, "w") as f:
+        f.write(source)
+    return Path(path)
+
+
+class TestResolveNestedMixinMembers:
+    """Tests for resolve_nested_mixin_members() — resolves nested mixin files
+    and extracts their members."""
+
+    def test_single_nested_mixin_resolved(self, tmp_path):
+        """A mixin with one nested mixin should have its members resolved."""
+        _write_mixin_file(tmp_path, "validationMixin", """
+export default {
+    data() { return { isValid: false, errors: [] } },
+    methods: { validate() {}, clearErrors() {} }
+}
+""")
+        parent_source = f"""
+import validationMixin from './validationMixin'
+export default {{
+    mixins: [validationMixin],
+    data() {{ return {{ value: '' }} }}
+}}
+"""
+        parent_path = _write_mixin_file(tmp_path, "parentMixin", parent_source)
+        result = resolve_nested_mixin_members(parent_source, parent_path, tmp_path)
+
+        assert "validationMixin" in result
+        assert result["validationMixin"] is not None
+        assert "isValid" in result["validationMixin"]["data"]
+        assert "errors" in result["validationMixin"]["data"]
+        assert "validate" in result["validationMixin"]["methods"]
+        assert "clearErrors" in result["validationMixin"]["methods"]
+
+    def test_multiple_nested_mixins_resolved(self, tmp_path):
+        """Multiple nested mixins should all be resolved."""
+        _write_mixin_file(tmp_path, "validationMixin", """
+export default {
+    data() { return { isValid: false } },
+    methods: { validate() {} }
+}
+""")
+        _write_mixin_file(tmp_path, "formMixin", """
+export default {
+    data() { return { formData: {} } },
+    computed: { isFormDirty() {} },
+    methods: { submitForm() {} }
+}
+""")
+        parent_source = """
+import validationMixin from './validationMixin'
+import formMixin from './formMixin'
+export default {
+    mixins: [validationMixin, formMixin],
+    data() { return { name: '' } }
+}
+"""
+        parent_path = _write_mixin_file(tmp_path, "parentMixin", parent_source)
+        result = resolve_nested_mixin_members(parent_source, parent_path, tmp_path)
+
+        assert "validationMixin" in result
+        assert "formMixin" in result
+        assert result["validationMixin"] is not None
+        assert result["formMixin"] is not None
+        assert "isValid" in result["validationMixin"]["data"]
+        assert "formData" in result["formMixin"]["data"]
+        assert "isFormDirty" in result["formMixin"]["computed"]
+
+    def test_chain_resolution(self, tmp_path):
+        """Chain A → B → C should resolve all transitive members."""
+        _write_mixin_file(tmp_path, "mixinC", """
+export default {
+    data() { return { deepValue: 0 } },
+    methods: { deepMethod() {} }
+}
+""")
+        _write_mixin_file(tmp_path, "mixinB", """
+import mixinC from './mixinC'
+export default {
+    mixins: [mixinC],
+    data() { return { midValue: '' } },
+    computed: { midComputed() {} }
+}
+""")
+        parent_source = """
+import mixinB from './mixinB'
+export default {
+    mixins: [mixinB],
+    data() { return { topValue: true } }
+}
+"""
+        parent_path = _write_mixin_file(tmp_path, "mixinA", parent_source)
+        result = resolve_nested_mixin_members(parent_source, parent_path, tmp_path)
+
+        # mixinB is directly nested
+        assert "mixinB" in result
+        assert result["mixinB"] is not None
+        assert "midValue" in result["mixinB"]["data"]
+        assert "midComputed" in result["mixinB"]["computed"]
+        # mixinC is transitively nested (via mixinB)
+        assert "mixinC" in result
+        assert result["mixinC"] is not None
+        assert "deepValue" in result["mixinC"]["data"]
+        assert "deepMethod" in result["mixinC"]["methods"]
+
+    def test_circular_mixins_no_infinite_loop(self, tmp_path):
+        """Circular A → B → A should not cause infinite recursion."""
+        _write_mixin_file(tmp_path, "mixinA", """
+import mixinB from './mixinB'
+export default {
+    mixins: [mixinB],
+    data() { return { aValue: 1 } }
+}
+""")
+        _write_mixin_file(tmp_path, "mixinB", """
+import mixinA from './mixinA'
+export default {
+    mixins: [mixinA],
+    data() { return { bValue: 2 } }
+}
+""")
+        source_a = """
+import mixinB from './mixinB'
+export default {
+    mixins: [mixinB],
+    data() { return { aValue: 1 } }
+}
+"""
+        path_a = tmp_path / "mixinA.js"
+        result = resolve_nested_mixin_members(source_a, path_a, tmp_path)
+
+        # Should resolve mixinB but not recurse back into mixinA infinitely
+        assert "mixinB" in result
+        assert result["mixinB"] is not None
+        assert "bValue" in result["mixinB"]["data"]
+
+    def test_diamond_dependency_deduplication(self, tmp_path):
+        """Diamond: A → B,C; B,C → D — D members should appear once."""
+        _write_mixin_file(tmp_path, "mixinD", """
+export default {
+    data() { return { shared: true } },
+    methods: { sharedMethod() {} }
+}
+""")
+        _write_mixin_file(tmp_path, "mixinB", """
+import mixinD from './mixinD'
+export default {
+    mixins: [mixinD],
+    data() { return { bOnly: 1 } }
+}
+""")
+        _write_mixin_file(tmp_path, "mixinC", """
+import mixinD from './mixinD'
+export default {
+    mixins: [mixinD],
+    data() { return { cOnly: 2 } }
+}
+""")
+        parent_source = """
+import mixinB from './mixinB'
+import mixinC from './mixinC'
+export default {
+    mixins: [mixinB, mixinC],
+    data() { return { topVal: 0 } }
+}
+"""
+        parent_path = _write_mixin_file(tmp_path, "mixinA", parent_source)
+        result = resolve_nested_mixin_members(parent_source, parent_path, tmp_path)
+
+        assert "mixinB" in result
+        assert "mixinC" in result
+        assert "mixinD" in result
+        # mixinD should appear exactly once as a key
+        assert list(result.keys()).count("mixinD") == 1
+        assert "shared" in result["mixinD"]["data"]
+
+    def test_unresolvable_mixin_returns_none(self, tmp_path):
+        """A nested mixin whose file can't be found returns None."""
+        parent_source = """
+import ghostMixin from './ghostMixin'
+export default {
+    mixins: [ghostMixin],
+    data() { return { x: 1 } }
+}
+"""
+        parent_path = _write_mixin_file(tmp_path, "parentMixin", parent_source)
+        result = resolve_nested_mixin_members(parent_source, parent_path, tmp_path)
+
+        assert "ghostMixin" in result
+        assert result["ghostMixin"] is None
+
+    def test_mixed_resolvable_and_unresolvable(self, tmp_path):
+        """Mix of found and missing nested mixins."""
+        _write_mixin_file(tmp_path, "realMixin", """
+export default {
+    data() { return { realData: 1 } }
+}
+""")
+        parent_source = """
+import realMixin from './realMixin'
+import missingMixin from './missingMixin'
+export default {
+    mixins: [realMixin, missingMixin],
+    data() { return { x: 0 } }
+}
+"""
+        parent_path = _write_mixin_file(tmp_path, "parentMixin", parent_source)
+        result = resolve_nested_mixin_members(parent_source, parent_path, tmp_path)
+
+        assert "realMixin" in result
+        assert result["realMixin"] is not None
+        assert "realData" in result["realMixin"]["data"]
+        assert "missingMixin" in result
+        assert result["missingMixin"] is None
+
+    def test_no_path_context_returns_empty(self):
+        """When mixin_path and project_root are None, returns empty dict."""
+        source = """
+import foo from './foo'
+export default {
+    mixins: [foo],
+    data() { return { x: 1 } }
+}
+"""
+        result = resolve_nested_mixin_members(source, None, None)
+        assert result == {}
+
+    def test_cache_only_resolution(self, tmp_path):
+        """When all_mixin_members cache is provided, uses it instead of filesystem."""
+        parent_source = """
+import cachedMixin from './cachedMixin'
+export default {
+    mixins: [cachedMixin],
+    data() { return { x: 1 } }
+}
+"""
+        parent_path = _write_mixin_file(tmp_path, "parentMixin", parent_source)
+        cache = {
+            "cachedMixin": {"data": ["cachedVal"], "computed": [], "methods": ["cachedMethod"], "watch": []}
+        }
+        result = resolve_nested_mixin_members(
+            parent_source, parent_path, tmp_path,
+            all_mixin_members=cache,
+        )
+
+        assert "cachedMixin" in result
+        assert result["cachedMixin"] is not None
+        assert "cachedVal" in result["cachedMixin"]["data"]
+        assert "cachedMethod" in result["cachedMixin"]["methods"]
+
+    def test_depth_limit_exceeded(self, tmp_path):
+        """When recursion depth exceeds max, stops and returns partial results."""
+        # Create a chain deeper than max_depth
+        # We'll use _max_depth=2 to test without creating many files
+        _write_mixin_file(tmp_path, "mixinC", """
+export default {
+    data() { return { cVal: 3 } }
+}
+""")
+        _write_mixin_file(tmp_path, "mixinB", """
+import mixinC from './mixinC'
+export default {
+    mixins: [mixinC],
+    data() { return { bVal: 2 } }
+}
+""")
+        parent_source = """
+import mixinB from './mixinB'
+export default {
+    mixins: [mixinB],
+    data() { return { aVal: 1 } }
+}
+"""
+        parent_path = _write_mixin_file(tmp_path, "mixinA", parent_source)
+
+        # With _max_depth=1, should resolve mixinB but NOT recurse into mixinC
+        result = resolve_nested_mixin_members(
+            parent_source, parent_path, tmp_path,
+            _max_depth=1,
+        )
+
+        assert "mixinB" in result
+        assert result["mixinB"] is not None
+        # mixinC should NOT be resolved because depth limit was reached
+        assert "mixinC" not in result
+
+    def test_no_nested_mixins_returns_empty(self, tmp_path):
+        """A mixin without nested mixins returns empty dict."""
+        source = """
+export default {
+    data() { return { x: 1 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "simpleMixin", source)
+        result = resolve_nested_mixin_members(source, path, tmp_path)
+        assert result == {}
+
+    def test_no_import_for_nested_mixin(self, tmp_path):
+        """Nested mixin referenced but no import statement — unresolvable."""
+        source = """
+export default {
+    mixins: [unknownMixin],
+    data() { return { x: 1 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "parentMixin", source)
+        result = resolve_nested_mixin_members(source, path, tmp_path)
+
+        assert "unknownMixin" in result
+        assert result["unknownMixin"] is None
+
+
+# ---------------------------------------------------------------------------
+# Enhanced detect_structural_patterns() warning messages
+# ---------------------------------------------------------------------------
+
+
+class TestEnhancedNestedMixinWarnings:
+    """Tests for enriched nested mixin warnings with resolved member listings."""
+
+    def test_no_warning_when_all_resolved(self, tmp_path):
+        """When path context provided and all nested mixins resolve,
+        the structural:nested-mixins warning is suppressed (external-dep
+        warnings already cover any used transitive members)."""
+        _write_mixin_file(tmp_path, "validationMixin", """
+export default {
+    data() { return { isValid: false, errors: [] } },
+    methods: { validate() {} }
+}
+""")
+        source = """
+import validationMixin from './validationMixin'
+export default {
+    mixins: [validationMixin],
+    data() { return { x: 1 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "parentMixin", source)
+        warnings = detect_structural_patterns(
+            source, "parentMixin",
+            mixin_path=path, project_root=tmp_path,
+        )
+        nested_warnings = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert nested_warnings == [], (
+            "Resolved nested mixins should NOT produce structural:nested-mixins warning"
+        )
+
+    def test_backward_compat_no_path_context(self):
+        """When path context is None, original vague warning is produced."""
+        source = """
+import foo from './foo'
+export default {
+    mixins: [foo],
+    data() { return { x: 1 } }
+}
+"""
+        warnings = detect_structural_patterns(source, "testMixin")
+        nested_warnings = [w for w in warnings if w.category == "structural:nested-mixins"]
+
+        assert len(nested_warnings) == 1
+        assert "transitive members may be missed" in nested_warnings[0].message
+
+    def test_unresolvable_mixin_in_warning(self, tmp_path):
+        """Unresolvable mixin shows 'file not found' in message."""
+        source = """
+import ghostMixin from './ghostMixin'
+export default {
+    mixins: [ghostMixin],
+    data() { return { x: 1 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "parentMixin", source)
+        warnings = detect_structural_patterns(
+            source, "parentMixin",
+            mixin_path=path, project_root=tmp_path,
+        )
+        nested_warnings = [w for w in warnings if w.category == "structural:nested-mixins"]
+
+        assert len(nested_warnings) == 1
+        msg = nested_warnings[0].message
+        assert "ghostMixin" in msg
+        assert "file not found" in msg.lower()
+
+    def test_mixed_resolved_and_unresolved_warns_only_unresolved(self, tmp_path):
+        """Warning only mentions unresolvable mixins; resolved ones are suppressed."""
+        _write_mixin_file(tmp_path, "realMixin", """
+export default {
+    data() { return { realData: 1 } },
+    methods: { realMethod() {} }
+}
+""")
+        source = """
+import realMixin from './realMixin'
+import ghostMixin from './ghostMixin'
+export default {
+    mixins: [realMixin, ghostMixin],
+    data() { return { x: 0 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "parentMixin", source)
+        warnings = detect_structural_patterns(
+            source, "parentMixin",
+            mixin_path=path, project_root=tmp_path,
+        )
+        nested_warnings = [w for w in warnings if w.category == "structural:nested-mixins"]
+
+        assert len(nested_warnings) == 1
+        msg = nested_warnings[0].message
+        # Resolved mixin should NOT be in the warning
+        assert "realMixin" not in msg
+        # unresolved mixin noted
+        assert "ghostMixin" in msg
+        assert "file not found" in msg.lower()
+
+    def test_chain_all_resolved_suppresses_warning(self, tmp_path):
+        """Chain resolution: A → B → C all resolve, so warning is suppressed."""
+        _write_mixin_file(tmp_path, "deepMixin", """
+export default {
+    data() { return { deepVal: 0 } }
+}
+""")
+        _write_mixin_file(tmp_path, "midMixin", """
+import deepMixin from './deepMixin'
+export default {
+    mixins: [deepMixin],
+    methods: { midMethod() {} }
+}
+""")
+        source = """
+import midMixin from './midMixin'
+export default {
+    mixins: [midMixin],
+    data() { return { topVal: 1 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "topMixin", source)
+        warnings = detect_structural_patterns(
+            source, "topMixin",
+            mixin_path=path, project_root=tmp_path,
+        )
+        nested_warnings = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert nested_warnings == [], (
+            "All resolved chain should NOT produce structural:nested-mixins warning"
+        )
+
+    def test_all_resolved_suppresses_warning(self, tmp_path):
+        """When all nested mixins resolve, no warning is emitted."""
+        _write_mixin_file(tmp_path, "helperMixin", """
+export default {
+    data() { return { helperVal: 1 } }
+}
+""")
+        source = """
+import helperMixin from './helperMixin'
+export default {
+    mixins: [helperMixin],
+    data() { return { x: 0 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "parentMixin", source)
+        warnings = detect_structural_patterns(
+            source, "parentMixin",
+            mixin_path=path, project_root=tmp_path,
+        )
+        nested_warnings = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert nested_warnings == []
+
+
+# ---------------------------------------------------------------------------
+# Integration test: kitchenSinkMixin fixture
+# ---------------------------------------------------------------------------
+
+
+class TestKitchenSinkNestedMixinIntegration:
+    """Integration test using the real kitchenSinkMixin fixture."""
+
+    def test_kitchen_sink_nested_helper_resolved_suppresses_warning(self):
+        """kitchenSinkMixin → nestedHelper resolves fully, so the
+        structural:nested-mixins warning should be suppressed."""
+        from vue3_migration.core.warning_collector import collect_mixin_warnings
+        from vue3_migration.core.mixin_analyzer import extract_mixin_members, extract_lifecycle_hooks
+
+        mixin_path = Path("tests/fixtures/dummy_project/src/mixins/kitchenSinkMixin.js")
+        project_root = Path("tests/fixtures/dummy_project")
+        source = mixin_path.read_text()
+        members = MixinMembers(**extract_mixin_members(source))
+        hooks = extract_lifecycle_hooks(source)
+
+        warnings = collect_mixin_warnings(
+            source, members, hooks,
+            mixin_path=mixin_path, project_root=project_root,
+        )
+        nested = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert nested == [], (
+            "nestedHelper resolves fully — no structural:nested-mixins warning expected"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Resolve nested member chains (member → source mixin + chain path)
+# ---------------------------------------------------------------------------
+
+from vue3_migration.core.warning_collector import resolve_nested_member_chains
+
+
+class TestResolveNestedMemberChains:
+    """Tests for resolve_nested_member_chains() — maps each member to its
+    source mixin and full chain path."""
+
+    def test_single_level_chain(self, tmp_path):
+        """Members from a direct nested mixin have a 2-element chain."""
+        _write_mixin_file(tmp_path, "validationMixin", """
+export default {
+    data() { return { isValid: false } },
+    methods: { validate() {} }
+}
+""")
+        source = """
+import validationMixin from './validationMixin'
+export default {
+    mixins: [validationMixin],
+    data() { return { x: 1 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "parentMixin", source)
+        chains = resolve_nested_member_chains(source, path, tmp_path)
+
+        assert "isValid" in chains
+        assert chains["isValid"][0] == "validationMixin"
+        assert chains["isValid"][1] == ["parentMixin", "validationMixin"]
+
+        assert "validate" in chains
+        assert chains["validate"][0] == "validationMixin"
+
+    def test_deep_chain(self, tmp_path):
+        """Members from A -> B -> C have a 3-element chain."""
+        _write_mixin_file(tmp_path, "mixinC", """
+export default {
+    data() { return { deepVal: 0 } }
+}
+""")
+        _write_mixin_file(tmp_path, "mixinB", """
+import mixinC from './mixinC'
+export default {
+    mixins: [mixinC],
+    data() { return { midVal: 1 } }
+}
+""")
+        source = """
+import mixinB from './mixinB'
+export default {
+    mixins: [mixinB],
+    data() { return { topVal: 2 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "mixinA", source)
+        chains = resolve_nested_member_chains(source, path, tmp_path)
+
+        assert "midVal" in chains
+        assert chains["midVal"][0] == "mixinB"
+        assert chains["midVal"][1] == ["mixinA", "mixinB"]
+
+        assert "deepVal" in chains
+        assert chains["deepVal"][0] == "mixinC"
+        assert chains["deepVal"][1] == ["mixinA", "mixinB", "mixinC"]
+
+    def test_unresolvable_mixin_not_in_chains(self, tmp_path):
+        """Members from unresolvable mixins don't appear in chains."""
+        source = """
+import ghostMixin from './ghostMixin'
+export default {
+    mixins: [ghostMixin],
+    data() { return { x: 1 } }
+}
+"""
+        path = _write_mixin_file(tmp_path, "parentMixin", source)
+        chains = resolve_nested_member_chains(source, path, tmp_path)
+        assert chains == {}
+
+    def test_no_path_context_returns_empty(self):
+        """When paths are None, returns empty dict."""
+        source = """
+export default {
+    mixins: [foo],
+    data() { return { x: 1 } }
+}
+"""
+        chains = resolve_nested_member_chains(source, None, None)
+        assert chains == {}
+
+
+# ---------------------------------------------------------------------------
+# Enriched external dep warnings with chain info
+# ---------------------------------------------------------------------------
+
+
+class TestEnrichedExternalDepWarnings:
+    """External dep warnings should include chain info when the dep
+    comes from a resolved transitive mixin."""
+
+    def test_resolved_dep_mentions_source_mixin(self, tmp_path):
+        """External dep from a nested mixin should name the source mixin."""
+        _write_mixin_file(tmp_path, "nestedMixin", """
+export default {
+    data() { return { nestedVal: 1 } }
+}
+""")
+        source = """
+import nestedMixin from './nestedMixin'
+export default {
+    mixins: [nestedMixin],
+    methods: {
+        doSomething() {
+            this.nestedVal = 2
+        }
+    }
+}
+"""
+        path = _write_mixin_file(tmp_path, "parentMixin", source)
+        warnings = collect_mixin_warnings(
+            source, MixinMembers(data=[], computed=[], methods=["doSomething"]), [],
+            mixin_path=path, project_root=tmp_path,
+        )
+        ext_dep = [w for w in warnings if w.category == "external-dependency" and "nestedVal" in w.message]
+        assert len(ext_dep) == 1
+        assert "nestedMixin" in ext_dep[0].message
+        assert "→" in ext_dep[0].message
+
+    def test_short_chain_shows_full_in_inline_hint(self, tmp_path):
+        """Chain of 2 items should show full chain in inline hint."""
+        from vue3_migration.core.warning_collector import _get_short_hint
+
+        _write_mixin_file(tmp_path, "nestedMixin", """
+export default {
+    data() { return { nestedVal: 1 } }
+}
+""")
+        source = """
+import nestedMixin from './nestedMixin'
+export default {
+    mixins: [nestedMixin],
+    methods: {
+        doSomething() { this.nestedVal = 2 }
+    }
+}
+"""
+        path = _write_mixin_file(tmp_path, "parentMixin", source)
+        warnings = collect_mixin_warnings(
+            source, MixinMembers(data=[], computed=[], methods=["doSomething"]), [],
+            mixin_path=path, project_root=tmp_path,
+        )
+        ext_dep = [w for w in warnings if w.category == "external-dependency" and "nestedVal" in w.message]
+        assert len(ext_dep) == 1
+        hint = _get_short_hint(ext_dep[0])
+        assert "nestedVal" in hint
+        assert "nestedMixin" in hint
+        assert "parentMixin" in hint  # short chain shows full path
+        assert "param" in hint
+
+    def test_long_chain_omits_chain_in_inline_hint(self, tmp_path):
+        """Chain > 2 items: inline hint shows source only, not full chain."""
+        from vue3_migration.core.warning_collector import _get_short_hint
+
+        _write_mixin_file(tmp_path, "mixinC", """
+export default {
+    data() { return { deepVal: 0 } }
+}
+""")
+        _write_mixin_file(tmp_path, "mixinB", """
+import mixinC from './mixinC'
+export default {
+    mixins: [mixinC],
+    data() { return { midVal: 1 } }
+}
+""")
+        source = """
+import mixinB from './mixinB'
+export default {
+    mixins: [mixinB],
+    methods: {
+        doSomething() { this.deepVal = 99 }
+    }
+}
+"""
+        path = _write_mixin_file(tmp_path, "mixinA", source)
+        warnings = collect_mixin_warnings(
+            source, MixinMembers(data=[], computed=[], methods=["doSomething"]), [],
+            mixin_path=path, project_root=tmp_path,
+        )
+        ext_dep = [w for w in warnings if w.category == "external-dependency" and "deepVal" in w.message]
+        assert len(ext_dep) == 1
+        hint = _get_short_hint(ext_dep[0])
+        assert "deepVal" in hint
+        assert "mixinC" in hint
+        # Should NOT contain the full chain in inline hint
+        assert "mixinA" not in hint
+        assert "param" in hint
+
+    def test_unresolved_dep_keeps_generic_hint(self, tmp_path):
+        """External deps not from a transitive mixin keep generic message."""
+        source = """
+export default {
+    methods: {
+        doSomething() {
+            this.unknownThing = 1
+        }
+    }
+}
+"""
+        path = _write_mixin_file(tmp_path, "someMixin", source)
+        warnings = collect_mixin_warnings(
+            source, MixinMembers(data=[], computed=[], methods=["doSomething"]), [],
+            mixin_path=path, project_root=tmp_path,
+        )
+        ext_dep = [w for w in warnings if w.category == "external-dependency" and "unknownThing" in w.message]
+        assert len(ext_dep) == 1
+        assert "pass unknownThing as param, function arg, or use another composable" in ext_dep[0].message
+        assert ext_dep[0].message.startswith("'unknownThing'")
+
+
+class TestMultipleWarningsOnSameLine:
+    """When a line matches multiple warning patterns (e.g. this.$on + this.handleCustom),
+    all matching warnings should be annotated, not just the first one."""
+
+    def test_external_dep_annotated_when_sharing_line_with_this_dollar(self):
+        """this.$on('custom', this.handleCustom) — both this.$on and handleCustom
+        should get inline annotations."""
+        source = (
+            "export function useX() {\n"
+            "  function listenEvents() {\n"
+            "    this.$on('custom', this.handleCustom)\n"
+            "  }\n"
+            "  return { listenEvents }\n"
+            "}\n"
+        )
+        warnings = [
+            MigrationWarning("x", "this.$on",
+                             "this.$on removed in Vue 3",
+                             "Use event bus or provide/inject",
+                             "this.$on('custom', this.handleCustom)",
+                             "error"),
+            MigrationWarning("x", "external-dependency",
+                             "'handleCustom' — pass handleCustom as param, function arg, or use another composable",
+                             "Accept as param",
+                             "this.handleCustom",
+                             "error"),
+        ]
+        result = inject_inline_warnings(source, warnings)
+        target_line = [l for l in result.splitlines() if "this.$on" in l][0]
+        # Both warnings should be visible on this line
+        assert "event bus" in target_line or "removed in Vue 3" in target_line
+        assert "handleCustom" in target_line and "external dep" in target_line
+
+
+class TestChainInfoInGeneratedComposable:
+    """Chain info from transitive mixin resolution should appear in
+    generated composable inline comments, not just the report."""
+
+    def test_generated_composable_shows_chain_in_inline_comment(self, tmp_path):
+        """When a mixin has nested mixins and an external dep resolves to a
+        transitive mixin, the inline comment should include the chain info."""
+        from vue3_migration.transform.composable_generator import generate_composable_from_mixin
+
+        # Create leaf mixin with a 'leafFlag' data member
+        leaf = tmp_path / "leafMixin.js"
+        leaf.write_text("export default {\n  data() { return { leafFlag: true } }\n}\n")
+
+        # Create parent mixin that nests leaf and references this.leafFlag
+        parent = tmp_path / "parentMixin.js"
+        parent.write_text(
+            "import leafMixin from './leafMixin'\n"
+            "export default {\n"
+            "  mixins: [leafMixin],\n"
+            "  data() { return { myVal: 1 } },\n"
+            "  methods: {\n"
+            "    doWork() { this.leafFlag = false }\n"
+            "  }\n"
+            "}\n"
+        )
+
+        mixin_source = parent.read_text()
+        members = MixinMembers(data=["myVal"], computed=[], methods=["doWork"])
+
+        result = generate_composable_from_mixin(
+            mixin_source, "parentMixin", members, [],
+            mixin_path=parent, composable_path=tmp_path / "useParent.js",
+            project_root=tmp_path,
+        )
+
+        # The inline comment for this.leafFlag should mention the chain
+        leaf_line = [l for l in result.splitlines()
+                     if "leafFlag" in l and "external dep" in l]
+        assert leaf_line, f"Expected inline comment with chain info for leafFlag, got:\n{result}"
+        assert "leafMixin" in leaf_line[0], (
+            f"Expected chain mentioning 'leafMixin' in: {leaf_line[0]}"
+        )
+
+
+class TestNestedMixinsWarningSuppression:
+    """structural:nested-mixins warning should be suppressed when chain
+    resolution succeeds, because external-dependency warnings already
+    provide chain-enriched info for any used transitive members."""
+
+    def test_no_nested_warning_when_resolved(self, tmp_path):
+        """When path context is available and nested mixins resolve,
+        the structural:nested-mixins warning should NOT be emitted."""
+        leaf = tmp_path / "childMixin.js"
+        leaf.write_text("export default {\n  data() { return { x: 1 } }\n}\n")
+
+        parent = tmp_path / "parentMixin.js"
+        parent.write_text(
+            "import childMixin from './childMixin'\n"
+            "export default {\n"
+            "  mixins: [childMixin],\n"
+            "  data() { return { y: 2 } }\n"
+            "}\n"
+        )
+
+        warnings = detect_structural_patterns(
+            parent.read_text(), "parentMixin",
+            mixin_path=parent, project_root=tmp_path,
+        )
+        nested = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert nested == [], f"Expected no nested-mixin warning when resolved, got: {nested}"
+
+    def test_nested_warning_when_no_path_context(self):
+        """When no path context is provided (can't resolve), the
+        structural:nested-mixins warning should still be emitted."""
+        source = """
+        import childMixin from './childMixin'
+        export default {
+            mixins: [childMixin],
+            data() { return { y: 2 } }
+        }
+        """
+        warnings = detect_structural_patterns(source, "parentMixin")
+        nested = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert len(nested) == 1
+        assert "childMixin" in nested[0].message
+
+    def test_nested_warning_when_unresolvable(self, tmp_path):
+        """When path context is available but ALL nested mixins are
+        unresolvable (files not found), the warning should still fire."""
+        parent = tmp_path / "parentMixin.js"
+        parent.write_text(
+            "import ghostMixin from './ghostMixin'\n"
+            "export default {\n"
+            "  mixins: [ghostMixin],\n"
+            "  data() { return { y: 2 } }\n"
+            "}\n"
+        )
+
+        warnings = detect_structural_patterns(
+            parent.read_text(), "parentMixin",
+            mixin_path=parent, project_root=tmp_path,
+        )
+        nested = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert len(nested) == 1
+        assert "ghostMixin" in nested[0].message
+
+    def test_mixed_resolved_and_unresolved_keeps_warning_for_unresolved(self, tmp_path):
+        """When some nested mixins resolve and some don't, the warning
+        should only mention the unresolvable ones."""
+        leaf = tmp_path / "realMixin.js"
+        leaf.write_text("export default {\n  data() { return { x: 1 } }\n}\n")
+
+        parent = tmp_path / "parentMixin.js"
+        parent.write_text(
+            "import realMixin from './realMixin'\n"
+            "import ghostMixin from './ghostMixin'\n"
+            "export default {\n"
+            "  mixins: [realMixin, ghostMixin],\n"
+            "  data() { return { y: 2 } }\n"
+            "}\n"
+        )
+
+        warnings = detect_structural_patterns(
+            parent.read_text(), "parentMixin",
+            mixin_path=parent, project_root=tmp_path,
+        )
+        nested = [w for w in warnings if w.category == "structural:nested-mixins"]
+        assert len(nested) == 1
+        assert "ghostMixin" in nested[0].message
+        # Resolved mixin should NOT be mentioned in the warning
+        assert "realMixin" not in nested[0].message
