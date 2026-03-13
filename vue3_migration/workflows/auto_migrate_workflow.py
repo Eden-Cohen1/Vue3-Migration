@@ -8,8 +8,8 @@ from pathlib import Path
 
 from ..core.file_utils import read_source
 from ..core.component_analyzer import (
-    extract_data_property_names, extract_own_members, find_used_members,
-    parse_imports, parse_mixins_array,
+    extract_data_property_names, extract_own_members, extract_setup_identifiers,
+    find_used_members, parse_imports, parse_mixins_array,
 )
 from ..core.composable_analyzer import (
     extract_all_identifiers, extract_declared_identifiers,
@@ -346,6 +346,7 @@ def plan_component_injections(
         # R-7: normalize CRLF
         comp_source = read_source(comp_path)
         own_members = extract_own_members(comp_source)
+        setup_ids = extract_setup_identifiers(comp_source)
         ready_entries = []
 
         for entry in entries:
@@ -554,9 +555,43 @@ def plan_component_injections(
                     if m not in own_members or m in lifecycle_members_set
                 ]
 
+            # Also exclude members already declared in an existing setup()
+            # to prevent "identifier already declared" errors during
+            # incremental migration.
+            setup_conflicts_in_injectable: list[str] = []
+            if injectable and entry.composable and setup_ids:
+                lifecycle_members_set = set(lifecycle_members) if entry.lifecycle_hooks else set()
+                setup_conflicts_in_injectable = [
+                    m for m in injectable
+                    if m in setup_ids and m not in lifecycle_members_set
+                ]
+                injectable = [
+                    m for m in injectable
+                    if m not in setup_ids or m in lifecycle_members_set
+                ]
+
             if injectable and entry.composable:
                 migratable_entries.append(entry)
                 composable_calls.append((entry.composable.fn_name, injectable))
+                # Warn about setup() identifier conflicts
+                if setup_conflicts_in_injectable:
+                    from ..models import MigrationWarning
+                    names = ", ".join(setup_conflicts_in_injectable)
+                    entry.warnings.append(MigrationWarning(
+                        mixin_stem=entry.mixin_stem,
+                        category="setup-conflict",
+                        message=(
+                            f"Existing setup() already declares: {names}. "
+                            "These are NOT destructured from the composable."
+                        ),
+                        action_required=(
+                            f"Verify that the existing setup() declarations for "
+                            f"{names} provide the same functionality as the composable."
+                        ),
+                        line_hint=None,
+                        severity="info",
+                        source_context="component",
+                    ))
                 # Warn about overridden members that won't be destructured
                 if overridden_in_injectable:
                     from ..models import MigrationWarning

@@ -218,3 +218,44 @@ def test_add_vue_import_multiple_hooks_single_line():
     assert "onMounted" in vue_lines[0]
     assert "onBeforeUnmount" in vue_lines[0]
     assert "onUpdated" in vue_lines[0]
+
+
+# --- Setup identifier conflict filtering ---
+
+COMPONENT_WITH_SETUP = dedent("""\
+    <script>
+    import { useOther } from '@/composables/useOther'
+
+    export default {
+      setup() {
+        const { foo, bar } = useOther()
+        return { foo, bar }
+      },
+    }
+    </script>
+""").strip()
+
+
+def test_inject_setup_filters_conflicting_members():
+    """When existing setup declares 'foo', injecting a composable that also
+    provides 'foo' should only destructure the non-conflicting members."""
+    result = inject_setup(
+        COMPONENT_WITH_SETUP,
+        composable_calls=[("useNew", ["foo", "baz"])],
+    )
+    # 'baz' should be destructured from useNew
+    assert "const { baz } = useNew()" in result
+    # 'foo' should NOT appear in the useNew destructure (already declared)
+    assert "const { foo, baz } = useNew()" not in result
+    assert "const { foo } = useNew()" not in result
+
+
+def test_inject_setup_suppresses_call_when_all_conflict():
+    """When ALL members of a composable call conflict with existing setup
+    identifiers, the entire call should be suppressed."""
+    result = inject_setup(
+        COMPONENT_WITH_SETUP,
+        composable_calls=[("useNew", ["foo", "bar"])],
+    )
+    # useNew() call should be entirely absent
+    assert "useNew()" not in result

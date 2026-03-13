@@ -287,3 +287,50 @@ def extract_property_names(object_body: str) -> list[str]:
                 pos += match.end() - 1
         pos += 1
     return list(dict.fromkeys(names))
+
+
+def extract_declaration_names(body: str) -> set[str]:
+    """Extract variable and function declaration names from a JS function body.
+
+    Handles const/let/var simple assignments, const/let/var destructuring
+    (object and array), and function declarations.
+
+    Args:
+        body: The function body text (content between the braces).
+
+    Returns:
+        Set of declared identifier names.
+    """
+    names: set[str] = set()
+
+    # Object destructuring: const { a, b: c } = ...
+    for m in re.finditer(r"\b(?:const|let|var)\s*\{([^}]+)\}", body):
+        for part in m.group(1).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            # Handle renaming: { original: renamed }
+            if ":" in part:
+                part = part.split(":", 1)[1].strip()
+            ident_match = re.match(r"(\w+)", part)
+            if ident_match:
+                names.add(ident_match.group(1))
+
+    # Simple assignment: const foo = ...
+    for m in re.finditer(r"\b(?:const|let|var)\s+(\w+)\s*=", body):
+        names.add(m.group(1))
+
+    # Array destructuring: const [a, b] = ...
+    for m in re.finditer(r"\b(?:const|let|var)\s*\[([^\]]+)\]", body):
+        for part in m.group(1).split(","):
+            part = part.strip()
+            if part:
+                ident_match = re.match(r"(\w+)", part)
+                if ident_match:
+                    names.add(ident_match.group(1))
+
+    # Function declarations: function foo(...)
+    for m in re.finditer(r"\bfunction\s+(\w+)\s*\(", body):
+        names.add(m.group(1))
+
+    return names

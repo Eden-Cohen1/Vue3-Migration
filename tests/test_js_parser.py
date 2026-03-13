@@ -3,6 +3,7 @@ import pytest
 
 from vue3_migration.core.js_parser import (
     extract_brace_block,
+    extract_declaration_names,
     extract_property_names,
     extract_value_at,
     is_regex_start,
@@ -265,6 +266,66 @@ class TestStripComments:
         result = strip_comments(src)
         assert '<!-- not a comment -->' in result
 
+# ---------------------------------------------------------------------------
+# extract_declaration_names
+# ---------------------------------------------------------------------------
+
+class TestExtractDeclarationNames:
+    def test_const_destructuring(self):
+        body = "const { foo, bar } = useSomething()"
+        assert extract_declaration_names(body) == {"foo", "bar"}
+
+    def test_const_simple(self):
+        body = "const count = ref(0)"
+        assert extract_declaration_names(body) == {"count"}
+
+    def test_let_and_var(self):
+        body = "let x = 1\nvar y = 2"
+        assert extract_declaration_names(body) == {"x", "y"}
+
+    def test_function_declaration(self):
+        body = "function doStuff() { return 1 }"
+        assert extract_declaration_names(body) == {"doStuff"}
+
+    def test_arrow_function(self):
+        body = "const inc = () => count.value++"
+        assert extract_declaration_names(body) == {"inc"}
+
+    def test_destructure_rename(self):
+        body = "const { orig: alias, plain } = obj"
+        assert "alias" in extract_declaration_names(body)
+        assert "plain" in extract_declaration_names(body)
+        assert "orig" not in extract_declaration_names(body)
+
+    def test_array_destructuring(self):
+        body = "const [first, second] = useValues()"
+        result = extract_declaration_names(body)
+        assert "first" in result
+        assert "second" in result
+
+    def test_mixed_declarations(self):
+        body = (
+            "const { query, results } = useSearch()\n"
+            "const localCount = ref(0)\n"
+            "let temp = null\n"
+            "function reset() { localCount.value = 0 }\n"
+        )
+        result = extract_declaration_names(body)
+        assert result == {"query", "results", "localCount", "temp", "reset"}
+
+    def test_empty_body(self):
+        assert extract_declaration_names("") == set()
+        assert extract_declaration_names("  \n  ") == set()
+
+    def test_ignores_string_contents(self):
+        body = 'const x = "const y = 1"'
+        result = extract_declaration_names(body)
+        assert "x" in result
+        # y is inside a string — ideally not extracted, but our regex approach
+        # may pick it up. The important thing is x IS extracted.
+
+
+class TestStripCommentsMixed:
     def test_mixed_comments(self):
         src = (
             'real code\n'

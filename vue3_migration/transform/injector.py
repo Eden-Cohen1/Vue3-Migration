@@ -7,7 +7,7 @@ They do NOT perform file I/O — callers handle reading/writing.
 
 import re
 
-from ..core.js_parser import extract_brace_block, skip_non_code
+from ..core.js_parser import extract_brace_block, extract_declaration_names, skip_non_code
 from .this_rewriter import rewrite_this_refs
 
 
@@ -143,6 +143,28 @@ def inject_setup(
     # --- Existing setup(): prepend calls, merge into return ---
     setup_match = re.search(r"\bsetup\s*\([^)]*\)\s*\{", content)
     if setup_match:
+        # Filter out members already declared in the existing setup body
+        existing_body = extract_brace_block(content, setup_match.end() - 1)
+        existing_ids = extract_declaration_names(existing_body)
+        if existing_ids:
+            filtered_calls = []
+            call_lines = []
+            all_returned_members = []
+            for fn_name, _import_path, members in parsed_calls:
+                safe = [m for m in members if m not in existing_ids]
+                if safe:
+                    call_lines.append(f"{indent}{indent}const {{ {', '.join(safe)} }} = {fn_name}()")
+                    all_returned_members.extend(safe)
+                    filtered_calls.append((fn_name, _import_path, safe))
+            parsed_calls = filtered_calls
+            if inline_setup_lines:
+                call_lines = call_lines + inline_setup_lines
+            if lifecycle_calls:
+                call_lines = call_lines + lifecycle_calls
+
+        if not call_lines:
+            return content
+
         # Insert composable calls as first lines
         insert_pos = setup_match.end()
         injection = "\n" + "\n".join(call_lines) + "\n"

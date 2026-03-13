@@ -4,6 +4,7 @@ import pytest
 from vue3_migration.core.component_analyzer import (
     extract_data_property_names,
     extract_own_members,
+    extract_setup_identifiers,
     find_used_members,
     parse_imports,
     parse_mixins_array,
@@ -293,6 +294,45 @@ class TestExtractOwnMembers:
         assert 'myData' in result
         assert 'myComputed' in result
         assert 'myMethod' in result
+
+
+# ---------------------------------------------------------------------------
+# extract_setup_identifiers
+# ---------------------------------------------------------------------------
+
+class TestExtractSetupIdentifiers:
+    def test_no_setup_returns_empty(self):
+        src = '<script>\nexport default { data() { return {} } }\n</script>'
+        assert extract_setup_identifiers(src) == set()
+
+    def test_basic_setup_identifiers(self):
+        src = (
+            '<script>\nexport default {\n'
+            '  setup() {\n'
+            '    const { foo, bar } = useSearch()\n'
+            '    const localCount = ref(0)\n'
+            '    function reset() { localCount.value = 0 }\n'
+            '    return { foo, bar, localCount, reset }\n'
+            '  }\n'
+            '}\n</script>'
+        )
+        result = extract_setup_identifiers(src)
+        assert result == {"foo", "bar", "localCount", "reset"}
+
+    def test_setup_does_not_pollute_own_members(self):
+        """extract_own_members should NOT include setup identifiers."""
+        src = (
+            '<script>\nexport default {\n'
+            '  setup() {\n'
+            '    const { foo } = useSearch()\n'
+            '    return { foo }\n'
+            '  },\n'
+            '  data() { return { myData: 1 } }\n'
+            '}\n</script>'
+        )
+        own = extract_own_members(src)
+        assert "myData" in own
+        assert "foo" not in own
 
 
 # ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@ component-defined members from Vue component source code.
 
 import re
 
-from .js_parser import extract_brace_block, extract_property_names, strip_comments
+from .js_parser import extract_brace_block, extract_declaration_names, extract_property_names, strip_comments
 
 
 def parse_imports(component_source: str) -> dict[str, str]:
@@ -129,3 +129,21 @@ def extract_own_members(component_source: str) -> set[str]:
             )
 
     return own_members
+
+
+def extract_setup_identifiers(component_source: str) -> set[str]:
+    """Extract identifier names declared in an existing setup() function.
+
+    Finds const/let/var declarations and function declarations inside the
+    setup() body.  Used to prevent duplicate identifier injection when a
+    component already has Composition API code.
+    """
+    script_match = re.search(r"<script[^>]*>(.*?)</script>", component_source, re.DOTALL)
+    source = script_match.group(1) if script_match else component_source
+
+    setup_match = re.search(r"\bsetup\s*\([^)]*\)\s*\{", source)
+    if not setup_match:
+        return set()
+
+    body = extract_brace_block(source, setup_match.end() - 1)
+    return extract_declaration_names(body)
