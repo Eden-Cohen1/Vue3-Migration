@@ -19,6 +19,7 @@ from ..core.component_analyzer import (
     parse_mixins_array,
 )
 from ..core.composable_analyzer import (
+    classify_all_identifier_kinds,
     extract_all_identifiers,
     extract_declared_identifiers,
     extract_function_name,
@@ -157,8 +158,9 @@ def analyze_mixin(
                 all_identifiers=all_identifiers,
                 return_keys=return_keys,
                 declared_identifiers=declared_identifiers,
+                identifier_kinds=classify_all_identifier_kinds(comp_source, declared_identifiers),
             )
-            classification = coverage.classify_members(used, component_own_members)
+            classification = coverage.classify_members(used, component_own_members, mixin_members=entry.members)
 
             entry.composable = coverage
             entry.classification = classification

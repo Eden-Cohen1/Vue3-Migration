@@ -12,6 +12,7 @@ from ..core.component_analyzer import (
     find_used_members, parse_imports, parse_mixins_array,
 )
 from ..core.composable_analyzer import (
+    classify_all_identifier_kinds,
     extract_all_identifiers, extract_declared_identifiers,
     extract_function_name, extract_return_keys,
 )
@@ -85,16 +86,31 @@ def _analyze_mixin_silent(
         comp_source = read_source(composable_file)
         fn_name = extract_function_name(comp_source)
         if fn_name:
+            declared = extract_declared_identifiers(comp_source)
             coverage = ComposableCoverage(
                 file_path=composable_file,
                 fn_name=fn_name,
                 import_path=compute_import_path(composable_file, project_root),
                 all_identifiers=extract_all_identifiers(comp_source),
-                declared_identifiers=extract_declared_identifiers(comp_source),
+                declared_identifiers=declared,
                 return_keys=extract_return_keys(comp_source),
+                identifier_kinds=classify_all_identifier_kinds(comp_source, declared),
             )
             entry.composable = coverage
-            entry.classification = coverage.classify_members(used, component_own_members)
+            entry.classification = coverage.classify_members(used, component_own_members, mixin_members=members)
+
+            # Surface kind mismatches as warnings
+            if entry.classification.kind_mismatched:
+                for name, mixin_kind, comp_kind in entry.classification.kind_mismatched:
+                    entry.warnings.append(MigrationWarning(
+                        mixin_stem=entry.mixin_stem,
+                        category="kind-mismatch",
+                        message=f"'{name}' is {mixin_kind} in mixin but {comp_kind} in composable — runtime type mismatch likely",
+                        action_required=f"Ensure '{name}' in the composable matches the expected kind ({mixin_kind})",
+                        line_hint=None,
+                        severity="warning",
+                        source_context="composable",
+                    ))
 
     # Collect migration warnings
     mixin_warnings = collect_mixin_warnings(
@@ -367,16 +383,18 @@ def plan_component_injections(
                 )
             ):
                 new_content = patched_content[entry.composable.file_path]
+                declared = extract_declared_identifiers(new_content)
                 updated = ComposableCoverage(
                     file_path=entry.composable.file_path,
                     fn_name=entry.composable.fn_name,
                     import_path=entry.composable.import_path,
                     all_identifiers=extract_all_identifiers(new_content),
-                    declared_identifiers=extract_declared_identifiers(new_content),
+                    declared_identifiers=declared,
                     return_keys=extract_return_keys(new_content),
+                    identifier_kinds=classify_all_identifier_kinds(new_content, declared),
                 )
                 entry.composable = updated
-                entry.classification = updated.classify_members(entry.used_members, own_members)
+                entry.classification = updated.classify_members(entry.used_members, own_members, mixin_members=entry.members)
                 entry.compute_status()
 
             # Re-classify BLOCKED_NO_COMPOSABLE entries that have a generated composable
@@ -384,16 +402,18 @@ def plan_component_injections(
                 expected_fn = mixin_stem_to_composable_name(entry.mixin_stem)
                 if expected_fn in generated_by_fn_name:
                     change = generated_by_fn_name[expected_fn]
+                    declared = extract_declared_identifiers(change.new_content)
                     coverage = ComposableCoverage(
                         file_path=change.file_path,
                         fn_name=expected_fn,
                         import_path=compute_import_path(change.file_path, config.project_root),
                         all_identifiers=extract_all_identifiers(change.new_content),
-                        declared_identifiers=extract_declared_identifiers(change.new_content),
+                        declared_identifiers=declared,
                         return_keys=extract_return_keys(change.new_content),
+                        identifier_kinds=classify_all_identifier_kinds(change.new_content, declared),
                     )
                     entry.composable = coverage
-                    entry.classification = coverage.classify_members(entry.used_members, own_members)
+                    entry.classification = coverage.classify_members(entry.used_members, own_members, mixin_members=entry.members)
                     entry.compute_status()
 
             if entry.status == MigrationStatus.READY:
@@ -988,16 +1008,18 @@ def _build_standalone_mixin_entry(
         comp_source = read_source(composable_file)
         fn_name = extract_function_name(comp_source)
         if fn_name:
+            declared = extract_declared_identifiers(comp_source)
             entry.composable = ComposableCoverage(
                 file_path=composable_file,
                 fn_name=fn_name,
                 import_path=compute_import_path(composable_file, project_root),
                 all_identifiers=extract_all_identifiers(comp_source),
-                declared_identifiers=extract_declared_identifiers(comp_source),
+                declared_identifiers=declared,
                 return_keys=extract_return_keys(comp_source),
+                identifier_kinds=classify_all_identifier_kinds(comp_source, declared),
             )
             entry.classification = entry.composable.classify_members(
-                members.all_names, set(),
+                members.all_names, set(), mixin_members=members,
             )
 
     mixin_warnings = collect_mixin_warnings(
