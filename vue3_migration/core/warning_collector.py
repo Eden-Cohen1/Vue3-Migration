@@ -52,6 +52,13 @@ _THIS_DOLLAR_PATTERNS: list[tuple[str, str, str, str, str]] = [
      "Use d() from useI18n(): const { d } = useI18n()", "error"),
     (r"this\.\$n\b", "this.$n", "this.$n (i18n number) is not available in composables",
      "Use n() from useI18n(): const { n } = useI18n()", "error"),
+    # --- error: direct mixin/options introspection — breaks after migration ---
+    (r"this\.\$options\.mixins\b", "this.$options.mixins",
+     "this.$options.mixins — direct mixin array access breaks after migration to composables",
+     "Refactor to import and call composable functions directly", "error"),
+    (r"this\.\$options(?!\.mixins)\b", "this.$options",
+     "this.$options — component options introspection is not available in composables",
+     "Refactor to avoid this.$options; use explicit parameters or provide/inject", "error"),
     # --- warning: has known drop-in replacement ---
     (r"this\.\$attrs\b", "this.$attrs", "this.$attrs used — needs useAttrs()",
      "Add const attrs = useAttrs() and import from 'vue'", "warning"),

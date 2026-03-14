@@ -2688,3 +2688,67 @@ class TestNestedMixinsWarningSuppression:
         assert "ghostMixin" in nested[0].message
         # Resolved mixin should NOT be mentioned in the warning
         assert "realMixin" not in nested[0].message
+
+
+# ---------------------------------------------------------------------------
+# Direct mixin access patterns (this.$options)
+# ---------------------------------------------------------------------------
+
+class TestDirectMixinAccessWarnings:
+    """Tests for this.$options and this.$options.mixins detection."""
+
+    def test_detects_options_mixins_access(self):
+        source = """
+export default {
+    methods: {
+        callMixin() {
+            return this.$options.mixins[0].methods.doSomething()
+        }
+    }
+}"""
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        cats = [w.category for w in warnings]
+        assert "this.$options.mixins" in cats
+
+    def test_options_mixins_severity_is_error(self):
+        source = "this.$options.mixins[0].methods.foo()"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        match = [w for w in warnings if w.category == "this.$options.mixins"]
+        assert match and match[0].severity == "error"
+
+    def test_detects_general_options_access(self):
+        source = """
+export default {
+    methods: {
+        getName() {
+            return this.$options.name
+        }
+    }
+}"""
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        cats = [w.category for w in warnings]
+        assert "this.$options" in cats
+
+    def test_general_options_severity_is_error(self):
+        source = "this.$options.name"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        match = [w for w in warnings if w.category == "this.$options"]
+        assert match and match[0].severity == "error"
+
+    def test_options_mixins_does_not_also_trigger_general(self):
+        """this.$options.mixins should only trigger the specific warning, not the general one."""
+        source = "this.$options.mixins[0].methods.foo()"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        cats = [w.category for w in warnings]
+        assert "this.$options.mixins" in cats
+        assert "this.$options" not in cats
+
+    def test_options_not_caught_by_catchall(self):
+        """this.$options should not also trigger the unknown-property catch-all."""
+        source = "this.$options.data()"
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        cats = [w.category for w in warnings]
+        assert "this.$options" in cats
+        # Should not have a "plugin/instance property" catch-all warning for $options
+        catchall = [w for w in warnings if "plugin" in w.message.lower() or "instance property" in w.message.lower()]
+        assert not catchall
