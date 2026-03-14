@@ -137,6 +137,14 @@ def _analyze_mixin_silent(
 
     entry.warnings.extend(mixin_warnings)
 
+    # Detect direct mixin object access in the component (e.g. searchMixin.methods.doX)
+    from ..core.warning_collector import detect_direct_mixin_access
+    direct_access_warnings = detect_direct_mixin_access(
+        component_source, local_name, entry.mixin_stem,
+        component_path=component_path,
+    )
+    entry.warnings.extend(direct_access_warnings)
+
     entry.compute_status()
     return entry
 

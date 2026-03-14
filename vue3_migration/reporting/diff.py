@@ -218,7 +218,8 @@ def write_migration_report(plan: MigrationPlan, project_root: Path) -> Path:
 
         # Section 2: Action Plan
         action_plan = build_action_plan(
-            plan.entries_by_component, plan.composable_changes, project_root
+            plan.entries_by_component, plan.composable_changes, project_root,
+            component_changes=plan.component_changes,
         )
         if action_plan:
             sections.append(action_plan)

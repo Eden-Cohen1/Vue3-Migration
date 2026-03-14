@@ -1120,6 +1120,64 @@ def detect_name_collisions(
     return warnings
 
 
+def detect_direct_mixin_access(
+    component_source: str,
+    mixin_local_name: str,
+    mixin_stem: str,
+    component_path: "Path | None" = None,
+) -> list[MigrationWarning]:
+    """Detect component code that accesses mixin object members directly.
+
+    Patterns like ``searchMixin.methods.doSearch.call(this)`` or
+    ``searchMixin.data()`` bypass the mixins array and will break after
+    migration because the mixin import gets removed.
+    """
+    warnings: list[MigrationWarning] = []
+    esc = re.escape(mixin_local_name)
+
+    # Match the full expression from mixinName through to end of statement-relevant chars
+    # e.g. "verifyKindMixin.methods.fetchData.call(this)" or "verifyKindMixin.data()"
+    _MIXIN_SECTIONS = r"methods|computed|data|watch|props|created|mounted|beforeDestroy|beforeUnmount|setup"
+    pat = re.compile(
+        rf"\b{esc}\s*\.\s*(?:{_MIXIN_SECTIONS})\b"
+    )
+
+    lines = component_source.splitlines()
+    seen_lines: set[int] = set()
+    for m in pat.finditer(component_source):
+        line_no = _line_number(component_source, m.start())
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        # Extract the full expression from the source line
+        source_line = lines[line_no - 1].strip() if line_no <= len(lines) else ""
+        # Find the full mixin access expression in the line
+        expr_match = re.search(
+            rf"\b{esc}(?:\.\w+)+(?:\([^)]*\))*",
+            source_line,
+        )
+        snippet = expr_match.group(0) if expr_match else m.group(0).strip()
+        warnings.append(MigrationWarning(
+            mixin_stem=mixin_stem,
+            category="direct-mixin-access",
+            message=(
+                f"Component accesses '{snippet}' directly — "
+                f"this will break when '{mixin_local_name}' import is removed during migration"
+            ),
+            action_required=(
+                f"Replace direct access to '{mixin_local_name}' with a call "
+                f"to the composable function instead"
+            ),
+            line_hint=None,
+            severity="error",
+            source_context="component",
+            source_line=line_no,
+            source_file=component_path,
+        ))
+
+    return warnings
+
+
 def detect_missing_cleanup(composable_source: str) -> list[str]:
     """Detect addEventListener without matching removeEventListener cleanup.
 

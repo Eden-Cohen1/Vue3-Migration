@@ -460,6 +460,46 @@ _MIGRATION_RECIPES: dict[str, dict[str, str]] = {
             "// Only if the component intentionally manages its own 'query'"
         ),
     },
+    "direct-mixin-access": {
+        "title": "Direct mixin object access → composable call",
+        "why": (
+            "Code like `myMixin.methods.doX.call(this)` or `myMixin.data()` "
+            "accesses the imported mixin object directly. After migration the mixin "
+            "import is removed, so these references will break."
+        ),
+        "before": (
+            "import searchMixin from '../mixins/searchMixin'\n"
+            "\n"
+            "export default {\n"
+            "  mixins: [searchMixin],\n"
+            "  methods: {\n"
+            "    reset() {\n"
+            "      // Direct access to mixin internals\n"
+            "      Object.assign(this, searchMixin.data())\n"
+            "      searchMixin.methods.clearResults.call(this)\n"
+            "    }\n"
+            "  }\n"
+            "}"
+        ),
+        "after": (
+            "import { useSearch } from '@/composables/useSearch'\n"
+            "\n"
+            "export default {\n"
+            "  setup() {\n"
+            "    const { query, results, clearResults } = useSearch()\n"
+            "\n"
+            "    function reset() {\n"
+            "      // Use composable refs/methods directly\n"
+            "      query.value = ''\n"
+            "      results.value = []\n"
+            "      clearResults()\n"
+            "    }\n"
+            "\n"
+            "    return { query, results, clearResults, reset }\n"
+            "  }\n"
+            "}"
+        ),
+    },
 }
 
 # Categories that share a recipe (all i18n variants point to this.$t)
@@ -1054,6 +1094,7 @@ def build_action_plan(
     entries_by_component: "list[tuple[Path, list[MixinEntry]]]",
     composable_changes: "list[FileChange] | None" = None,
     project_root: "Path | None" = None,
+    component_changes: "list[FileChange] | None" = None,
 ) -> str:
     """Build an action plan grouped by difficulty tier with per-composable steps."""
     from collections import OrderedDict
@@ -1087,6 +1128,13 @@ def build_action_plan(
             if change.has_changes:
                 composable_content_map[change.file_path] = change.new_content
                 composable_path_by_stem[change.file_path.stem] = change.file_path
+
+    # Build component content map for post-migration line lookups
+    component_content_map: dict[Path, str] = {}
+    if component_changes:
+        for change in component_changes:
+            if change.has_changes:
+                component_content_map[change.file_path] = change.new_content
 
     # Classify each entry into tiers
     quick_wins: list[MixinEntry] = []    # HIGH confidence, no error/warning
@@ -1160,13 +1208,13 @@ def build_action_plan(
     if dropin_fixes:
         a("---\n")
         for entry in dropin_fixes:
-            _append_composable_steps(a, entry, "\U0001f7e1", composable_content_map, composable_path_by_stem)
+            _append_composable_steps(a, entry, "\U0001f7e1", composable_content_map, composable_path_by_stem, component_content_map)
 
     # Design decisions — per-composable numbered steps
     if design_decisions:
         a("---\n")
         for entry in design_decisions:
-            _append_composable_steps(a, entry, "\U0001f534", composable_content_map, composable_path_by_stem)
+            _append_composable_steps(a, entry, "\U0001f534", composable_content_map, composable_path_by_stem, component_content_map)
 
     # Unused mixins — not imported by any component
     if unused_mixins:
@@ -1288,6 +1336,8 @@ def _step_label(warning: MigrationWarning) -> str:
             f"Resolve {member} \u2014 not defined in this mixin."
             f" Pass as param, function arg, or use another composable"
         )
+    if warning.category == "direct-mixin-access":
+        return f"Direct mixin object access \u2014 replace with composable call"
     if warning.category == "this-alias":
         return "`this` alias won't work \u2014 replace with direct refs"
     if warning.category.startswith("mixin-option:"):
@@ -1336,12 +1386,49 @@ def _build_kind_mismatch_step(
     return f"Fix type mismatches:\n{bullet_lines}"
 
 
+def _build_direct_access_step(
+    warnings: list[MigrationWarning],
+    component_content_map: "dict[Path, str] | None" = None,
+) -> str:
+    """Build step(s) for direct mixin object access warnings."""
+    import re
+    link = _recipe_link("direct-mixin-access")
+    bullets: list[str] = []
+    for w in warnings:
+        # Extract the snippet like "verifyKindMixin.methods.fetchData.call(this)"
+        m = re.search(r"'([^']+)'", w.message)
+        snippet = m.group(1) if m else "mixin object"
+        line_ref = ""
+        if w.source_file:
+            # Look up the line in post-migration content so the link
+            # points to the correct line after setup() injection.
+            post_content = (component_content_map or {}).get(w.source_file)
+            if post_content:
+                # Search for the expression in the post-migration source
+                for i, line in enumerate(post_content.splitlines(), 1):
+                    if snippet in line:
+                        line_ref = f" ({_vscode_link(w.source_file, i, f'L{i}')})"
+                        break
+            # Fallback to pre-migration line number
+            if not line_ref and w.source_line:
+                line_ref = f" ({_vscode_link(w.source_file, w.source_line, f'L{w.source_line}')})"
+        bullets.append(f"`{snippet}`{line_ref}")
+
+    suffix = f" \u2192 {link}" if link else ""
+    if len(bullets) == 1:
+        return f"Direct mixin access \u2014 {bullets[0]}{suffix}"
+
+    bullet_lines = "\n".join(f"  - {b}" for b in bullets)
+    return f"Direct mixin access \u2014 breaks after migration{suffix}:\n{bullet_lines}"
+
+
 def _append_composable_steps(
     a: "callable",
     entry: MixinEntry,
     dot: str,
     composable_content_map: "dict[Path, str] | None" = None,
     composable_path_by_stem: "dict[str, Path] | None" = None,
+    component_content_map: "dict[Path, str] | None" = None,
 ) -> None:
     """Append numbered action steps for one composable to the output."""
     from ..transform.composable_generator import mixin_stem_to_composable_name
@@ -1367,10 +1454,12 @@ def _append_composable_steps(
                   if w.severity in ("error", "warning") and w.category not in _AUTO_REWRITTEN_CATEGORIES]
     info_warnings = [w for w in entry.warnings if w.severity == "info" and w.category not in _SKIPPED_CATEGORIES]
 
-    # Collect kind-mismatch warnings separately — each member is distinct,
+    # Collect per-member warnings separately — each occurrence is distinct,
     # not a shared recipe, so they must not be collapsed by recipe-key dedup.
+    _PER_MEMBER_CATEGORIES = {"kind-mismatch", "direct-mixin-access"}
     kind_mismatch_warnings = [w for w in actionable if w.category == "kind-mismatch"]
-    other_actionable = [w for w in actionable if w.category != "kind-mismatch"]
+    direct_access_warnings = [w for w in actionable if w.category == "direct-mixin-access"]
+    other_actionable = [w for w in actionable if w.category not in _PER_MEMBER_CATEGORIES]
 
     # De-duplicate steps by recipe key (aliases like $t/$tc share one step)
     seen_keys: set[str] = set()
@@ -1405,6 +1494,10 @@ def _append_composable_steps(
     # Add kind-mismatch as a single combined step listing all mismatched members
     if kind_mismatch_warnings:
         steps.append(_build_kind_mismatch_step(kind_mismatch_warnings, comp_source, comp_path))
+
+    # Add direct-mixin-access as individual steps with component line refs
+    if direct_access_warnings:
+        steps.append(_build_direct_access_step(direct_access_warnings, component_content_map))
 
     step_count = len(steps)
     a(f"### {dot} `{name}` \u2014 {step_count} step{'s' if step_count != 1 else ''}\n")

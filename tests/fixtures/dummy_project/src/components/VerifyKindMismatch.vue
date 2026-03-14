@@ -16,5 +16,13 @@ import verifyOptionsMixin from '../mixins/verifyOptionsMixin'
 export default {
   name: 'VerifyKindMismatch',
   mixins: [verifyKindMixin, verifyOptionsMixin],
+  methods: {
+    getDefaultData() {
+      return verifyKindMixin.data()
+    },
+    callMixinMethod() {
+      verifyKindMixin.methods.fetchData.call(this)
+    },
+  },
 }
 </script>
