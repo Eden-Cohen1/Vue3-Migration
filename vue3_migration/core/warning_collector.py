@@ -534,6 +534,18 @@ def inject_inline_warnings(
                 # Also match all alias.x usage lines
                 alias_usage_patterns[f"{alias}."] = (w.severity, f"{alias}.x won't auto-rewrite — use direct refs")
             continue
+        elif w.category == "kind-mismatch":
+            # Match the declaration line for the mismatched member
+            m = re.match(r"'(\w+)' is (\w+) in mixin but (\w+) in composable", w.message)
+            if m:
+                name, mixin_kind, comp_kind = m.group(1), m.group(2), m.group(3)
+                _kind_labels = {"data": "ref", "computed": "computed", "methods": "function"}
+                expected = _kind_labels.get(mixin_kind, mixin_kind)
+                hint = f"type mismatch — mixin expects {expected}, composable has {comp_kind}"
+                # Use the member name as pattern to match its declaration line
+                pat = name
+                pattern_info[pat] = (w.severity, hint)
+            continue
         else:
             continue
 

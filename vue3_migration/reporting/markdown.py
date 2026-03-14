@@ -1234,6 +1234,10 @@ def _find_warning_lines(
         m = re.match(r"'(\w+)'", warning.message)
         if m:
             pat = m.group(1)
+    elif warning.category == "kind-mismatch":
+        m = re.match(r"'(\w+)'", warning.message)
+        if m:
+            pat = m.group(1)
 
     # Search composable source for the pattern
     if pat:
@@ -1293,6 +1297,45 @@ def _step_label(warning: MigrationWarning) -> str:
     return f"Replace `{warning.category}`"
 
 
+# Map mixin section names to human-readable composable kind names
+_MIXIN_KIND_LABELS = {"data": "ref", "computed": "computed", "methods": "function"}
+
+
+def _build_kind_mismatch_step(
+    warnings: list[MigrationWarning],
+    comp_source: str,
+    comp_path: "Path | None",
+) -> str:
+    """Build a single combined step for all kind-mismatch warnings."""
+    import re
+
+    # Build per-member bullet lines with individual line refs
+    bullets: list[str] = []
+    for w in warnings:
+        m = re.match(r"'(\w+)' is (\w+) in mixin but (\w+) in composable", w.message)
+        if m:
+            name, mixin_kind, comp_kind = m.group(1), m.group(2), m.group(3)
+            expected = _MIXIN_KIND_LABELS.get(mixin_kind, mixin_kind)
+            label = f"`{name}` (mixin: {expected}, composable: {comp_kind})"
+        else:
+            label = w.message
+
+        line_ref = ""
+        if comp_source and comp_path:
+            line_nums = _find_warning_lines(comp_source, w)
+            if line_nums:
+                vscode_links = [_vscode_link(comp_path, ln, f"L{ln}") for ln in line_nums[:3]]
+                line_ref = f" ({', '.join(vscode_links)})"
+
+        bullets.append(f"{label}{line_ref}")
+
+    if len(bullets) == 1:
+        return f"Fix type mismatch \u2014 {bullets[0]}"
+
+    bullet_lines = "\n".join(f"  - {b}" for b in bullets)
+    return f"Fix type mismatches:\n{bullet_lines}"
+
+
 def _append_composable_steps(
     a: "callable",
     entry: MixinEntry,
@@ -1324,10 +1367,15 @@ def _append_composable_steps(
                   if w.severity in ("error", "warning") and w.category not in _AUTO_REWRITTEN_CATEGORIES]
     info_warnings = [w for w in entry.warnings if w.severity == "info" and w.category not in _SKIPPED_CATEGORIES]
 
+    # Collect kind-mismatch warnings separately — each member is distinct,
+    # not a shared recipe, so they must not be collapsed by recipe-key dedup.
+    kind_mismatch_warnings = [w for w in actionable if w.category == "kind-mismatch"]
+    other_actionable = [w for w in actionable if w.category != "kind-mismatch"]
+
     # De-duplicate steps by recipe key (aliases like $t/$tc share one step)
     seen_keys: set[str] = set()
     steps: list[str] = []
-    for w in actionable:
+    for w in other_actionable:
         recipe_key = _RECIPE_ALIASES.get(w.category, w.category)
         if recipe_key in seen_keys:
             continue
@@ -1353,6 +1401,10 @@ def _append_composable_steps(
             steps.append(f"{label} \u2192 {link}{line_refs}")
         else:
             steps.append(f"{label} \u2192 {w.action_required}{line_refs}")
+
+    # Add kind-mismatch as a single combined step listing all mismatched members
+    if kind_mismatch_warnings:
+        steps.append(_build_kind_mismatch_step(kind_mismatch_warnings, comp_source, comp_path))
 
     step_count = len(steps)
     a(f"### {dot} `{name}` \u2014 {step_count} step{'s' if step_count != 1 else ''}\n")

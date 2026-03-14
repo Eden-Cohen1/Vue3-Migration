@@ -13,10 +13,14 @@
 </template>
 
 <script>
-import watchMixin from '../mixins/watchMixin'
 
+import { useWatch } from '@/composables/useWatch'
 export default {
+  setup() {
+    const { query, count, total, startWatchingQuery, startWatchingUserName, startDeepWatch, startWatchWithCleanup, startDynamicWatch, fetchResults } = useWatch()
+
+    return { query, count, total, startWatchingQuery, startWatchingUserName, startDeepWatch, startWatchWithCleanup, startDynamicWatch, fetchResults }
+  },
   name: 'VerifyWatch',
-  mixins: [watchMixin]
 }
 </script>

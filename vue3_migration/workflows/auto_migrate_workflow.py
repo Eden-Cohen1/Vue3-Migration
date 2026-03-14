@@ -102,11 +102,13 @@ def _analyze_mixin_silent(
             # Surface kind mismatches as warnings
             if entry.classification.kind_mismatched:
                 for name, mixin_kind, comp_kind in entry.classification.kind_mismatched:
+                    _kind_labels = {"data": "ref", "computed": "computed", "methods": "function"}
+                    expected = _kind_labels.get(mixin_kind, mixin_kind)
                     entry.warnings.append(MigrationWarning(
                         mixin_stem=entry.mixin_stem,
                         category="kind-mismatch",
                         message=f"'{name}' is {mixin_kind} in mixin but {comp_kind} in composable — runtime type mismatch likely",
-                        action_required=f"Ensure '{name}' in the composable matches the expected kind ({mixin_kind})",
+                        action_required=f"Change '{name}' in composable from {comp_kind} to {expected} to match mixin usage",
                         line_hint=None,
                         severity="warning",
                         source_context="composable",
@@ -133,7 +135,7 @@ def _analyze_mixin_silent(
         resolved_names = set(entry.composable.declared_identifiers)
         entry.external_deps = [d for d in entry.external_deps if d not in resolved_names]
 
-    entry.warnings = mixin_warnings
+    entry.warnings.extend(mixin_warnings)
 
     entry.compute_status()
     return entry
@@ -836,6 +838,46 @@ def plan_regenerated_composables(
     return changes
 
 
+def _inject_kind_mismatch_comments(
+    source: str,
+    warnings: list[MigrationWarning],
+) -> str:
+    """Add inline // ⚠️ comments to composable lines with kind mismatches."""
+    import re
+    _kind_labels = {"data": "ref", "computed": "computed", "methods": "function"}
+
+    # Build member→hint map
+    hints: dict[str, str] = {}
+    for w in warnings:
+        m = re.match(r"'(\w+)' is (\w+) in mixin but (\w+) in composable", w.message)
+        if m:
+            name, mixin_kind, comp_kind = m.group(1), m.group(2), m.group(3)
+            expected = _kind_labels.get(mixin_kind, mixin_kind)
+            hints[name] = f"\u26a0\ufe0f type mismatch \u2014 mixin expects {expected}, composable has {comp_kind}"
+
+    if not hints:
+        return source
+
+    lines = source.splitlines(keepends=True)
+    result = []
+    for line in lines:
+        stripped = line.rstrip("\n\r")
+        # Skip comment-only lines
+        if stripped.lstrip().startswith("//"):
+            result.append(line)
+            continue
+        for name, hint in hints.items():
+            # Match declaration of this identifier (const/let/var/function)
+            if re.search(rf"\b(?:const|let|var)\s+{re.escape(name)}\b", stripped) or \
+               re.search(rf"\bfunction\s+{re.escape(name)}\s*\(", stripped):
+                # Don't double-annotate
+                if hint not in stripped:
+                    stripped = f"{stripped}  // {hint}"
+                break
+        result.append(stripped + line[len(line.rstrip("\n\r")):])
+    return "".join(result)
+
+
 def _build_all_composable_changes(
     entries: list[tuple[Path, list[MixinEntry]]],
     project_root: Path,
@@ -848,7 +890,52 @@ def _build_all_composable_changes(
         return regenerated + generated
     patched = plan_composable_patches(entries, project_root=project_root)
     generated = plan_new_composables(entries, project_root)
-    return patched + generated
+    changes = patched + generated
+
+    # Inject kind-mismatch inline comments into existing composables that
+    # weren't patched or generated (i.e. READY composables with mismatches).
+    changed_paths = {c.file_path for c in changes}
+    kind_warnings = _collect_kind_mismatch_warnings(entries)
+    for comp_path, warnings in kind_warnings.items():
+        if comp_path in changed_paths:
+            for change in changes:
+                if change.file_path == comp_path:
+                    change.new_content = _inject_kind_mismatch_comments(
+                        change.new_content, warnings,
+                    )
+                    break
+        else:
+            original = read_source(comp_path)
+            annotated = _inject_kind_mismatch_comments(original, warnings)
+            if annotated != original:
+                changes.append(FileChange(
+                    file_path=comp_path,
+                    original_content=original,
+                    new_content=annotated,
+                    changes=["Added kind-mismatch warning comments"],
+                ))
+    return changes
+
+
+def _collect_kind_mismatch_warnings(
+    entries: list[tuple[Path, list[MixinEntry]]],
+) -> dict[Path, list[MigrationWarning]]:
+    """Collect kind-mismatch warnings grouped by composable file path."""
+    result: dict[Path, list[MigrationWarning]] = {}
+    seen: set[tuple[Path, str]] = set()  # (comp_path, member_name) dedup
+    for _comp_path, entry_list in entries:
+        for entry in entry_list:
+            if not entry.composable or not entry.classification:
+                continue
+            for w in entry.warnings:
+                if w.category != "kind-mismatch":
+                    continue
+                key = (entry.composable.file_path, w.message)
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.setdefault(entry.composable.file_path, []).append(w)
+    return result
 
 
 def _find_standalone_mixin_stems(
@@ -1042,7 +1129,7 @@ def _build_standalone_mixin_entry(
         resolved_names = set(entry.composable.declared_identifiers)
         entry.external_deps = [d for d in entry.external_deps if d not in resolved_names]
 
-    entry.warnings = mixin_warnings
+    entry.warnings.extend(mixin_warnings)
 
     # Flag this mixin as unused by any component — safe to delete
     entry.warnings.insert(0, MigrationWarning(
