@@ -79,6 +79,9 @@ class MemberClassification:
     """Not-returned members that the component defines itself (safe to skip)."""
     injectable: list[str] = field(default_factory=list)
     """Members the composable should provide (used - overridden)."""
+    kind_mismatched: list[tuple[str, str, str]] = field(default_factory=list)
+    """Members where composable kind mismatches mixin kind: (name, mixin_kind, composable_kind).
+    These are warnings, not blockers — is_ready is unaffected."""
 
     @property
     def is_ready(self) -> bool:
@@ -95,11 +98,14 @@ class ComposableCoverage:
     return_keys: list[str] = field(default_factory=list)
     declared_identifiers: list[str] = field(default_factory=list)
     """Identifiers with actual declarations (const/let/var/function) — excludes return-only keys."""
+    identifier_kinds: dict[str, str] = field(default_factory=dict)
+    """Maps declared identifier name → kind: 'ref' | 'computed' | 'function' | 'unknown'."""
 
     def classify_members(
         self,
         used: list[str],
         component_own_members: set[str],
+        mixin_members: "MixinMembers | None" = None,
     ) -> MemberClassification:
         """Classify each used member by availability in the composable and component."""
         # Use declared_identifiers (excludes return-only keys) when available,
@@ -118,6 +124,34 @@ class ComposableCoverage:
             if m not in overridden and m not in overridden_not_returned
         ]
 
+        # Detect kind mismatches for injectable members
+        kind_mismatched: list[tuple[str, str, str]] = []
+        if mixin_members and self.identifier_kinds:
+            # Build reverse map: member name → mixin section
+            member_section: dict[str, str] = {}
+            for name in mixin_members.data:
+                member_section[name] = "data"
+            for name in mixin_members.computed:
+                member_section[name] = "computed"
+            for name in mixin_members.methods:
+                member_section[name] = "methods"
+
+            # data/computed → incompatible with "function"
+            # methods → incompatible with "ref" and "computed"
+            _incompatible: dict[str, set[str]] = {
+                "data": {"function"},
+                "computed": {"function"},
+                "methods": {"ref", "computed"},
+            }
+
+            for name in injectable:
+                comp_kind = self.identifier_kinds.get(name, "unknown")
+                mixin_kind = member_section.get(name)
+                if comp_kind == "unknown" or not mixin_kind:
+                    continue
+                if comp_kind in _incompatible.get(mixin_kind, set()):
+                    kind_mismatched.append((name, mixin_kind, comp_kind))
+
         return MemberClassification(
             missing=missing,
             truly_missing=truly_missing,
@@ -126,6 +160,7 @@ class ComposableCoverage:
             overridden=overridden,
             overridden_not_returned=overridden_not_returned,
             injectable=injectable,
+            kind_mismatched=kind_mismatched,
         )
 
 

@@ -627,3 +627,119 @@ class TestBlockedEntryDiagnostics:
 
         assert any(w.category == "blocked-no-composable" for w in entry1.warnings)
         assert any(w.category == "blocked-no-composable" for w in entry2.warnings)
+
+
+# ---------------------------------------------------------------------------
+# Kind mismatch detection in classify_members
+# ---------------------------------------------------------------------------
+
+
+class TestKindMismatchClassification:
+    """Tests for kind mismatch detection in classify_members."""
+
+    def _coverage(self, **kwargs):
+        """Helper to build a ComposableCoverage with defaults."""
+        defaults = dict(
+            file_path=Path("/fake/useTest.js"),
+            fn_name="useTest",
+            import_path="@/composables/useTest",
+            all_identifiers=["isLoading"],
+            declared_identifiers=["isLoading"],
+            return_keys=["isLoading"],
+            identifier_kinds={},
+        )
+        defaults.update(kwargs)
+        return ComposableCoverage(**defaults)
+
+    def test_method_vs_ref_is_mismatch(self):
+        coverage = self._coverage(identifier_kinds={"isLoading": "ref"})
+        members = MixinMembers(methods=["isLoading"])
+        result = coverage.classify_members(["isLoading"], set(), mixin_members=members)
+        assert ("isLoading", "methods", "ref") in result.kind_mismatched
+
+    def test_method_vs_computed_is_mismatch(self):
+        coverage = self._coverage(identifier_kinds={"isLoading": "computed"})
+        members = MixinMembers(methods=["isLoading"])
+        result = coverage.classify_members(["isLoading"], set(), mixin_members=members)
+        assert ("isLoading", "methods", "computed") in result.kind_mismatched
+
+    def test_method_vs_function_no_mismatch(self):
+        coverage = self._coverage(identifier_kinds={"isLoading": "function"})
+        members = MixinMembers(methods=["isLoading"])
+        result = coverage.classify_members(["isLoading"], set(), mixin_members=members)
+        assert result.kind_mismatched == []
+
+    def test_data_vs_function_is_mismatch(self):
+        coverage = self._coverage(
+            all_identifiers=["count"],
+            declared_identifiers=["count"],
+            return_keys=["count"],
+            identifier_kinds={"count": "function"},
+        )
+        members = MixinMembers(data=["count"])
+        result = coverage.classify_members(["count"], set(), mixin_members=members)
+        assert ("count", "data", "function") in result.kind_mismatched
+
+    def test_data_vs_ref_no_mismatch(self):
+        coverage = self._coverage(
+            all_identifiers=["count"],
+            declared_identifiers=["count"],
+            return_keys=["count"],
+            identifier_kinds={"count": "ref"},
+        )
+        members = MixinMembers(data=["count"])
+        result = coverage.classify_members(["count"], set(), mixin_members=members)
+        assert result.kind_mismatched == []
+
+    def test_computed_vs_function_is_mismatch(self):
+        coverage = self._coverage(
+            all_identifiers=["total"],
+            declared_identifiers=["total"],
+            return_keys=["total"],
+            identifier_kinds={"total": "function"},
+        )
+        members = MixinMembers(computed=["total"])
+        result = coverage.classify_members(["total"], set(), mixin_members=members)
+        assert ("total", "computed", "function") in result.kind_mismatched
+
+    def test_computed_vs_ref_no_mismatch(self):
+        coverage = self._coverage(
+            all_identifiers=["total"],
+            declared_identifiers=["total"],
+            return_keys=["total"],
+            identifier_kinds={"total": "ref"},
+        )
+        members = MixinMembers(computed=["total"])
+        result = coverage.classify_members(["total"], set(), mixin_members=members)
+        assert result.kind_mismatched == []
+
+    def test_unknown_kind_never_mismatches(self):
+        coverage = self._coverage(identifier_kinds={"isLoading": "unknown"})
+        members = MixinMembers(methods=["isLoading"])
+        result = coverage.classify_members(["isLoading"], set(), mixin_members=members)
+        assert result.kind_mismatched == []
+
+    def test_no_mixin_members_no_mismatch(self):
+        coverage = self._coverage(identifier_kinds={"isLoading": "ref"})
+        result = coverage.classify_members(["isLoading"], set())
+        assert result.kind_mismatched == []
+
+    def test_overridden_members_excluded_from_mismatch(self):
+        """Members the component overrides should not be checked for kind mismatch."""
+        coverage = self._coverage(
+            all_identifiers=[],
+            declared_identifiers=[],
+            return_keys=[],
+            identifier_kinds={},
+        )
+        members = MixinMembers(methods=["isLoading"])
+        result = coverage.classify_members(["isLoading"], {"isLoading"}, mixin_members=members)
+        assert result.kind_mismatched == []
+
+    def test_is_ready_ignores_kind_mismatch(self):
+        """Kind mismatches are warnings, not blockers — is_ready should still be True."""
+        coverage = self._coverage(identifier_kinds={"isLoading": "ref"})
+        members = MixinMembers(methods=["isLoading"])
+        result = coverage.classify_members(["isLoading"], set(), mixin_members=members)
+        assert result.kind_mismatched  # has a mismatch
+        assert result.is_ready  # but still ready
