@@ -1093,11 +1093,13 @@ def detect_structural_patterns(
 
 def detect_name_collisions(
     composable_members: dict[str, list[str]],
+    component_name: str = "",
 ) -> list[MigrationWarning]:
     """Detect member name collisions across composables for the same component.
 
     Args:
         composable_members: mapping of composable fn name → list of member names
+        component_name: component file stem for context in messages
     """
     warnings: list[MigrationWarning] = []
     # Build reverse map: member_name → list of composable names
@@ -1106,13 +1108,23 @@ def detect_name_collisions(
         for member in members:
             member_to_composables.setdefault(member, []).append(fn_name)
 
+    comp_ctx = f"In `{component_name}`, m" if component_name else "M"
     for member, sources in member_to_composables.items():
         if len(sources) > 1:
+            sources_str = " and ".join(f"`{s}`" for s in sources)
+            first = f"`{sources[0]}`"
             warnings.append(MigrationWarning(
                 mixin_stem="",
                 category="name-collision",
-                message=f"Member '{member}' provided by both {' and '.join(sources)} — name collision",
-                action_required=f"Rename '{member}' in one of the composables to avoid conflict",
+                message=(
+                    f"{comp_ctx}ember '{member}' is provided by both "
+                    f"{sources_str}. The version from {first} (first import) "
+                    "will be used."
+                ),
+                action_required=(
+                    f"Rename '{member}' in one of the composables to keep both, "
+                    f"or verify {first}'s version is correct."
+                ),
                 line_hint=None,
                 severity="warning",
             ))

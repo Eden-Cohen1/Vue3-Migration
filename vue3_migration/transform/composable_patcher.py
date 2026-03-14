@@ -2,7 +2,7 @@
 import re
 import textwrap
 from pathlib import Path
-from ..core.composable_analyzer import extract_declared_identifiers
+from ..core.composable_analyzer import extract_declared_identifiers, extract_return_keys
 from ..core.js_parser import extract_brace_block, extract_value_at
 from ..core.mixin_analyzer import extract_mixin_imports, filter_imports_by_usage, rewrite_import_path
 from ..core.warning_collector import (
@@ -119,17 +119,8 @@ def _add_keys_to_indirect_return(content: str, keys: list[str]) -> str:
     new_keys = [k for k in keys if k not in existing]
     if not new_keys:
         return content
-    # Find closing brace
-    depth = 0
-    close_pos = brace_start
-    for i in range(brace_start, len(content)):
-        if content[i] == '{':
-            depth += 1
-        elif content[i] == '}':
-            depth -= 1
-            if depth == 0:
-                close_pos = i
-                break
+    # Derive close_pos from extract_brace_block result (string/comment aware)
+    close_pos = brace_start + 1 + len(obj_block)
     full_obj = content[var_def.start():close_pos + 1]
     # Detect indentation of the variable line
     line_start = content.rfind('\n', 0, var_def.start()) + 1
@@ -181,17 +172,9 @@ def add_keys_to_return(content: str, keys: list[str]) -> str:
 
     # Determine the full span of the return statement (from 'return' to closing '}')
     brace_start = m.end() - 1
-    # Find the closing brace by counting
-    depth = 0
-    close_pos = brace_start
-    for i in range(brace_start, len(content)):
-        if content[i] == '{':
-            depth += 1
-        elif content[i] == '}':
-            depth -= 1
-            if depth == 0:
-                close_pos = i
-                break
+    # Derive close_pos from extract_brace_block result (string/comment aware).
+    # return_block is the content BETWEEN braces, so closing '}' is right after it.
+    close_pos = brace_start + 1 + len(return_block)
     full_return = content[m.start():close_pos + 1]
 
     # Detect return indentation (leading whitespace of the return line)
@@ -657,6 +640,14 @@ def patch_composable(
             content = _add_vue_import(content, "ref")
         if any("computed(" in d for d in declarations):
             content = _add_vue_import(content, "computed")
+
+    # Post-patch validation: ensure all expected keys made it into the return
+    if not_returned or missing:
+        final_return_keys = set(extract_return_keys(content))
+        expected = set(not_returned or []) | set(missing or [])
+        still_missing = expected - final_return_keys
+        if still_missing:
+            content = add_keys_to_return(content, list(still_missing))
 
     # Step 3: add lifecycle hooks not yet present in the composable
     if lifecycle_hooks:

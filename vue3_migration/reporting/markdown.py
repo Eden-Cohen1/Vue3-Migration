@@ -1129,6 +1129,14 @@ def build_action_plan(
                 composable_content_map[change.file_path] = change.new_content
                 composable_path_by_stem[change.file_path.stem] = change.file_path
 
+    # Also index composable paths from entries (covers unchanged composables)
+    for _comp_path, entry_list in entries_by_component:
+        for entry in entry_list:
+            if entry.composable and entry.composable.file_path:
+                stem = entry.composable.file_path.stem
+                if stem not in composable_path_by_stem:
+                    composable_path_by_stem[stem] = entry.composable.file_path
+
     # Build component content map for post-migration line lookups
     component_content_map: dict[Path, str] = {}
     if component_changes:
@@ -1195,11 +1203,15 @@ def build_action_plan(
         a("---\n")
         a("### \U0001f7e2 Quick Wins \u2014 no manual steps needed\n")
         from ..transform.composable_generator import mixin_stem_to_composable_name
-        names = ", ".join(
-            f"`{e.composable.fn_name}`" if e.composable
-            else f"`{mixin_stem_to_composable_name(e.mixin_stem)}`"
-            for e in quick_wins
-        )
+        name_parts = []
+        for e in quick_wins:
+            if e.composable and e.composable.file_path:
+                name_parts.append(_vscode_link(e.composable.file_path, 1, e.composable.fn_name))
+            elif e.composable:
+                name_parts.append(f"`{e.composable.fn_name}`")
+            else:
+                name_parts.append(f"`{mixin_stem_to_composable_name(e.mixin_stem)}`")
+        names = ", ".join(name_parts)
         a(names)
         a("")
         a(f"These {len(quick_wins)} composable{'s are' if len(quick_wins) != 1 else ' is'} fully migrated. Apply the diff and test.\n")
@@ -1316,9 +1328,24 @@ def _vscode_link(file_path: Path, line: int, label: str) -> str:
     return f"[{label}](vscode://file/{abs_path}:{line}:1)"
 
 
-def _step_label(warning: MigrationWarning) -> str:
+def _step_label(
+    warning: MigrationWarning,
+    composable_path_by_stem: "dict[str, Path] | None" = None,
+) -> str:
     """Build a descriptive step label including specific member names."""
     import re
+
+    def _link_composable(name: str) -> str:
+        """Make a composable name a clickable VS Code link if path is known."""
+        if composable_path_by_stem and name in composable_path_by_stem:
+            return _vscode_link(composable_path_by_stem[name], 1, name)
+        return f"`{name}`"
+
+    def _link_component(name: str) -> str:
+        """Make a component name a clickable VS Code link via source_file."""
+        if warning.source_file and warning.source_file.exists():
+            return _vscode_link(warning.source_file, 1, name)
+        return f"`{name}`"
     if warning.category == "external-dependency":
         m = re.match(r"'(\w+)'", warning.message)
         member = f"`this.{m.group(1)}`" if m else "external dep"
@@ -1343,6 +1370,37 @@ def _step_label(warning: MigrationWarning) -> str:
     if warning.category.startswith("mixin-option:"):
         option = warning.category.split(":")[1]
         return f"Mixin `{option}` option needs manual migration"
+    if warning.category == "data-setup-collision":
+        # Extract member name and context from enriched message
+        m = re.search(r"'(\w+)'", warning.message)
+        member = f"`{m.group(1)}`" if m else "property"
+        comp_match = re.search(r"In `(\w+)`", warning.message)
+        fn_match = re.search(r"from `(\w+)`", warning.message)
+        ctx_parts = []
+        if comp_match:
+            ctx_parts.append(f"in {_link_component(comp_match.group(1))}")
+        if fn_match:
+            ctx_parts.append(f"from {_link_composable(fn_match.group(1))}")
+        ctx = f" ({', '.join(ctx_parts)})" if ctx_parts else ""
+        return f"data/setup collision \u2014 {member}{ctx} exists in both data() and composable"
+    if warning.category == "name-collision":
+        # Enriched message: "In `Comp`, member 'x' is provided by both `useA` and `useB`..."
+        m = re.search(r"'(\w+)'", warning.message)
+        member = f"`{m.group(1)}`" if m else "member"
+        comp_match = re.search(r"In `(\w+)`", warning.message)
+        sources = list(dict.fromkeys(re.findall(r"`(use\w+)`", warning.message)))
+        ctx = f" in {_link_component(comp_match.group(1))}" if comp_match else ""
+        if sources:
+            linked = ' and '.join(_link_composable(s) for s in sources)
+            return f"Name collision{ctx} \u2014 {member} provided by {linked}"
+        return f"Name collision{ctx} \u2014 {member}"
+    if warning.category == "name-collision-skipped":
+        # Message: "In `Comp`, skipped destructuring: isLoading ..."
+        m = re.search(r"destructuring:\s*(\w+)", warning.message)
+        member = f"`{m.group(1)}`" if m else "member"
+        comp_match = re.search(r"In `(\w+)`", warning.message)
+        ctx = f" in {_link_component(comp_match.group(1))}" if comp_match else ""
+        return f"Skipped {member}{ctx} \u2014 already provided by an earlier composable"
     # this.$ categories — already descriptive
     return f"Replace `{warning.category}`"
 
@@ -1470,7 +1528,7 @@ def _append_composable_steps(
             continue
         seen_keys.add(recipe_key)
 
-        label = _step_label(w)
+        label = _step_label(w, composable_path_by_stem=composable_path_by_stem)
         link = _recipe_link(w.category)
 
         # Find line numbers for VS Code links
@@ -1500,7 +1558,9 @@ def _append_composable_steps(
         steps.append(_build_direct_access_step(direct_access_warnings, component_content_map))
 
     step_count = len(steps)
-    a(f"### {dot} `{name}` \u2014 {step_count} step{'s' if step_count != 1 else ''}\n")
+    # Make composable name a clickable VS Code link when path is available
+    name_display = _vscode_link(comp_path, 1, name) if comp_path else f"`{name}`"
+    a(f"### {dot} {name_display} \u2014 {step_count} step{'s' if step_count != 1 else ''}\n")
 
     for i, step_text in enumerate(steps, 1):
         a(f"- **Step {i}:** {step_text}")

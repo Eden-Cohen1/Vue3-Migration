@@ -808,3 +808,100 @@ def test_patch_composable_indirect_return_not_returned():
     # reset should be added to the api object
     api_section = result.split("const api")[1].split("}")[0]
     assert "reset" in api_section
+
+
+# ---------------------------------------------------------------------------
+# Bug: add_keys_to_return fails after add_members_to_composable inserts
+# function declarations (naive brace counter finds wrong closing brace)
+# ---------------------------------------------------------------------------
+
+COMPOSABLE_EXPORT = (
+    "import { ref } from 'vue'\n\n"
+    "export function useExport() {\n"
+    "  const exportData = ref(null)\n\n"
+    "  function exportToCSV() {\n"
+    "    console.log('export to csv')\n"
+    "  }\n\n"
+    "  function downloadFile(data) {\n"
+    "    const blob = new Blob([data], { type: 'text/csv' })\n"
+    "    console.log('downloading', blob)\n"
+    "  }\n\n"
+    "  return {\n"
+    "    exportData,\n"
+    "    exportToCSV,\n"
+    "    downloadFile,\n"
+    "  }\n"
+    "}\n"
+)
+
+
+def test_add_keys_to_return_after_add_members():
+    """add_keys_to_return must work after add_members_to_composable inserts
+    function declarations containing braces (the naive brace counter bug)."""
+    # Step 1: add a new function (exportToPDF) to the body
+    new_func = "  function exportToPDF() {\n    console.log('export to pdf')\n  }"
+    content = add_members_to_composable(COMPOSABLE_EXPORT, [new_func])
+    assert "function exportToPDF" in content
+
+    # Step 2: add the key to the return
+    result = add_keys_to_return(content, ["exportToPDF"])
+
+    # The key MUST appear in the return block
+    return_start = result.rfind("return {")
+    assert return_start != -1, "return statement not found"
+    return_section = result[return_start:]
+    close_brace = return_section.index("}")
+    return_keys = return_section[:close_brace]
+    assert "exportToPDF" in return_keys, (
+        f"exportToPDF not found in return block. Return section:\n{return_section[:200]}"
+    )
+
+
+def test_add_keys_to_return_with_strings_containing_braces():
+    """Naive brace counting is fooled by braces inside string literals."""
+    src = (
+        "export function useTest() {\n"
+        "  const msg = ref('hello { world }')\n"
+        "  function doStuff() {\n"
+        "    const template = `Result: ${msg.value}`\n"
+        "  }\n"
+        "  return {\n"
+        "    msg,\n"
+        "    doStuff,\n"
+        "  }\n"
+        "}\n"
+    )
+    result = add_keys_to_return(src, ["newKey"])
+    return_start = result.rfind("return {")
+    return_section = result[return_start:]
+    close_brace = return_section.index("}")
+    assert "newKey" in return_section[:close_brace], (
+        f"newKey not in return block: {return_section[:200]}"
+    )
+
+
+def test_add_keys_to_return_string_with_unbalanced_braces():
+    """A string containing an unbalanced brace should not fool the brace counter.
+
+    This is the core scenario: a comment with an unmatched '{' inside the return
+    block makes the naive brace counter think there's extra nesting, so it finds
+    the WRONG closing brace (overshoots to the function's '}').
+    """
+    src = (
+        "export function useTest() {\n"
+        "  function format(x) {\n"
+        "    return x\n"
+        "  }\n"
+        "\n"
+        "  return {\n"
+        "    format, // returns { data\n"
+        "  }\n"
+        "}\n"
+    )
+    result = add_keys_to_return(src, ["newKey"])
+    return_start = result.rfind("return {")
+    return_section = result[return_start:]
+    close_brace = return_section.index("}")
+    assert "newKey" in return_section[:close_brace], (
+        f"newKey not in return block: {return_section[:200]}"
+    )

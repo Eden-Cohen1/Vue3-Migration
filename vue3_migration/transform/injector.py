@@ -128,8 +128,12 @@ def inject_setup(
     all_returned_members = []
     call_lines = []
     for fn_name, _import_path, members in parsed_calls:
-        call_lines.append(f"{indent}{indent}const {{ {', '.join(members)} }} = {fn_name}()")
-        all_returned_members.extend(members)
+        if members:
+            call_lines.append(f"{indent}{indent}const {{ {', '.join(members)} }} = {fn_name}()")
+            all_returned_members.extend(members)
+        else:
+            # Bare call for lifecycle-only composables (side effects, no destructuring)
+            call_lines.append(f"{indent}{indent}{fn_name}()  // lifecycle hooks")
 
     # Append inline lines AFTER composable calls (created/beforeCreate bodies
     # may reference composable-provided symbols, so they must come after)

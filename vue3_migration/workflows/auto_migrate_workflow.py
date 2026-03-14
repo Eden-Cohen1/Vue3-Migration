@@ -70,7 +70,7 @@ def _analyze_mixin_silent(
         external_deps=ext_deps,
     )
 
-    if not used:
+    if not used and not hooks:
         entry.compute_status()
         return entry
 
@@ -515,11 +515,14 @@ def plan_component_injections(
                     composable_members_map[entry.composable.fn_name] = list(
                         entry.classification.injectable
                     )
-            collision_warnings = detect_name_collisions(composable_members_map)
+            collision_warnings = detect_name_collisions(
+                composable_members_map, component_name=comp_path.stem,
+            )
             if collision_warnings:
                 for w in collision_warnings:
                     w.mixin_stem = "cross-composable"
                     w.source_context = "component"
+                    w.source_file = comp_path
                 ready_entries[0].warnings.extend(collision_warnings)
 
         # Detect data()/setup() name collisions (Issues #14, #20)
@@ -534,24 +537,37 @@ def plan_component_injections(
                 collisions = set(injectable) & set(data_props)
                 if collisions:
                     from ..models import MigrationWarning
+                    comp_name = comp_path.stem
+                    fn_name = entry.composable.fn_name if entry.composable else "composable"
                     for name in sorted(collisions):
+                        # Find line number of the data property in the component
+                        data_line = None
+                        for i, line in enumerate(comp_source.splitlines(), 1):
+                            stripped = line.strip()
+                            if not stripped.startswith('//') and re.search(rf'\b{re.escape(name)}\b', stripped):
+                                data_line = i
+                                break
                         entry.warnings.append(MigrationWarning(
                             mixin_stem=entry.mixin_stem,
                             category="data-setup-collision",
                             message=(
-                                f"'{name}' is returned by both setup() and data(). "
-                                "In Vue 3, data() properties take precedence over "
-                                "setup() return values with the same name, so the "
+                                f"In `{comp_name}`, '{name}' is returned by both "
+                                f"setup() (from `{fn_name}`) and data(). "
+                                "In Vue 3, data() takes precedence over setup() "
+                                "return values with the same name, so the "
                                 "composable's value will be silently ignored."
                             ),
                             action_required=(
-                                f"Remove '{name}' from data() to use the composable "
-                                "value, or remove it from the composable return if the "
-                                "component's data() version is intended."
+                                f"Remove '{name}' from data() in `{comp_name}` to "
+                                f"use the composable value, or remove it from the "
+                                f"`{fn_name}` return if the component's data() "
+                                "version is intended."
                             ),
-                            line_hint=None,
+                            line_hint=name,
                             severity="warning",
                             source_context="component",
+                            source_file=comp_path,
+                            source_line=data_line,
                         ))
 
         # Pre-compute which entries will produce a composable call.
@@ -626,7 +642,7 @@ def plan_component_injections(
                         mixin_stem=entry.mixin_stem,
                         category="name-collision-skipped",
                         message=(
-                            f"Skipped destructuring: {skipped_names} "
+                            f"In `{comp_path.stem}`, skipped destructuring: {skipped_names} "
                             "(already provided by an earlier composable)."
                         ),
                         action_required=(
@@ -636,6 +652,7 @@ def plan_component_injections(
                         line_hint=None,
                         severity="warning",
                         source_context="component",
+                        source_file=comp_path,
                     ))
                 # Warn about setup() identifier conflicts
                 if setup_conflicts_in_injectable:
@@ -675,6 +692,25 @@ def plan_component_injections(
                         severity="info",
                         source_context="component",
                     ))
+            elif not injectable and entry.composable and entry.lifecycle_hooks:
+                # Lifecycle-only mixin: composable has the hooks, just needs
+                # a bare call (no destructuring) to activate side effects.
+                migratable_entries.append(entry)
+                composable_calls.append((entry.composable.fn_name, []))
+                from ..models import MigrationWarning
+                hooks_str = ", ".join(entry.lifecycle_hooks)
+                entry.warnings.append(MigrationWarning(
+                    mixin_stem=entry.mixin_stem,
+                    category="lifecycle-only-call",
+                    message=(
+                        f"Composable called for lifecycle side effects only "
+                        f"({hooks_str}) — no members destructured."
+                    ),
+                    action_required="",
+                    line_hint=None,
+                    severity="info",
+                    source_context="component",
+                ))
             else:
                 # Entry won't produce a composable call — keep the mixin.
                 from ..models import MigrationWarning
