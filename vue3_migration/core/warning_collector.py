@@ -151,7 +151,23 @@ def collect_mixin_warnings(
     for pattern, category, message, action, severity in _THIS_DOLLAR_PATTERNS:
         if category in seen_categories:
             continue
-        match = re.search(pattern, mixin_source)
+        # Collect all matches, preferring non-comment occurrences.
+        first_match = None
+        best_match = None
+        all_real_lines: list[int] = []
+        for match in re.finditer(pattern, mixin_source):
+            if first_match is None:
+                first_match = match
+            # Check if match is inside a // comment
+            line_start_pos = mixin_source.rfind("\n", 0, match.start()) + 1
+            line_prefix = mixin_source[line_start_pos:match.start()]
+            if "//" in line_prefix:
+                continue  # skip comment-line matches
+            all_real_lines.append(_line_number(mixin_source, match.start()))
+            if best_match is None:
+                best_match = match
+
+        match = best_match or first_match
         if match:
             seen_categories.add(category)
             # Extract the matching line as line_hint
@@ -169,6 +185,7 @@ def collect_mixin_warnings(
                 line_hint=line_hint,
                 severity=severity,
                 source_line=_line_number(mixin_source, match.start()),
+                source_lines=all_real_lines,
             ))
 
     # Catch-all: flag any this.$<ident> not already covered above

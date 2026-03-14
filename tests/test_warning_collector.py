@@ -2752,3 +2752,82 @@ export default {
         # Should not have a "plugin/instance property" catch-all warning for $options
         catchall = [w for w in warnings if "plugin" in w.message.lower() or "instance property" in w.message.lower()]
         assert not catchall
+
+
+# ---------------------------------------------------------------------------
+# Issue 4: this.$watch (and other patterns) should skip comment lines
+# ---------------------------------------------------------------------------
+
+class TestWarningSkipsCommentLines:
+    """collect_mixin_warnings should not match patterns inside JS comments.
+    When the first occurrence of a pattern is in a comment, the tool should
+    skip it and use the first real (non-comment) occurrence for source_line."""
+
+    def test_watch_in_comment_skipped_for_source_line(self):
+        """If the first this.$watch is in a // comment, source_line should
+        point to the real usage, not the comment."""
+        source = (
+            "// Edge case: this.$watch with ALL variants\n"  # L1 — comment
+            "export default {\n"                              # L2
+            "  methods: {\n"                                  # L3
+            "    setup() {\n"                                 # L4
+            "      this.$watch('foo', fn)\n"                  # L5 — real usage
+            "    }\n"                                         # L6
+            "  }\n"                                           # L7
+            "}\n"                                             # L8
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(methods=["setup"]), [])
+        watch_w = [w for w in warnings if w.category == "this.$watch"]
+        assert len(watch_w) == 1
+        assert watch_w[0].source_line == 5, (
+            f"Expected source_line=5 (real usage), got {watch_w[0].source_line} "
+            "(probably matched the comment on L1)"
+        )
+
+    def test_emit_in_comment_skipped(self):
+        """Same for this.$emit — comments should be skipped."""
+        source = (
+            "// this.$emit usage below\n"                    # L1 — comment
+            "export default {\n"
+            "  methods: {\n"
+            "    fire() {\n"
+            "      this.$emit('done')\n"                     # L5
+            "    }\n"
+            "  }\n"
+            "}\n"
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(methods=["fire"]), [])
+        emit_w = [w for w in warnings if w.category == "this.$emit"]
+        assert len(emit_w) == 1
+        assert emit_w[0].source_line == 5
+
+    def test_all_occurrences_in_comments_still_detected(self):
+        """If ALL occurrences of a pattern are in comments, the warning should
+        still fire (comments may contain real code that was commented out).
+        But ideally this is debatable — for now, ensure backward compat."""
+        source = (
+            "// this.$watch('foo', handler)\n"
+            "export default {}\n"
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        watch_w = [w for w in warnings if w.category == "this.$watch"]
+        # Pattern still detected even in comments (backward compat)
+        assert len(watch_w) == 1
+
+    def test_watch_multiple_real_occurrences_uses_first(self):
+        """When multiple real (non-comment) occurrences exist, source_line
+        should point to the first one."""
+        source = (
+            "export default {\n"                              # L1
+            "  methods: {\n"                                  # L2
+            "    setup() {\n"                                 # L3
+            "      this.$watch('a', fn1)\n"                   # L4
+            "      this.$watch('b', fn2)\n"                   # L5
+            "    }\n"
+            "  }\n"
+            "}\n"
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(methods=["setup"]), [])
+        watch_w = [w for w in warnings if w.category == "this.$watch"]
+        assert len(watch_w) == 1
+        assert watch_w[0].source_line == 4

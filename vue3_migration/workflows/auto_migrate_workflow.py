@@ -961,6 +961,53 @@ def _build_all_composable_changes(
     return changes
 
 
+_VUE3_LIFECYCLE_HOOKS_RE = re.compile(
+    r"\b(onMounted|onBeforeMount|onBeforeUnmount|onUnmounted|"
+    r"onActivated|onDeactivated|onUpdated|onBeforeUpdate)\s*\("
+)
+
+
+def _remove_resolved_lifecycle_warnings(
+    entries: list[tuple[Path, list["MixinEntry"]]],
+    composable_changes: "list[FileChange]",
+) -> None:
+    """Remove skipped-lifecycle-only warnings whose lifecycle hooks were
+    successfully converted in a generated composable.
+
+    After composable generation, some mixins that were marked as
+    skipped-lifecycle-only may now have composables with onMounted/etc.
+    This function checks the generated composable content and removes
+    the warning if the hooks are present.
+    """
+    # Build a map: composable stem → new_content
+    content_by_stem: dict[str, str] = {}
+    for change in composable_changes:
+        if change.has_changes:
+            content_by_stem[change.file_path.stem] = change.new_content
+
+    for _comp_path, entry_list in entries:
+        for entry in entry_list:
+            has_skip_warning = any(
+                w.category == "skipped-lifecycle-only" for w in entry.warnings
+            )
+            if not has_skip_warning:
+                continue
+
+            # Try to find the composable content for this mixin
+            stem = re.sub(r"[Mm]ixin$", "", entry.mixin_stem)
+            use_name = f"use{stem[0].upper()}{stem[1:]}" if stem else ""
+            comp_content = content_by_stem.get(use_name, "")
+            if not comp_content:
+                continue
+
+            # Check if the composable has converted lifecycle hooks
+            if _VUE3_LIFECYCLE_HOOKS_RE.search(comp_content):
+                entry.warnings = [
+                    w for w in entry.warnings
+                    if w.category != "skipped-lifecycle-only"
+                ]
+
+
 def _collect_kind_mismatch_warnings(
     entries: list[tuple[Path, list[MixinEntry]]],
 ) -> dict[Path, list[MigrationWarning]]:
@@ -1082,6 +1129,7 @@ def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     _warn_unused_mixin_members(entries)
 
     composable_changes = _build_all_composable_changes(entries, project_root, config)
+    _remove_resolved_lifecycle_warnings(entries, composable_changes)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
         component_changes=component_changes,
@@ -1250,6 +1298,7 @@ def run_scoped(
     _warn_unused_mixin_members(all_entries)
 
     composable_changes = _build_all_composable_changes(entries, project_root, config)
+    _remove_resolved_lifecycle_warnings(entries, composable_changes)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
         component_changes=component_changes,

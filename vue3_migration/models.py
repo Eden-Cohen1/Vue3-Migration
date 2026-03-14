@@ -38,6 +38,7 @@ class MigrationWarning:
     severity: str             # "error" | "warning" | "info"
     source_context: str = ""  # "mixin" | "component" | "" (legacy)
     source_line: int | None = None  # 1-based line number in mixin/composable source
+    source_lines: list[int] = field(default_factory=list)  # All 1-based line numbers (for multi-occurrence patterns)
     source_file: Path | None = None  # File path where the warning originates
 
 

@@ -743,3 +743,125 @@ class TestKindMismatchClassification:
         result = coverage.classify_members(["isLoading"], set(), mixin_members=members)
         assert result.kind_mismatched  # has a mismatch
         assert result.is_ready  # but still ready
+
+
+# ---------------------------------------------------------------------------
+# Issue 1: skipped-lifecycle-only should be removed after composable generation
+# ---------------------------------------------------------------------------
+
+class TestSkippedLifecycleOnlyRemoval:
+    """After composable generation, if the composable already contains converted
+    lifecycle hooks (onMounted, onBeforeUnmount, etc.), the skipped-lifecycle-only
+    warning should be removed from entries."""
+
+    def test_warning_removed_when_composable_has_lifecycle_hooks(self, tmp_path):
+        """A mixin with mounted+beforeUnmount that generates a composable with
+        onMounted+onBeforeUnmount should NOT retain skipped-lifecycle-only."""
+        from vue3_migration.workflows.auto_migrate_workflow import (
+            _build_all_composable_changes,
+            _remove_resolved_lifecycle_warnings,
+        )
+        from vue3_migration.models import FileChange
+
+        mixin_path = tmp_path / "src" / "mixins" / "chartMixin.js"
+        mixin_path.parent.mkdir(parents=True, exist_ok=True)
+        mixin_path.write_text(
+            "export default {\n"
+            "  data() { return { isReady: false } },\n"
+            "  mounted() { this.isReady = true },\n"
+            "  beforeUnmount() { this.isReady = false }\n"
+            "}\n"
+        )
+
+        entry = MixinEntry(
+            local_name="chartMixin",
+            mixin_path=mixin_path,
+            mixin_stem="chartMixin",
+            members=MixinMembers(data=["isReady"]),
+            lifecycle_hooks=["mounted", "beforeUnmount"],
+            composable=None,  # no composable found during analysis
+            warnings=[
+                MigrationWarning(
+                    mixin_stem="chartMixin",
+                    category="skipped-lifecycle-only",
+                    message="Mixin 'chartMixin' was NOT migrated: lifecycle hooks",
+                    action_required="Manually convert lifecycle hooks",
+                    line_hint=None,
+                    severity="warning",
+                ),
+            ],
+        )
+
+        # Simulate composable generation output with lifecycle hooks
+        comp_content = (
+            "import { ref, onMounted, onBeforeUnmount } from 'vue'\n"
+            "export function useChart() {\n"
+            "  const isReady = ref(false)\n"
+            "  onMounted(() => { isReady.value = true })\n"
+            "  onBeforeUnmount(() => { isReady.value = false })\n"
+            "  return { isReady }\n"
+            "}\n"
+        )
+        comp_path = tmp_path / "src" / "composables" / "useChart.js"
+        comp_path.parent.mkdir(parents=True, exist_ok=True)
+        composable_changes = [
+            FileChange(file_path=comp_path, original_content="", new_content=comp_content),
+        ]
+
+        entries = [(Path("test.vue"), [entry])]
+        _remove_resolved_lifecycle_warnings(entries, composable_changes)
+
+        # The skipped-lifecycle-only warning should be gone
+        lifecycle_warnings = [w for w in entry.warnings
+                              if w.category == "skipped-lifecycle-only"]
+        assert lifecycle_warnings == [], (
+            f"Expected skipped-lifecycle-only to be removed, but found: {lifecycle_warnings}"
+        )
+
+    def test_warning_kept_when_composable_has_no_lifecycle_hooks(self, tmp_path):
+        """If the generated composable does NOT have lifecycle hooks,
+        the warning should remain."""
+        from vue3_migration.workflows.auto_migrate_workflow import (
+            _remove_resolved_lifecycle_warnings,
+        )
+        from vue3_migration.models import FileChange
+
+        entry = MixinEntry(
+            local_name="pollMixin",
+            mixin_path=tmp_path / "pollMixin.js",
+            mixin_stem="pollMixin",
+            members=MixinMembers(data=["active"]),
+            lifecycle_hooks=["mounted"],
+            composable=None,
+            warnings=[
+                MigrationWarning(
+                    mixin_stem="pollMixin",
+                    category="skipped-lifecycle-only",
+                    message="Mixin 'pollMixin' was NOT migrated",
+                    action_required="Manually convert lifecycle hooks",
+                    line_hint=None,
+                    severity="warning",
+                ),
+            ],
+        )
+
+        # Composable without lifecycle hooks
+        comp_content = (
+            "import { ref } from 'vue'\n"
+            "export function usePoll() {\n"
+            "  const active = ref(false)\n"
+            "  return { active }\n"
+            "}\n"
+        )
+        comp_path = tmp_path / "src" / "composables" / "usePoll.js"
+        comp_path.parent.mkdir(parents=True, exist_ok=True)
+        composable_changes = [
+            FileChange(file_path=comp_path, original_content="", new_content=comp_content),
+        ]
+
+        entries = [(Path("test.vue"), [entry])]
+        _remove_resolved_lifecycle_warnings(entries, composable_changes)
+
+        lifecycle_warnings = [w for w in entry.warnings
+                              if w.category == "skipped-lifecycle-only"]
+        assert len(lifecycle_warnings) == 1, "Warning should remain when composable has no lifecycle hooks"

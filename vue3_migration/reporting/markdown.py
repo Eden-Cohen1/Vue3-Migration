@@ -208,6 +208,30 @@ _MIGRATION_RECIPES: dict[str, dict[str, str]] = {
         ),
         "alt": "For parent-child: use props/emit or provide/inject instead.",
     },
+    "this.$once": {
+        "title": "`this.$once` → one-time event listener",
+        "why": "`$once` was removed in Vue 3. It registered a one-time listener that auto-removed after firing.",
+        "before": (
+            "// In mixin\n"
+            "created() {\n"
+            "  this.$once('hook:beforeDestroy', cleanup)\n"
+            "}"
+        ),
+        "after": (
+            "// In composable — use mitt with manual removal\n"
+            "import mitt from 'mitt'\n"
+            "const bus = mitt()\n"
+            "\n"
+            "function onceListener(event, handler) {\n"
+            "  const wrapper = (...args) => {\n"
+            "    bus.off(event, wrapper)\n"
+            "    handler(...args)\n"
+            "  }\n"
+            "  bus.on(event, wrapper)\n"
+            "}"
+        ),
+        "alt": "For lifecycle cleanup, use onBeforeUnmount() directly.",
+    },
     "this.$el": {
         "title": "`this.$el` → template ref on root element",
         "why": "Use a `ref` on the root element instead of `this.$el`.",
@@ -509,7 +533,6 @@ _RECIPE_ALIASES: dict[str, str] = {
     "this.$d": "this.$t",
     "this.$n": "this.$t",
     "this.$off": "this.$on",
-    "this.$once": "this.$on",
     "this.$children": "this.$parent",
     "this.$listeners": "this.$attrs",
     "mixin-option:directives": "mixin-option:inject",
@@ -1033,7 +1056,11 @@ def build_summary_section(
             if entry.mixin_stem in seen_stems:
                 continue
             seen_stems.add(entry.mixin_stem)
-            entry_cats = {w.category for w in entry.warnings}
+            # Only consider error/warning-level categories when deciding
+            # to skip — info-only warnings (e.g. unused-mixin-member) should
+            # not prevent skipping entries whose composables don't exist.
+            entry_cats = {w.category for w in entry.warnings
+                          if w.severity in ("error", "warning")}
             if entry_cats and entry_cats <= _SKIPPED_CATEGORIES:
                 skipped_count += 1
                 continue
@@ -1110,7 +1137,11 @@ def build_action_plan(
             if entry.mixin_stem in seen_stems:
                 continue
             seen_stems.add(entry.mixin_stem)
-            entry_cats = {w.category for w in entry.warnings}
+            # Only consider error/warning-level categories when deciding
+            # to skip — info-only warnings (e.g. unused-mixin-member) should
+            # not prevent skipping entries whose composables don't exist.
+            entry_cats = {w.category for w in entry.warnings
+                          if w.severity in ("error", "warning")}
             if entry_cats and entry_cats <= _SKIPPED_CATEGORIES:
                 skipped_count += 1
                 continue
@@ -1301,10 +1332,19 @@ def _find_warning_lines(
 
     # Search composable source for the pattern
     if pat:
+        # For this.$xxx patterns, use word-boundary matching to avoid
+        # e.g. "this.$on" matching "this.$once"
+        if pat.startswith("this.$"):
+            pat_re = re.compile(re.escape(pat) + r"(?!\w)")
+        else:
+            pat_re = None
         for i, line in enumerate(lines, 1):
             if line.lstrip().startswith("//"):
                 continue
-            if pat in line:
+            if pat_re:
+                if pat_re.search(line):
+                    result.append(i)
+            elif pat in line:
                 result.append(i)
         if result:
             return result
@@ -1507,9 +1547,11 @@ def _append_composable_steps(
                 comp_path = composable_path_by_stem[use_name]
                 comp_source = composable_content_map.get(comp_path, "")
 
-    # Separate actionable warnings from info-only, excluding auto-rewritten categories
+    # Separate actionable warnings from info-only, excluding auto-rewritten and skipped categories
     actionable = [w for w in entry.warnings
-                  if w.severity in ("error", "warning") and w.category not in _AUTO_REWRITTEN_CATEGORIES]
+                  if w.severity in ("error", "warning")
+                  and w.category not in _AUTO_REWRITTEN_CATEGORIES
+                  and w.category not in _SKIPPED_CATEGORIES]
     info_warnings = [w for w in entry.warnings if w.severity == "info" and w.category not in _SKIPPED_CATEGORIES]
 
     # Collect per-member warnings separately — each occurrence is distinct,
@@ -1538,11 +1580,15 @@ def _append_composable_steps(
             if line_nums:
                 vscode_links = [_vscode_link(comp_path, ln, f"L{ln}") for ln in line_nums[:5]]
                 line_refs = f" ({', '.join(vscode_links)})"
-        # Fallback: link to mixin source if we have source_line
-        if not line_refs and w.source_line and hasattr(entry, 'mixin_path'):
+        # Fallback: link to mixin source lines
+        if not line_refs and hasattr(entry, 'mixin_path'):
             mixin_path = entry.mixin_path
-            if mixin_path and mixin_path.exists():
-                line_refs = f" ({_vscode_link(mixin_path, w.source_line, f'mixin L{w.source_line}')})"
+            if mixin_path and isinstance(mixin_path, Path) and mixin_path.exists():
+                # Prefer source_lines (all occurrences) over single source_line
+                lines_to_show = w.source_lines if w.source_lines else ([w.source_line] if w.source_line else [])
+                if lines_to_show:
+                    vscode_links = [_vscode_link(mixin_path, ln, f"mixin L{ln}") for ln in lines_to_show[:5]]
+                    line_refs = f" ({', '.join(vscode_links)})"
 
         if link:
             steps.append(f"{label} \u2192 {link}{line_refs}")

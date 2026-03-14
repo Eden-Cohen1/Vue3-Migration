@@ -575,3 +575,225 @@ class TestUnusedMixinWithMigrationWork:
         assert "useKitchenSink" in report
         assert "this.$emit" in report or "defineEmits" in report
         assert "handleCustom" in report
+
+
+# ---------------------------------------------------------------------------
+# Issue 4: Mixin fallback line refs should use source_lines (all occurrences)
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Issue 3: this.$once should not be mislabeled as this.$on
+# ---------------------------------------------------------------------------
+
+class TestOnceNotMislabeledAsOn:
+    """this.$once must get its own step/recipe, not be grouped under this.$on."""
+
+    def test_once_has_separate_step(self, tmp_path):
+        """Report should show separate steps for $on and $once."""
+        comp_path = tmp_path / "useEventBus.js"
+        comp_source = (
+            "export function useEventBus() {\n"
+            "  function registerEvents() {\n"
+            "    this.$on('data-updated', handleDataUpdate)\n"       # L3
+            "    this.$on('user-action', handleUserAction)\n"        # L4
+            "    this.$once('initialized', () => {})\n"              # L5
+            "  }\n"
+            "  return { registerEvents }\n"
+            "}\n"
+        )
+        comp_path.write_text(comp_source)
+
+        from vue3_migration.models import FileChange
+        composable_changes = [FileChange(file_path=comp_path, original_content="", new_content=comp_source)]
+
+        entry = MixinEntry(
+            local_name="eventBusMixin",
+            mixin_path=tmp_path / "eventBusMixin.js",
+            mixin_stem="eventBusMixin",
+            members=MixinMembers(methods=["registerEvents"]),
+            composable=ComposableCoverage(
+                file_path=comp_path,
+                fn_name="useEventBus",
+                import_path="./composables/useEventBus",
+                return_keys=["registerEvents"],
+                all_identifiers=["registerEvents"],
+            ),
+            warnings=[
+                MigrationWarning("eventBusMixin", "this.$on",
+                    "this.$on is removed in Vue 3",
+                    "Use an external event bus library", None, "error"),
+                MigrationWarning("eventBusMixin", "this.$once",
+                    "this.$once is removed in Vue 3",
+                    "Use an external event bus library", None, "error"),
+            ],
+        )
+
+        entries = [(Path("<standalone>"), [entry])]
+        report = build_action_plan(entries, composable_changes=composable_changes,
+                                   project_root=tmp_path)
+
+        # Both $on and $once should appear as separate steps
+        assert "this.$on" in report
+        assert "this.$once" in report
+        # $once line (L5) should NOT appear in the $on step
+        lines = report.split("\n")
+        on_step = [l for l in lines if "this.$on" in l and "Step" in l]
+        once_step = [l for l in lines if "this.$once" in l and "Step" in l]
+        assert on_step, "Expected a step for this.$on"
+        assert once_step, "Expected a separate step for this.$once"
+
+    def test_find_warning_lines_on_does_not_match_once(self):
+        """_find_warning_lines for 'this.$on' should not match 'this.$once' lines."""
+        from vue3_migration.reporting.markdown import _find_warning_lines
+
+        source = (
+            "  this.$on('event', handler)\n"    # L1
+            "  this.$once('init', handler)\n"   # L2
+            "  this.$on('other', handler)\n"    # L3
+        )
+        w_on = MigrationWarning("x", "this.$on", "", "", None, "error")
+        lines = _find_warning_lines(source, w_on)
+        assert 1 in lines
+        assert 3 in lines
+        assert 2 not in lines, "L2 is this.$once, should not match this.$on"
+
+    def test_recipe_exists_for_once(self):
+        """A recipe section should exist for this.$once."""
+        entry = MixinEntry(
+            local_name="x", mixin_path="x.js", mixin_stem="x",
+            members=MixinMembers(),
+            warnings=[
+                MigrationWarning("x", "this.$once", "this.$once removed",
+                    "Use event bus", None, "error"),
+            ],
+        )
+        entries = [(Path("<standalone>"), [entry])]
+        recipes = build_recipes_section(entries)
+        assert "$once" in recipes
+
+
+# ---------------------------------------------------------------------------
+# Issue 2: Report should not list steps for non-existent composables
+# ---------------------------------------------------------------------------
+
+class TestSkippedComposableNotInActionPlan:
+    """When a composable was skipped (not generated), the action plan should
+    not include steps for it, even if it has info-level warnings."""
+
+    def test_skipped_lifecycle_only_with_unused_members_filtered(self):
+        """An entry with only skipped-lifecycle-only (warning) + unused-mixin-member (info)
+        should NOT appear in the action plan."""
+        entry = MixinEntry(
+            local_name="localeMixin",
+            mixin_path=Path("localeMixin.js"),
+            mixin_stem="localeMixin",
+            members=MixinMembers(data=["currentLocale"], methods=["setLocale"]),
+            composable=None,
+            warnings=[
+                MigrationWarning("localeMixin", "skipped-lifecycle-only",
+                    "Mixin 'localeMixin' was NOT migrated: lifecycle hooks",
+                    "Manually convert lifecycle hooks",
+                    None, "warning"),
+                MigrationWarning("localeMixin", "unused-mixin-member",
+                    "Member 'currentLocale' not used by any component",
+                    "", None, "info"),
+                MigrationWarning("localeMixin", "unused-mixin-member",
+                    "Member 'setLocale' not used by any component",
+                    "", None, "info"),
+            ],
+        )
+
+        entries = [(Path("<standalone>"), [entry])]
+        report = build_action_plan(entries, project_root=PROJECT_ROOT)
+
+        # Entry should be filtered out — no steps for non-existent composable
+        assert "useLocale" not in report
+        assert "skipped-lifecycle-only" not in report
+
+    def test_skipped_lifecycle_with_real_warnings_hides_skip_step(self):
+        """When an entry has skipped-lifecycle-only AND real warnings (e.g.
+        external-dependency), the skipped-lifecycle-only should not appear as
+        a step, but the real warnings should."""
+        entry = MixinEntry(
+            local_name="pollingMixin",
+            mixin_path=Path("pollingMixin.js"),
+            mixin_stem="pollingMixin",
+            members=MixinMembers(data=["pollTimer"], methods=["startPolling"]),
+            composable=None,
+            warnings=[
+                MigrationWarning("pollingMixin", "external-dependency",
+                    "'_pollCallback' — not defined in this mixin",
+                    "Pass as param", None, "error"),
+                MigrationWarning("pollingMixin", "skipped-lifecycle-only",
+                    "Mixin not migrated: lifecycle hooks only",
+                    "Manually convert", None, "warning"),
+            ],
+        )
+
+        entries = [(Path("<standalone>"), [entry])]
+        report = build_action_plan(entries, project_root=PROJECT_ROOT)
+
+        # The real warning should appear
+        assert "_pollCallback" in report
+        # But skipped-lifecycle-only should NOT appear as a step
+        assert "skipped-lifecycle-only" not in report
+
+    def test_skipped_no_usage_with_info_also_filtered(self):
+        """An entry with only skipped-no-usage + info warnings should also be filtered."""
+        entry = MixinEntry(
+            local_name="emptyMixin",
+            mixin_path=Path("emptyMixin.js"),
+            mixin_stem="emptyMixin",
+            members=MixinMembers(),
+            composable=None,
+            warnings=[
+                MigrationWarning("emptyMixin", "skipped-no-usage",
+                    "No members referenced", "Remove mixin",
+                    None, "warning"),
+                MigrationWarning("emptyMixin", "unused-mixin-member",
+                    "Member 'x' not used", "", None, "info"),
+            ],
+        )
+
+        entries = [(Path("<standalone>"), [entry])]
+        report = build_action_plan(entries, project_root=PROJECT_ROOT)
+        assert "useEmpty" not in report
+
+
+class TestMixinFallbackLineRefs:
+    """When _find_warning_lines finds nothing in the composable (e.g. pattern
+    was auto-rewritten), the report should use source_lines from the mixin."""
+
+    def test_multiple_mixin_line_refs_shown(self, tmp_path):
+        """source_lines=[28, 34, 44] should render as mixin L28, mixin L34, mixin L44."""
+        mixin_path = tmp_path / "watcherMixin.js"
+        mixin_path.write_text("x\n" * 50)  # dummy content so .exists() is True
+
+        entry = MixinEntry(
+            local_name="watcherMixin",
+            mixin_path=mixin_path,
+            mixin_stem="watcherMixin",
+            members=MixinMembers(data=["watchedValue"], methods=["setupWatchers"]),
+            composable=None,
+            warnings=[
+                MigrationWarning(
+                    mixin_stem="watcherMixin",
+                    category="this.$watch",
+                    message="this.$watch — use watch() from vue instead",
+                    action_required="Import watch from 'vue' and use watch() directly",
+                    line_hint="this.$watch('watchedValue', fn)",
+                    severity="warning",
+                    source_line=28,
+                    source_lines=[28, 34, 44],
+                ),
+            ],
+        )
+
+        entries = [(Path("<standalone>"), [entry])]
+        report = build_action_plan(entries, project_root=tmp_path)
+
+        assert "mixin L28" in report
+        assert "mixin L34" in report
+        assert "mixin L44" in report
+        # Should NOT just say "mixin L1"
+        assert "mixin L1" not in report
