@@ -2,6 +2,8 @@
 import pytest
 
 from vue3_migration.core.composable_analyzer import (
+    classify_all_identifier_kinds,
+    classify_identifier_kind,
     extract_all_identifiers,
     extract_function_name,
     extract_return_keys,
@@ -275,3 +277,89 @@ class TestExtractFunctionName:
 
     def test_use_logging(self):
         assert extract_function_name(USE_LOGGING) == 'useLogging'
+
+
+# ---------------------------------------------------------------------------
+# Identifier kind classification
+# ---------------------------------------------------------------------------
+
+class TestClassifyIdentifierKind:
+    """Tests for identifier kind classification in composable source."""
+
+    def test_ref_declaration(self):
+        source = "const isLoading = ref(false)"
+        assert classify_identifier_kind("isLoading", source) == "ref"
+
+    def test_shallow_ref(self):
+        source = "const items = shallowRef([])"
+        assert classify_identifier_kind("items", source) == "ref"
+
+    def test_reactive_declaration(self):
+        source = "const state = reactive({})"
+        assert classify_identifier_kind("state", source) == "ref"
+
+    def test_to_ref(self):
+        source = "const name = toRef(props, 'name')"
+        assert classify_identifier_kind("name", source) == "ref"
+
+    def test_computed_declaration(self):
+        source = "const fullName = computed(() => first.value + last.value)"
+        assert classify_identifier_kind("fullName", source) == "computed"
+
+    def test_function_declaration(self):
+        source = "function doStuff() { return 1 }"
+        assert classify_identifier_kind("doStuff", source) == "function"
+
+    def test_arrow_function(self):
+        source = "const doStuff = () => { return 1 }"
+        assert classify_identifier_kind("doStuff", source) == "function"
+
+    def test_async_arrow_function(self):
+        source = "const fetchData = async () => { await api.get() }"
+        assert classify_identifier_kind("fetchData", source) == "function"
+
+    def test_async_function_declaration(self):
+        source = "async function fetchData() { await api.get() }"
+        assert classify_identifier_kind("fetchData", source) == "function"
+
+    def test_typed_ref(self):
+        source = "const isLoading = ref<boolean>(false)"
+        assert classify_identifier_kind("isLoading", source) == "ref"
+
+    def test_typed_computed(self):
+        source = "const count = computed<number>(() => items.value.length)"
+        assert classify_identifier_kind("count", source) == "computed"
+
+    def test_unknown_declaration(self):
+        source = "const result = someHelper()"
+        assert classify_identifier_kind("result", source) == "unknown"
+
+    def test_undeclared_name(self):
+        source = "const other = ref(0)"
+        assert classify_identifier_kind("missing", source) == "unknown"
+
+    def test_let_ref(self):
+        source = "let counter = ref(0)"
+        assert classify_identifier_kind("counter", source) == "ref"
+
+
+class TestClassifyAllIdentifierKinds:
+    def test_bulk_classification(self):
+        source = """
+import { ref, computed } from 'vue'
+
+export function useExample() {
+  const count = ref(0)
+  const doubled = computed(() => count.value * 2)
+  function increment() { count.value++ }
+  const reset = () => { count.value = 0 }
+
+  return { count, doubled, increment, reset }
+}"""
+        kinds = classify_all_identifier_kinds(source, ["count", "doubled", "increment", "reset"])
+        assert kinds == {
+            "count": "ref",
+            "doubled": "computed",
+            "increment": "function",
+            "reset": "function",
+        }

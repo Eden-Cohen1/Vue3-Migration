@@ -117,3 +117,43 @@ def extract_function_name(source: str) -> Optional[str]:
     if match:
         return match.group(1)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Identifier kind classification
+# ---------------------------------------------------------------------------
+
+# Vue reactivity wrappers that produce ref-like values
+_REF_WRAPPERS = r"ref|shallowRef|reactive|shallowReactive|toRef|toRefs|customRef"
+_COMPUTED_WRAPPERS = r"computed"
+
+
+def classify_identifier_kind(name: str, source: str) -> str:
+    """Classify what kind of value a declared identifier is in composable source.
+
+    Returns one of: "ref", "computed", "function", "unknown".
+    """
+    esc = re.escape(name)
+
+    # const/let/var name = ref(...) or ref<Type>(...)
+    if re.search(rf"\b(?:const|let|var)\s+{esc}\s*=\s*(?:{_REF_WRAPPERS})\s*[<(]", source):
+        return "ref"
+
+    # const/let/var name = computed(...) or computed<Type>(...)
+    if re.search(rf"\b(?:const|let|var)\s+{esc}\s*=\s*(?:{_COMPUTED_WRAPPERS})\s*[<(]", source):
+        return "computed"
+
+    # function name(...) or async function name(...)
+    if re.search(rf"\b(?:async\s+)?function\s+{esc}\s*\(", source):
+        return "function"
+
+    # const name = (...) => or const name = async (...) =>
+    if re.search(rf"\b(?:const|let|var)\s+{esc}\s*=\s*(?:async\s*)?\(", source):
+        return "function"
+
+    return "unknown"
+
+
+def classify_all_identifier_kinds(source: str, names: list[str]) -> dict[str, str]:
+    """Classify all named identifiers in composable source. Returns {name: kind}."""
+    return {name: classify_identifier_kind(name, source) for name in names}
