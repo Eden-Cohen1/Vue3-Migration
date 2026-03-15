@@ -473,10 +473,18 @@ def test_no_false_positive_option_in_string():
 # -- Structural pattern detection --
 
 def test_warn_mixin_factory_function():
+    # Factory with params: auto-handled by generator, no warning
     src = "export default function createMixin(options) { return { data() { return {} } } }"
     warnings = detect_structural_patterns(src, "testMixin")
     cats = [w.category for w in warnings]
-    assert "structural:factory-function" in cats
+    assert "structural:factory-function" not in cats, \
+        "Factory functions with params are auto-handled — no warning"
+
+    # Factory without params: still needs manual review
+    src_no_params = "export default function() { return { data() { return {} } } }"
+    warnings2 = detect_structural_patterns(src_no_params, "testMixin")
+    cats2 = [w.category for w in warnings2]
+    assert "structural:factory-function" in cats2
 
 
 def test_warn_nested_mixins():

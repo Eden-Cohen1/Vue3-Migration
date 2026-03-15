@@ -86,6 +86,9 @@ def extract_hook_body(mixin_source: str, hook_name: str, exclude_sections: bool 
     for match in pattern.finditer(mixin_source):
         if _in_non_code(match.start()) or _in_excluded(match.start()):
             continue
+        # Skip property access patterns like this.hookName or obj.hookName
+        if match.start() > 0 and mixin_source[match.start() - 1] == '.':
+            continue
         pos = match.end()
         brace_pos = None
         limit = pos + _MAX_SIGNATURE_SCAN

@@ -1385,8 +1385,9 @@ from vue3_migration.core.warning_collector import detect_structural_patterns
 
 
 class TestFactoryMixinWarnings:
-    def test_factory_mixin_includes_param_names(self):
-        """Factory mixin warning should include parameter names."""
+    def test_factory_mixin_with_params_no_warning(self):
+        """Factory mixin with extractable params should NOT warn —
+        the generator auto-forwards params to the composable signature."""
         source = '''
         export default function(defaultKey) {
             return {
@@ -1397,12 +1398,11 @@ class TestFactoryMixinWarnings:
         '''
         warnings = detect_structural_patterns(source, "factoryMixin")
         factory_warnings = [w for w in warnings if w.category == "structural:factory-function"]
-        assert len(factory_warnings) == 1
-        assert "defaultKey" in factory_warnings[0].message
-        assert "params" in factory_warnings[0].message.lower()
+        assert len(factory_warnings) == 0, \
+            "Factory functions with params are auto-handled — no warning needed"
 
-    def test_factory_mixin_multiple_params(self):
-        """Factory mixin warning should list all parameter names."""
+    def test_factory_mixin_multiple_params_no_warning(self):
+        """Factory mixin with multiple params should NOT warn."""
         source = '''
         export default function createMixin(key, options) {
             return {
@@ -1412,9 +1412,8 @@ class TestFactoryMixinWarnings:
         '''
         warnings = detect_structural_patterns(source, "factoryMixin")
         factory_warnings = [w for w in warnings if w.category == "structural:factory-function"]
-        assert len(factory_warnings) == 1
-        assert "key" in factory_warnings[0].message
-        assert "options" in factory_warnings[0].message
+        assert len(factory_warnings) == 0, \
+            "Factory functions with params are auto-handled — no warning needed"
 
     def test_factory_mixin_no_params(self):
         """Factory mixin with no params should say 'no params'."""
@@ -2801,18 +2800,17 @@ class TestWarningSkipsCommentLines:
         assert len(emit_w) == 1
         assert emit_w[0].source_line == 5
 
-    def test_all_occurrences_in_comments_still_detected(self):
+    def test_all_occurrences_in_comments_not_detected(self):
         """If ALL occurrences of a pattern are in comments, the warning should
-        still fire (comments may contain real code that was commented out).
-        But ideally this is debatable — for now, ensure backward compat."""
+        NOT fire — comment-only matches are false positives."""
         source = (
             "// this.$watch('foo', handler)\n"
             "export default {}\n"
         )
         warnings = collect_mixin_warnings(source, MixinMembers(), [])
         watch_w = [w for w in warnings if w.category == "this.$watch"]
-        # Pattern still detected even in comments (backward compat)
-        assert len(watch_w) == 1
+        assert len(watch_w) == 0, \
+            "Patterns only in comments should not generate warnings"
 
     def test_watch_multiple_real_occurrences_uses_first(self):
         """When multiple real (non-comment) occurrences exist, source_line
@@ -2831,3 +2829,123 @@ class TestWarningSkipsCommentLines:
         watch_w = [w for w in warnings if w.category == "this.$watch"]
         assert len(watch_w) == 1
         assert watch_w[0].source_line == 4
+
+
+class TestWarningSkipsStringLiterals:
+    """collect_mixin_warnings should not match this.$ patterns inside string
+    literals (single quotes, double quotes, or template literals)."""
+
+    def test_emit_in_single_quote_string_not_warned(self):
+        source = (
+            "export default {\n"
+            "  data() {\n"
+            "    return {\n"
+            "      help: 'Call this.$emit(\"update\") to notify parent'\n"
+            "    }\n"
+            "  }\n"
+            "}\n"
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        emit_w = [w for w in warnings if w.category == "this.$emit"]
+        assert len(emit_w) == 0, f"this.$emit inside string should not be warned, got {emit_w}"
+
+    def test_router_in_template_literal_not_warned(self):
+        source = (
+            "export default {\n"
+            "  methods: {\n"
+            "    log() {\n"
+            "      const msg = `Route: this.$router.push('/home')`\n"
+            "      console.log(msg)\n"
+            "    }\n"
+            "  }\n"
+            "}\n"
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(methods=["log"]), [])
+        router_w = [w for w in warnings if w.category == "this.$router"]
+        assert len(router_w) == 0, f"this.$router inside template literal should not be warned"
+
+    def test_store_in_double_quote_string_not_warned(self):
+        source = (
+            'export default {\n'
+            '  data() {\n'
+            '    return {\n'
+            '      doc: "Use this.$store.dispatch to load data"\n'
+            '    }\n'
+            '  }\n'
+            '}\n'
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        store_w = [w for w in warnings if w.category == "this.$store"]
+        assert len(store_w) == 0, f"this.$store inside string should not be warned"
+
+    def test_real_emit_still_warned(self):
+        """Real this.$emit in code should still generate warnings."""
+        source = (
+            "export default {\n"
+            "  methods: {\n"
+            "    fire() {\n"
+            "      this.$emit('done')\n"
+            "    }\n"
+            "  }\n"
+            "}\n"
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(methods=["fire"]), [])
+        emit_w = [w for w in warnings if w.category == "this.$emit"]
+        assert len(emit_w) == 1
+
+    def test_mixed_string_and_real_only_warns_real(self):
+        """When this.$refs appears in both a string and real code, only real usage triggers warning."""
+        source = (
+            "export default {\n"
+            "  data() {\n"
+            "    return { help: 'Use this.$refs.input to access DOM' }\n"
+            "  },\n"
+            "  methods: {\n"
+            "    focus() {\n"
+            "      this.$refs.modal.show()\n"
+            "    }\n"
+            "  }\n"
+            "}\n"
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(methods=["focus"]), [])
+        refs_w = [w for w in warnings if w.category == "this.$refs"]
+        assert len(refs_w) == 1
+        # Should point to the real usage line (line 7), not the string (line 3)
+        assert refs_w[0].source_line == 7
+
+    def test_catch_all_dollar_in_string_not_warned(self):
+        """Catch-all this.$xxx inside strings should not generate warnings."""
+        source = (
+            "export default {\n"
+            "  data() {\n"
+            "    return { info: 'this.$myPlugin is available' }\n"
+            "  }\n"
+            "}\n"
+        )
+        warnings = collect_mixin_warnings(source, MixinMembers(), [])
+        plugin_w = [w for w in warnings if w.category == "this.$myPlugin"]
+        assert len(plugin_w) == 0
+
+    def test_inject_inline_skips_string_matches(self):
+        """inject_inline_warnings should not add // ❌ to lines where the
+        pattern only appears inside a string literal."""
+        from vue3_migration.core.warning_collector import inject_inline_warnings
+        source = (
+            "  const doc = 'Use this.$emit to send events'\n"
+            "  const real = this.$emit('update')\n"
+        )
+        emit_warning = MigrationWarning(
+            mixin_stem="test",
+            category="this.$emit",
+            message="this.$emit is not available",
+            action_required="Use defineEmits",
+            line_hint=None,
+            severity="error",
+        )
+        result = inject_inline_warnings(source, [emit_warning])
+        lines = result.splitlines()
+        # First line has this.$emit in a string — should NOT get icon
+        assert "//" not in lines[0] or "❌" not in lines[0], \
+            f"String-only line should not get inline warning: {lines[0]}"
+        # Second line has real this.$emit — SHOULD get icon
+        assert "❌" in lines[1], f"Real usage line should get inline warning: {lines[1]}"

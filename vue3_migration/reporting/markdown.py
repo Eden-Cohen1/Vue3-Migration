@@ -1213,22 +1213,6 @@ def build_action_plan(
     a("---\n")
     a("## Action Plan\n")
 
-    a("### Recommended Order\n")
-    idx = 0
-    if quick_wins:
-        idx += 1
-        a(f"{idx}. \U0001f7e2 **Quick wins** ({len(quick_wins)} composable{'s' if len(quick_wins) != 1 else ''}) \u2014 apply changes as-is, no manual steps")
-    if dropin_fixes:
-        idx += 1
-        a(f"{idx}. \U0001f7e1 **Drop-in fixes** ({len(dropin_fixes)} composable{'s' if len(dropin_fixes) != 1 else ''}) \u2014 mechanical replacements")
-    if design_decisions:
-        idx += 1
-        a(f"{idx}. \U0001f534 **Design decisions** ({len(design_decisions)} composable{'s' if len(design_decisions) != 1 else ''}) \u2014 require architectural choices")
-    if unused_mixins:
-        idx += 1
-        a(f"{idx}. \U0001f5d1\ufe0f **Unused mixins** ({len(unused_mixins)} file{'s' if len(unused_mixins) != 1 else ''}) \u2014 not imported by any component, safe to delete")
-    a("")
-
     # Quick wins — just list names
     if quick_wins:
         a("---\n")

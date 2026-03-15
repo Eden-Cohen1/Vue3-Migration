@@ -89,7 +89,7 @@ class TestThisDollarWarningDetection:
         assert any(w.category == "this.$children" for w in warnings)
 
     def test_detects_dollar_listeners(self):
-        source = "v-on='this.$listeners'"
+        source = "const listeners = this.$listeners"
         warnings = collect_mixin_warnings(source, MixinMembers(), [])
         assert any(w.category == "this.$listeners" for w in warnings)
 

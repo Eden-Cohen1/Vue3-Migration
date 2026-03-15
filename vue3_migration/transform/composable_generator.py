@@ -21,6 +21,16 @@ from .lifecycle_converter import convert_lifecycle_hooks, get_required_imports
 from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs, rewrite_this_i18n_refs
 
 
+def _extract_factory_params(mixin_source: str) -> str:
+    """Extract parameters from a factory function mixin signature.
+
+    For `export default function createFoo(x, y = 1) { return { ... } }`,
+    returns 'x, y = 1'.  Returns '' for non-factory mixins.
+    """
+    m = re.search(r'\bexport\s+default\s+function\s*\w*\s*\(([^)]*)\)', mixin_source)
+    return m.group(1).strip() if m else ""
+
+
 def _extract_section_body(mixin_source: str, section: str) -> str:
     """Return the content of `section: { ... }` from a mixin, or empty string."""
     m = re.search(rf'\b{re.escape(section)}\s*:\s*\{{', mixin_source)
@@ -157,6 +167,7 @@ def generate_composable_from_mixin(
     - return { all members }
     """
     fn_name = mixin_stem_to_composable_name(mixin_stem)
+    factory_params = _extract_factory_params(mixin_source)
     ref_members = mixin_members.data + mixin_members.computed + mixin_members.watch
     plain_members = mixin_members.methods
 
@@ -374,7 +385,7 @@ def generate_composable_from_mixin(
     external_block = "\n".join(external_imports) + "\n" if external_imports else ""
     if i18n_import_line:
         i18n_import_line += "\n"  # blank line after last import
-    result = f"{external_block}{import_line}{i18n_import_line}export function {fn_name}() {{\n{body}\n}}\n"
+    result = f"{external_block}{import_line}{i18n_import_line}export function {fn_name}({factory_params}) {{\n{body}\n}}\n"
 
     # Collect warnings and suppress those already resolved by the generated code
     warnings = collect_mixin_warnings(

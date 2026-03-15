@@ -6,6 +6,7 @@ here without touching the generator or patcher.
 import re
 
 from ..models import ConfidenceLevel, MigrationWarning, MixinMembers
+from .js_parser import skip_non_code
 
 
 def _line_number(source: str, position: int) -> int:
@@ -120,6 +121,11 @@ def suppress_resolved_warnings(
             if m and m.group(1) in declared_set:
                 continue  # suppressed
 
+        # Suppress factory-function warning when composable has the params
+        if w.category == "structural:factory-function" and composable_source:
+            if re.search(r'export\s+function\s+\w+\([^)]+\)', composable_source):
+                continue  # suppressed — params are forwarded
+
         # Check this.$X suppression
         if w.category in _RESOLVED_PATTERNS and composable_source:
             pattern = _RESOLVED_PATTERNS[w.category]
@@ -148,6 +154,20 @@ def collect_mixin_warnings(
     warnings: list[MigrationWarning] = []
     seen_categories: set[str] = set()
 
+    # Build non-code spans (strings, comments, regex) to skip false positives
+    _non_code_spans: list[tuple[int, int]] = []
+    _nc_pos = 0
+    while _nc_pos < len(mixin_source):
+        _nc_new, _nc_skipped = skip_non_code(mixin_source, _nc_pos)
+        if _nc_skipped:
+            _non_code_spans.append((_nc_pos, _nc_new))
+            _nc_pos = _nc_new
+        else:
+            _nc_pos += 1
+
+    def _in_non_code(p: int) -> bool:
+        return any(s <= p < e for s, e in _non_code_spans)
+
     for pattern, category, message, action, severity in _THIS_DOLLAR_PATTERNS:
         if category in seen_categories:
             continue
@@ -156,6 +176,9 @@ def collect_mixin_warnings(
         best_match = None
         all_real_lines: list[int] = []
         for match in re.finditer(pattern, mixin_source):
+            # Skip matches inside string literals, comments, or regex
+            if _in_non_code(match.start()):
+                continue
             if first_match is None:
                 first_match = match
             # Check if match is inside a // comment
@@ -190,6 +213,8 @@ def collect_mixin_warnings(
 
     # Catch-all: flag any this.$<ident> not already covered above
     for m in re.finditer(r"this\.\$(\w+)", mixin_source):
+        if _in_non_code(m.start()):
+            continue
         ident = m.group(1)
         cat = f"this.${ident}"
         if ident in _KNOWN_DOLLAR_IDENTS or cat in seen_categories:
@@ -485,6 +510,27 @@ def _get_short_hint(warning: MigrationWarning) -> str:
     return action
 
 
+def _match_in_string(line: str, match_start: int) -> bool:
+    """Check if a character position in a line falls inside a string literal."""
+    in_single = False
+    in_double = False
+    in_template = False
+    i = 0
+    while i < len(line) and i < match_start:
+        ch = line[i]
+        if ch == '\\' and (in_single or in_double or in_template):
+            i += 2  # skip escaped character
+            continue
+        if ch == "'" and not in_double and not in_template:
+            in_single = not in_single
+        elif ch == '"' and not in_single and not in_template:
+            in_double = not in_double
+        elif ch == '`' and not in_single and not in_double:
+            in_template = not in_template
+        i += 1
+    return in_single or in_double or in_template
+
+
 def inject_inline_warnings(
     source: str,
     warnings: list[MigrationWarning],
@@ -589,9 +635,11 @@ def inject_inline_warnings(
             if pat.startswith("this.$") or pat == "= this":
                 # Word-boundary matching for this.$ patterns to avoid substring
                 # false positives (e.g. this.$on matching this.$once)
-                matched = bool(re.search(rf'{re.escape(pat)}(?![a-zA-Z_$])', line))
+                m = re.search(rf'{re.escape(pat)}(?![a-zA-Z_$])', line)
+                matched = m is not None and not _match_in_string(line, m.start())
             else:
-                matched = pat in line
+                idx = line.find(pat)
+                matched = idx >= 0 and not _match_in_string(line, idx)
             if not matched and pat in pattern_fallbacks:
                 bare = pattern_fallbacks[pat]
                 if re.search(rf'\b{re.escape(bare)}\b', line):
@@ -977,24 +1025,24 @@ def detect_structural_patterns(
     warnings: list[MigrationWarning] = []
 
     # Mixin factory function: export default function
+    # Factory functions with extractable params are auto-handled by the
+    # composable generator (params forwarded to composable signature),
+    # so we only warn for parameterless or unparseable factory functions.
     factory_m = re.search(r'\bexport\s+default\s+function\s*\w*\s*\(([^)]*)\)', mixin_source)
     if factory_m:
         params = factory_m.group(1).strip()
-        if params:
-            message = f"Factory mixin with params ({params}) — cannot auto-convert"
-            action = f"Create composable with matching parameters ({params})"
-        else:
-            message = "Factory mixin (no params) — convert to regular composable"
-            action = "Manually convert factory function to composable"
-        warnings.append(MigrationWarning(
-            mixin_stem=mixin_stem,
-            category="structural:factory-function",
-            message=message,
-            action_required=action,
-            line_hint=None,
-            severity="warning",
-            source_line=_line_number(mixin_source, factory_m.start()),
-        ))
+        if not params:
+            # Parameterless factory function — still needs manual review
+            warnings.append(MigrationWarning(
+                mixin_stem=mixin_stem,
+                category="structural:factory-function",
+                message="Factory mixin (no params) — convert to regular composable",
+                action_required="Manually convert factory function to composable",
+                line_hint=None,
+                severity="warning",
+                source_line=_line_number(mixin_source, factory_m.start()),
+            ))
+        # else: params are auto-forwarded by generator — no warning needed
     else:
         factory_m2 = re.search(r'\bexport\s+default\s+function\b', mixin_source)
         if factory_m2:

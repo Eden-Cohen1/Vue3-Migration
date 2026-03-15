@@ -9,16 +9,11 @@
 </template>
 
 <script>
-import { useStatus } from '@/composables/useStatus'
-import { useLoading } from '@/composables/useLoading'
+import loadingMixin from '@/mixins/loadingMixin'
+import statusMixin from '@/mixins/statusMixin'
 
 export default {
-  setup() {
-    const { isLoading, loadingMessage, startLoading } = useLoading()
-    const { statusMessage, clearStatus } = useStatus()
-
-    return { isLoading, loadingMessage, startLoading, statusMessage, clearStatus }
-  },
   name: 'CollisionTest',
+  mixins: [loadingMixin, statusMixin],
 }
 </script>

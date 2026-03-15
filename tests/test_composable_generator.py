@@ -414,6 +414,76 @@ class TestMethodBodyFaithfulness:
         assert 'function doWork(' in result
         assert 'console.log' in result  # body should be extracted
 
+    def test_method_body_not_confused_with_object_literal_reference(self):
+        """When a method name appears as a value in an object literal inside
+        another method, extract_hook_body should skip the property-access
+        occurrence and find the real method declaration."""
+        mixin = '''
+        export default {
+            data() {
+                return { eventHandlers: {}, receivedEvents: [] }
+            },
+            methods: {
+                registerEvents() {
+                    this.eventHandlers = {
+                        'data-updated': this.handleDataUpdate,
+                        'user-action': this.handleUserAction
+                    }
+                },
+                handleDataUpdate(payload) {
+                    this.receivedEvents.push({ type: 'data-updated', payload })
+                },
+                handleUserAction(action) {
+                    this.receivedEvents.push({ type: 'user-action', payload: action })
+                }
+            }
+        }
+        '''
+        members = MixinMembers(
+            data=['eventHandlers', 'receivedEvents'],
+            computed=[],
+            methods=['registerEvents', 'handleDataUpdate', 'handleUserAction'],
+            watch=[],
+        )
+        result = generate_composable_from_mixin(mixin, 'eventBusMixin', members, [])
+        # handleUserAction should have the correct body, not object literal syntax
+        assert "function handleUserAction(action)" in result
+        assert "'user-action'" not in result.split("function handleUserAction")[1].split("function ")[0] or \
+               "receivedEvents" in result.split("function handleUserAction")[1].split("}")[0]
+        # More direct: the body after handleUserAction should contain receivedEvents.push
+        after_handler = result.split("function handleUserAction(action)")[1]
+        body_block = after_handler.split("}")[0]
+        assert "receivedEvents" in body_block, \
+            f"handleUserAction body should contain receivedEvents push, got: {body_block}"
+
+    def test_eventbus_fixture_method_extraction(self):
+        """Integration test: eventBusMixin fixture should generate correct method bodies."""
+        from pathlib import Path
+        fixture_path = Path("tests/fixtures/dummy_project/src/mixins/eventBusMixin.js")
+        if not fixture_path.exists():
+            import pytest
+            pytest.skip("eventBusMixin fixture not found")
+        mixin_source = fixture_path.read_text()
+        members = MixinMembers(
+            data=['eventHandlers', 'receivedEvents', 'isListening'],
+            computed=[],
+            methods=['registerEvents', 'cleanupEvents', 'handleDataUpdate', 'handleUserAction', 'emitEvent'],
+            watch=[],
+        )
+        result = generate_composable_from_mixin(mixin_source, 'eventBusMixin', members, ['created', 'beforeDestroy'])
+        # handleDataUpdate should have correct body
+        assert "function handleDataUpdate(payload)" in result
+        after_hdu = result.split("function handleDataUpdate(payload)")[1]
+        hdu_body = after_hdu.split("}")[0]
+        assert "receivedEvents" in hdu_body, \
+            f"handleDataUpdate should push to receivedEvents, got: {hdu_body}"
+        # handleUserAction should have correct body
+        assert "function handleUserAction(action)" in result
+        after_hua = result.split("function handleUserAction(action)")[1]
+        hua_body = after_hua.split("}")[0]
+        assert "receivedEvents" in hua_body, \
+            f"handleUserAction should push to receivedEvents, got: {hua_body}"
+
 
 # ---------------------------------------------------------------------------
 # Bug fix regression: Issue #3 — mounted + beforeDestroy both converted
@@ -835,3 +905,77 @@ export default {
         assert ref_pos < computed_pos, "refs must come before computed"
         assert computed_pos < method_pos, "computed must come before methods"
         assert method_pos < watch_pos, "methods must come before watch"
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: Factory function parameters forwarded to composable signature
+# ---------------------------------------------------------------------------
+
+class TestFactoryFunctionParams:
+    """Factory function mixins should forward their parameters to the composable."""
+
+    def test_factory_params_forwarded(self):
+        mixin = '''
+export default function createSortMixin(defaultKey = 'name') {
+  return {
+    data() {
+      return { sortKey: defaultKey, sortOrder: 'asc' }
+    },
+    methods: {
+      setKey(k) { this.sortKey = k }
+    }
+  }
+}
+'''
+        members = MixinMembers(
+            data=['sortKey', 'sortOrder'],
+            computed=[],
+            methods=['setKey'],
+            watch=[],
+        )
+        result = generate_composable_from_mixin(mixin, 'sortMixin', members, [])
+        assert "export function useSort(defaultKey = 'name')" in result, \
+            f"Factory params should be forwarded, got: {result.splitlines()[2] if len(result.splitlines()) > 2 else result}"
+
+    def test_factory_data_wrapped_in_ref(self):
+        mixin = '''
+export default function createSortMixin(defaultKey = 'name') {
+  return {
+    data() {
+      return { sortKey: defaultKey, sortOrder: 'asc' }
+    }
+  }
+}
+'''
+        members = MixinMembers(data=['sortKey', 'sortOrder'], computed=[], methods=[], watch=[])
+        result = generate_composable_from_mixin(mixin, 'sortMixin', members, [])
+        assert "const sortKey = ref(defaultKey)" in result, \
+            f"Factory param default should be wrapped in ref(), got: {result}"
+        assert "const sortOrder = ref('asc')" in result
+
+    def test_non_factory_still_empty_params(self):
+        mixin = '''
+export default {
+  data() {
+    return { count: 0 }
+  }
+}
+'''
+        members = MixinMembers(data=['count'], computed=[], methods=[], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        assert "export function useTest()" in result, \
+            f"Non-factory mixin should have empty params, got: {result}"
+
+    def test_factory_with_multiple_params(self):
+        mixin = '''
+export default function createMixin(x, y = 10, z = 'hello') {
+  return {
+    data() {
+      return { a: x, b: y }
+    }
+  }
+}
+'''
+        members = MixinMembers(data=['a', 'b'], computed=[], methods=[], watch=[])
+        result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
+        assert "export function useTest(x, y = 10, z = 'hello')" in result
