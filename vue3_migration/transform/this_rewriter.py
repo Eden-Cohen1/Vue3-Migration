@@ -373,6 +373,28 @@ def _rewrite_watch_call(args_str: str) -> str | None:
         else:
             # Simple key -> bare ref name
             watch_source = key
+        # Check if handler (second arg) needs transformation
+        handler_arg = args[1].strip()
+
+        # String handler: 'methodName' → methodName (bare function reference)
+        if (len(handler_arg) >= 2 and
+                handler_arg[0] in ("'", '"') and
+                handler_arg[-1] == handler_arg[0]):
+            handler_name = handler_arg[1:-1]
+            rest_args = args[2:]
+            parts = [watch_source, handler_name] + rest_args
+            return ", ".join(parts)
+
+        # Array of string handlers: ['h1', 'h2'] → wrapper callback
+        if handler_arg.startswith("["):
+            names = re.findall(r"""['"](\w+)['"]""", handler_arg)
+            if names:
+                calls = "\n  ".join(f"{n}(newVal, oldVal)" for n in names)
+                wrapper = f"(newVal, oldVal) => {{\n  {calls}\n}}"
+                rest_args = args[2:]
+                parts = [watch_source, wrapper] + rest_args
+                return ", ".join(parts)
+
         remaining = ", ".join(args[1:])
         return f"{watch_source}, {remaining}"
 

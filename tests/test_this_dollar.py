@@ -428,6 +428,45 @@ class TestRewriteWatch:
         assert "watch(x, () => { this.$nextTick(fn) })" in result
         assert "watch" in imports
 
+    def test_rewrite_watch_string_handler(self):
+        """String handler should be resolved to bare function reference."""
+        code = "this.$watch('watchedValue', 'onWatchedValueChange')"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "this.$watch" not in result
+        assert "watch(watchedValue, onWatchedValueChange)" in result
+        assert "'onWatchedValueChange'" not in result
+        assert "watch" in imports
+
+    def test_rewrite_watch_string_handler_with_options(self):
+        """String handler with options should resolve handler and keep options."""
+        code = "this.$watch('prop', 'handler', { deep: true })"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "watch(prop, handler, { deep: true })" in result
+        assert "'handler'" not in result
+
+    def test_rewrite_watch_array_handlers(self):
+        """Array of string handlers should become a wrapper callback."""
+        code = """this.$watch('watchTarget', [
+      'handleChange',
+      'logChange',
+      'notifyChange'
+    ])"""
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "this.$watch" not in result
+        assert "handleChange(newVal, oldVal)" in result
+        assert "logChange(newVal, oldVal)" in result
+        assert "notifyChange(newVal, oldVal)" in result
+        assert "'handleChange'" not in result
+        assert "watch" in imports
+
+    def test_rewrite_watch_array_handlers_single(self):
+        """Single-element array handler should still generate wrapper."""
+        code = "this.$watch('x', ['onXChange'])"
+        result, imports = rewrite_this_dollar_refs(code)
+        assert "this.$watch" not in result
+        assert "onXChange(newVal, oldVal)" in result
+        assert "watch" in imports
+
 
 class TestRewriteEdgeCases:
     """Edge cases for auto-rewriting."""
