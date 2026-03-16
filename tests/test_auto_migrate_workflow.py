@@ -382,131 +382,6 @@ def test_run_scoped_zero_members_removes_unused_import(project):
     assert any("Removed unused" in c for c in comp_change.changes)
 
 
-# ---------------------------------------------------------------------------
-# _warn_unused_mixin_members
-# ---------------------------------------------------------------------------
-
-from vue3_migration.models import MigrationWarning, MixinMembers, MixinEntry
-from vue3_migration.workflows.auto_migrate_workflow import _warn_unused_mixin_members
-
-
-def _make_entry(mixin_stem, members, used_members):
-    """Helper to build a MixinEntry with the given members and used_members."""
-    return MixinEntry(
-        local_name=mixin_stem,
-        mixin_path=Path(f"/fake/mixins/{mixin_stem}.js"),
-        mixin_stem=mixin_stem,
-        members=members,
-        used_members=used_members,
-    )
-
-
-class TestWarnUnusedMixinMembers:
-    def test_unused_members_get_warnings(self):
-        """Members not used by any component should produce warnings."""
-        members = MixinMembers(data=["foo"], methods=["bar", "baz"])
-        entry = _make_entry("myMixin", members, used_members=["bar"])
-        entries = [(Path("/fake/Comp.vue"), [entry])]
-
-        _warn_unused_mixin_members(entries)
-
-        unused_warnings = [w for w in entry.warnings if w.category == "unused-mixin-member"]
-        assert len(unused_warnings) == 2
-        names = {w.message.split("'")[1] for w in unused_warnings}
-        assert names == {"foo", "baz"}
-
-    def test_used_members_no_warnings(self):
-        """Members used by at least one component should NOT get warnings."""
-        members = MixinMembers(methods=["doStuff"])
-        entry = _make_entry("myMixin", members, used_members=["doStuff"])
-        entries = [(Path("/fake/Comp.vue"), [entry])]
-
-        _warn_unused_mixin_members(entries)
-
-        unused_warnings = [w for w in entry.warnings if w.category == "unused-mixin-member"]
-        assert len(unused_warnings) == 0
-
-    def test_union_across_components(self):
-        """used_members are unioned across components sharing the same mixin."""
-        members = MixinMembers(data=["a"], methods=["b"], computed=["c"])
-        entry1 = _make_entry("shared", members, used_members=["a"])
-        entry2 = _make_entry("shared", members, used_members=["b"])
-        entries = [
-            (Path("/fake/Comp1.vue"), [entry1]),
-            (Path("/fake/Comp2.vue"), [entry2]),
-        ]
-
-        _warn_unused_mixin_members(entries)
-
-        # Only "c" is unused
-        for entry in [entry1, entry2]:
-            unused = [w for w in entry.warnings if w.category == "unused-mixin-member"]
-            assert len(unused) == 1
-            assert "'c'" in unused[0].message
-
-    def test_standalone_entries_skipped(self):
-        """Entries with Path("<standalone>") should be skipped entirely."""
-        members = MixinMembers(data=["x"], methods=["y"])
-        entry = _make_entry("standaloneMixin", members, used_members=[])
-        entries = [(Path("<standalone>"), [entry])]
-
-        _warn_unused_mixin_members(entries)
-
-        unused_warnings = [w for w in entry.warnings if w.category == "unused-mixin-member"]
-        assert len(unused_warnings) == 0
-
-    def test_warning_severity_is_info(self):
-        """All unused-mixin-member warnings should have severity 'info'."""
-        members = MixinMembers(computed=["unused1"], watch=["unused2"])
-        entry = _make_entry("myMixin", members, used_members=[])
-        entries = [(Path("/fake/Comp.vue"), [entry])]
-
-        _warn_unused_mixin_members(entries)
-
-        for w in entry.warnings:
-            if w.category == "unused-mixin-member":
-                assert w.severity == "info"
-
-    def test_warning_message_includes_section(self):
-        """Warning message should include the section (data/computed/methods/watch)."""
-        members = MixinMembers(data=["d"], computed=["c"], methods=["m"], watch=["w"])
-        entry = _make_entry("myMixin", members, used_members=[])
-        entries = [(Path("/fake/Comp.vue"), [entry])]
-
-        _warn_unused_mixin_members(entries)
-
-        msgs = {w.message for w in entry.warnings if w.category == "unused-mixin-member"}
-        assert "'d' (data) defined in mixin but not used by any component" in msgs
-        assert "'c' (computed) defined in mixin but not used by any component" in msgs
-        assert "'m' (methods) defined in mixin but not used by any component" in msgs
-        assert "'w' (watch) defined in mixin but not used by any component" in msgs
-
-    def test_warning_action_required(self):
-        """Warning action_required should reference the member name."""
-        members = MixinMembers(methods=["doThing"])
-        entry = _make_entry("myMixin", members, used_members=[])
-        entries = [(Path("/fake/Comp.vue"), [entry])]
-
-        _warn_unused_mixin_members(entries)
-
-        w = entry.warnings[0]
-        assert "doThing" in w.action_required
-        assert "remove from composable" in w.action_required
-
-    def test_no_entries_no_crash(self):
-        """Empty entries list should not crash."""
-        _warn_unused_mixin_members([])
-
-    def test_all_members_used_no_warnings(self):
-        """When all members are used, no warnings should be produced."""
-        members = MixinMembers(data=["a"], methods=["b"])
-        entry = _make_entry("myMixin", members, used_members=["a", "b"])
-        entries = [(Path("/fake/Comp.vue"), [entry])]
-
-        _warn_unused_mixin_members(entries)
-
-        assert len([w for w in entry.warnings if w.category == "unused-mixin-member"]) == 0
-
 
 # ---------------------------------------------------------------------------
 # Blocked entry diagnostic warnings
@@ -516,6 +391,9 @@ from vue3_migration.models import (
     ComposableCoverage,
     MemberClassification,
     MigrationStatus,
+    MigrationWarning,
+    MixinEntry,
+    MixinMembers,
 )
 
 

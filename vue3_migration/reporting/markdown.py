@@ -1057,8 +1057,8 @@ def build_summary_section(
                 continue
             seen_stems.add(entry.mixin_stem)
             # Only consider error/warning-level categories when deciding
-            # to skip — info-only warnings (e.g. unused-mixin-member) should
-            # not prevent skipping entries whose composables don't exist.
+            # to skip — info-only warnings should not prevent skipping
+            # entries whose composables don't exist.
             entry_cats = {w.category for w in entry.warnings
                           if w.severity in ("error", "warning")}
             if entry_cats and entry_cats <= _SKIPPED_CATEGORIES:
@@ -1138,8 +1138,8 @@ def build_action_plan(
                 continue
             seen_stems.add(entry.mixin_stem)
             # Only consider error/warning-level categories when deciding
-            # to skip — info-only warnings (e.g. unused-mixin-member) should
-            # not prevent skipping entries whose composables don't exist.
+            # to skip — info-only warnings should not prevent skipping
+            # entries whose composables don't exist.
             entry_cats = {w.category for w in entry.warnings
                           if w.severity in ("error", "warning")}
             if entry_cats and entry_cats <= _SKIPPED_CATEGORIES:
@@ -1264,6 +1264,44 @@ def build_action_plan(
     return "\n".join(lines)
 
 
+def _find_declaration_line(source: str, member: str) -> "int | None":
+    """Find the 1-based line number where a member is declared in composable source.
+
+    Matches declaration patterns only (const/let/var assignment, function declaration),
+    not references like ``return { member }`` or ``member.value = ...``.
+    """
+    import re
+    decl_re = re.compile(
+        rf"\b(?:const|let|var)\s+{re.escape(member)}\b|"
+        rf"\bfunction\s+{re.escape(member)}\s*\("
+    )
+    for i, line in enumerate(source.splitlines(), 1):
+        if line.lstrip().startswith("//"):
+            continue
+        if decl_re.search(line):
+            return i
+    return None
+
+
+def _find_mixin_declaration_line(source: str, member: str) -> "int | None":
+    """Find the 1-based line number where a member is declared in mixin source.
+
+    Matches mixin-style declaration patterns:
+    - ``memberName() {`` — computed/method declaration
+    - ``memberName:`` — data property or option key
+    """
+    import re
+    decl_re = re.compile(
+        rf"^\s+{re.escape(member)}\s*[\(:]"
+    )
+    for i, line in enumerate(source.splitlines(), 1):
+        if line.lstrip().startswith("//"):
+            continue
+        if decl_re.search(line):
+            return i
+    return None
+
+
 def _find_warning_lines(
     source: str, warning: MigrationWarning,
 ) -> list[int]:
@@ -1308,11 +1346,26 @@ def _find_warning_lines(
     elif warning.category == "data-setup-collision":
         m = re.match(r"'(\w+)'", warning.message)
         if m:
-            pat = m.group(1)
+            decl = _find_declaration_line(source, m.group(1))
+            if decl:
+                return [decl]
+        return result
     elif warning.category == "kind-mismatch":
         m = re.match(r"'(\w+)'", warning.message)
         if m:
-            pat = m.group(1)
+            decl = _find_declaration_line(source, m.group(1))
+            if decl:
+                return [decl]
+        return result
+    elif warning.category in ("name-collision", "name-collision-skipped"):
+        m = re.search(r"'(\w+)'", warning.message)
+        if not m:
+            m = re.search(r"destructuring:\s*(\w+)", warning.message)
+        if m:
+            decl = _find_declaration_line(source, m.group(1))
+            if decl:
+                return [decl]
+        return result
 
     # Search composable source for the pattern
     if pat:
@@ -1437,6 +1490,9 @@ def _build_kind_mismatch_step(
     warnings: list[MigrationWarning],
     comp_source: str,
     comp_path: "Path | None",
+    comp_name: str = "",
+    mixin_path: "Path | None" = None,
+    mixin_source: str = "",
 ) -> str:
     """Build a single combined step for all kind-mismatch warnings."""
     import re
@@ -1448,18 +1504,36 @@ def _build_kind_mismatch_step(
         if m:
             name, mixin_kind, comp_kind = m.group(1), m.group(2), m.group(3)
             expected = _MIXIN_KIND_LABELS.get(mixin_kind, mixin_kind)
-            label = f"`{name}` (mixin: {expected}, composable: {comp_kind})"
+        else:
+            name = None
+
+        if name:
+            # Build inline links: `member` ([mixinName]: kind, [composableName]: kind)
+            parts: list[str] = []
+            # Mixin link first
+            if mixin_source and mixin_path:
+                mixin_ln = _find_mixin_declaration_line(mixin_source, name)
+                mixin_stem = mixin_path.stem
+                if mixin_ln:
+                    parts.append(f"{_vscode_link(mixin_path, mixin_ln, mixin_stem)}: {expected}")
+                else:
+                    parts.append(f"`{mixin_stem}`: {expected}")
+            # Composable link second
+            if comp_source and comp_path:
+                line_nums = _find_warning_lines(comp_source, w)
+                if line_nums:
+                    parts.append(f"{_vscode_link(comp_path, line_nums[0], comp_name)}: {comp_kind}")
+                else:
+                    parts.append(f"`{comp_name}`: {comp_kind}")
+
+            if parts:
+                label = f"`{name}` ({', '.join(parts)})"
+            else:
+                label = f"`{name}` (mixin: {expected}, composable: {comp_kind})"
         else:
             label = w.message
 
-        line_ref = ""
-        if comp_source and comp_path:
-            line_nums = _find_warning_lines(comp_source, w)
-            if line_nums:
-                vscode_links = [_vscode_link(comp_path, ln, f"L{ln}") for ln in line_nums[:3]]
-                line_ref = f" ({', '.join(vscode_links)})"
-
-        bullets.append(f"{label}{line_ref}")
+        bullets.append(label)
 
     if len(bullets) == 1:
         return f"Fix type mismatch \u2014 {bullets[0]}"
@@ -1513,10 +1587,11 @@ def _append_composable_steps(
     component_content_map: "dict[Path, str] | None" = None,
 ) -> None:
     """Append numbered action steps for one composable to the output."""
+    import re
     from ..transform.composable_generator import mixin_stem_to_composable_name
     name = entry.composable.fn_name if entry.composable else mixin_stem_to_composable_name(entry.mixin_stem)
     comp_source = ""
-    comp_path = None
+    comp_path = entry.composable.file_path if entry.composable else None
     if composable_content_map:
         if entry.composable:
             comp_path = entry.composable.file_path
@@ -1524,12 +1599,14 @@ def _append_composable_steps(
         # Fallback: match by stem name for newly generated composables
         if not comp_source and composable_path_by_stem:
             # Try common naming: mixin "dashboardMixin" → composable "useDashboard"
-            import re
             stem = re.sub(r"[Mm]ixin$", "", entry.mixin_stem)
             use_name = f"use{stem[0].upper()}{stem[1:]}" if stem else ""
             if use_name in composable_path_by_stem:
                 comp_path = composable_path_by_stem[use_name]
                 comp_source = composable_content_map.get(comp_path, "")
+    # Fallback: read from disk for pre-existing unchanged composables
+    if not comp_source and comp_path and comp_path.exists():
+        comp_source = read_source(comp_path)
 
     # Separate actionable warnings from info-only, excluding auto-rewritten and skipped categories
     actionable = [w for w in entry.warnings
@@ -1559,10 +1636,31 @@ def _append_composable_steps(
 
         # Find line numbers for VS Code links
         line_refs = ""
-        if comp_source and comp_path:
+        # Special: name-collision needs declaration lines from BOTH composables
+        if w.category == "name-collision" and composable_content_map and composable_path_by_stem:
+            member_match = re.search(r"'(\w+)'", w.message)
+            if not member_match:
+                member_match = re.search(r"destructuring:\s*(\w+)", w.message)
+            member = member_match.group(1) if member_match else None
+            composable_names = list(dict.fromkeys(re.findall(r"`(use\w+)`", w.message)))
+            if member and composable_names:
+                refs = []
+                for cn in composable_names:
+                    cp = composable_path_by_stem.get(cn)
+                    if cp:
+                        cs = composable_content_map.get(cp, "")
+                        if not cs and cp.exists():
+                            cs = read_source(cp)
+                        decl = _find_declaration_line(cs, member)
+                        if decl:
+                            refs.append(_vscode_link(cp, decl, f"{cn} L{decl}"))
+                if refs:
+                    line_refs = f" ({', '.join(refs)})"
+        elif comp_source and comp_path:
             line_nums = _find_warning_lines(comp_source, w)
             if line_nums:
-                vscode_links = [_vscode_link(comp_path, ln, f"L{ln}") for ln in line_nums[:5]]
+                prefix = f"{name} " if name else ""
+                vscode_links = [_vscode_link(comp_path, ln, f"{prefix}L{ln}") for ln in line_nums[:5]]
                 line_refs = f" ({', '.join(vscode_links)})"
         # Fallback: link to mixin source lines
         if not line_refs and hasattr(entry, 'mixin_path'):
@@ -1581,7 +1679,14 @@ def _append_composable_steps(
 
     # Add kind-mismatch as a single combined step listing all mismatched members
     if kind_mismatch_warnings:
-        steps.append(_build_kind_mismatch_step(kind_mismatch_warnings, comp_source, comp_path))
+        mixin_source = ""
+        mixin_path = entry.mixin_path if hasattr(entry, 'mixin_path') else None
+        if mixin_path and isinstance(mixin_path, Path) and mixin_path.exists():
+            mixin_source = read_source(mixin_path)
+        steps.append(_build_kind_mismatch_step(
+            kind_mismatch_warnings, comp_source, comp_path,
+            comp_name=name, mixin_path=mixin_path, mixin_source=mixin_source,
+        ))
 
     # Add direct-mixin-access as individual steps with component line refs
     if direct_access_warnings:
@@ -1597,21 +1702,11 @@ def _append_composable_steps(
 
     # Info section — grouped by category for clarity
     if info_warnings:
-        unused = [w for w in info_warnings if w.category == "unused-mixin-member"]
         overridden = [w for w in info_warnings if w.category == "overridden-member"]
         other_info = [w for w in info_warnings
-                      if w.category not in ("unused-mixin-member", "overridden-member")]
+                      if w.category != "overridden-member"]
 
         a("")
-
-        if unused:
-            names = ", ".join(
-                f"`{w.message.split('`')[1]}`" if "`" in w.message
-                else f"`{w.message.split(chr(39))[1]}`" if "'" in w.message
-                else w.message
-                for w in unused
-            )
-            a(f"> **Unused members:** {names} — consider removing from composable return")
 
         if overridden:
             names = ", ".join(

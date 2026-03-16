@@ -370,7 +370,7 @@ class TestBuildActionPlan:
         assert "## Action Plan" in result
 
     def test_tiers_by_severity(self):
-        """Errors go to design decisions, warnings go to drop-in fixes."""
+        """Errors get red dot, warnings get yellow dot."""
         w_err = MigrationWarning("auth", "this.$emit", "msg", "act", None, "error")
         w_warn = MigrationWarning("router", "this.$router", "msg", "act", None, "warning")
         entry_err = MixinEntry(
@@ -387,12 +387,12 @@ class TestBuildActionPlan:
             (Path("fake/A.vue"), [entry_err]),
             (Path("fake/B.vue"), [entry_warn]),
         ])
-        assert "Design decisions" in result or "design" in result.lower()
-        assert "Drop-in fixes" in result or "drop-in" in result.lower()
+        assert "\U0001f534" in result  # red dot for error
+        assert "\U0001f7e1" in result  # yellow dot for warning
 
     def test_quick_wins_for_clean_entries(self):
         """Entries with only info warnings go to quick wins."""
-        w = MigrationWarning("auth", "unused-mixin-member", "msg", "act", None, "info")
+        w = MigrationWarning("auth", "overridden-member", "msg", "act", None, "info")
         entry = MixinEntry(
             local_name="authMixin", mixin_path=FIXTURES / "src/mixins/authMixin.js",
             mixin_stem="authMixin", members=MixinMembers(),
@@ -680,8 +680,8 @@ class TestSkippedComposableNotInActionPlan:
     """When a composable was skipped (not generated), the action plan should
     not include steps for it, even if it has info-level warnings."""
 
-    def test_skipped_lifecycle_only_with_unused_members_filtered(self):
-        """An entry with only skipped-lifecycle-only (warning) + unused-mixin-member (info)
+    def test_skipped_lifecycle_only_filtered(self):
+        """An entry with only skipped-lifecycle-only (warning)
         should NOT appear in the action plan."""
         entry = MixinEntry(
             local_name="localeMixin",
@@ -694,12 +694,6 @@ class TestSkippedComposableNotInActionPlan:
                     "Mixin 'localeMixin' was NOT migrated: lifecycle hooks",
                     "Manually convert lifecycle hooks",
                     None, "warning"),
-                MigrationWarning("localeMixin", "unused-mixin-member",
-                    "Member 'currentLocale' not used by any component",
-                    "", None, "info"),
-                MigrationWarning("localeMixin", "unused-mixin-member",
-                    "Member 'setLocale' not used by any component",
-                    "", None, "info"),
             ],
         )
 
@@ -738,8 +732,8 @@ class TestSkippedComposableNotInActionPlan:
         # But skipped-lifecycle-only should NOT appear as a step
         assert "skipped-lifecycle-only" not in report
 
-    def test_skipped_no_usage_with_info_also_filtered(self):
-        """An entry with only skipped-no-usage + info warnings should also be filtered."""
+    def test_skipped_no_usage_also_filtered(self):
+        """An entry with only skipped-no-usage warning should also be filtered."""
         entry = MixinEntry(
             local_name="emptyMixin",
             mixin_path=Path("emptyMixin.js"),
@@ -750,8 +744,6 @@ class TestSkippedComposableNotInActionPlan:
                 MigrationWarning("emptyMixin", "skipped-no-usage",
                     "No members referenced", "Remove mixin",
                     None, "warning"),
-                MigrationWarning("emptyMixin", "unused-mixin-member",
-                    "Member 'x' not used", "", None, "info"),
             ],
         )
 
@@ -797,3 +789,185 @@ class TestMixinFallbackLineRefs:
         assert "mixin L44" in report
         # Should NOT just say "mixin L1"
         assert "mixin L1" not in report
+
+
+# ---------------------------------------------------------------------------
+# Declaration-only line matching and name-collision line refs
+# ---------------------------------------------------------------------------
+
+class TestFindDeclarationLine:
+    """_find_declaration_line should return only declaration lines, not references."""
+
+    def test_const_ref_declaration(self):
+        from vue3_migration.reporting.markdown import _find_declaration_line
+        source = (
+            "// header comment\n"                          # L1
+            "import { ref } from 'vue'\n"                  # L2
+            "\n"                                           # L3
+            "export function useLoading() {\n"             # L4
+            "  const isLoading = ref(false)\n"             # L5
+            "  isLoading.value = true\n"                   # L6
+            "  return { isLoading }\n"                     # L7
+            "}\n"                                          # L8
+        )
+        assert _find_declaration_line(source, "isLoading") == 5
+
+    def test_function_declaration(self):
+        from vue3_migration.reporting.markdown import _find_declaration_line
+        source = (
+            "export function useSearch() {\n"              # L1
+            "  const query = ref('')\n"                    # L2
+            "  function search() {\n"                      # L3
+            "    console.log(query.value)\n"               # L4
+            "  }\n"                                        # L5
+            "  search()\n"                                 # L6
+            "  return { query, search }\n"                 # L7
+            "}\n"                                          # L8
+        )
+        assert _find_declaration_line(source, "search") == 3
+        assert _find_declaration_line(source, "query") == 2
+
+    def test_does_not_match_return_or_usage(self):
+        from vue3_migration.reporting.markdown import _find_declaration_line
+        source = (
+            "export function useFoo() {\n"                 # L1
+            "  return { bar }\n"                           # L2 — reference only
+            "}\n"                                          # L3
+        )
+        assert _find_declaration_line(source, "bar") is None
+
+    def test_skips_comment_lines(self):
+        from vue3_migration.reporting.markdown import _find_declaration_line
+        source = (
+            "// const isLoading = ref(false)\n"            # L1 — comment
+            "const isLoading = ref(true)\n"                # L2 — real
+        )
+        assert _find_declaration_line(source, "isLoading") == 2
+
+    def test_no_match_returns_none(self):
+        from vue3_migration.reporting.markdown import _find_declaration_line
+        source = "export function useFoo() { return {} }\n"
+        assert _find_declaration_line(source, "nonexistent") is None
+
+
+class TestFindWarningLinesDeclarationOnly:
+    """_find_warning_lines should return only declarations for member-name categories."""
+
+    def test_kind_mismatch_returns_declaration_only(self):
+        from vue3_migration.reporting.markdown import _find_warning_lines
+        source = (
+            "export function useVerifyKind() {\n"          # L1
+            "  const isLoading = ref(false)\n"             # L2
+            "  isLoading.value = true\n"                   # L3
+            "  return { isLoading }\n"                     # L4
+            "}\n"                                          # L5
+        )
+        w = MigrationWarning("x", "kind-mismatch",
+            "'isLoading' is methods in mixin but ref in composable",
+            "Fix type", None, "error")
+        lines = _find_warning_lines(source, w)
+        assert lines == [2], f"Expected [2], got {lines}"
+
+    def test_data_setup_collision_returns_declaration_only(self):
+        from vue3_migration.reporting.markdown import _find_warning_lines
+        source = (
+            "export function useState() {\n"              # L1
+            "  const config = ref({})\n"                   # L2
+            "  config.value.x = 1\n"                      # L3
+            "  return { config }\n"                        # L4
+            "}\n"                                          # L5
+        )
+        w = MigrationWarning("x", "data-setup-collision",
+            "'config' exists in both data() and composable",
+            "Remove from one", None, "warning")
+        lines = _find_warning_lines(source, w)
+        assert lines == [2], f"Expected [2], got {lines}"
+
+    def test_name_collision_returns_declaration(self):
+        from vue3_migration.reporting.markdown import _find_warning_lines
+        source = (
+            "export function useLoading() {\n"             # L1
+            "  const isLoading = ref(false)\n"             # L2
+            "  return { isLoading }\n"                     # L3
+            "}\n"                                          # L4
+        )
+        w = MigrationWarning("cross-composable", "name-collision",
+            "In `Comp`, member 'isLoading' is provided by both `useLoading` and `useStatus`.",
+            "Rename", None, "warning")
+        lines = _find_warning_lines(source, w)
+        assert lines == [2], f"Expected [2], got {lines}"
+
+    def test_name_collision_skipped_returns_declaration(self):
+        from vue3_migration.reporting.markdown import _find_warning_lines
+        source = (
+            "export function useStatus() {\n"              # L1
+            "  const isLoading = ref(false)\n"             # L2
+            "  return { isLoading }\n"                     # L3
+            "}\n"                                          # L4
+        )
+        w = MigrationWarning("cross-composable", "name-collision-skipped",
+            "In `Comp`, skipped destructuring: isLoading — already provided by useLoading",
+            "Verify", None, "warning")
+        lines = _find_warning_lines(source, w)
+        assert lines == [2], f"Expected [2], got {lines}"
+
+
+class TestNameCollisionCrossComposableLineRefs:
+    """Name-collision report steps should show declaration lines from BOTH composables."""
+
+    def test_collision_shows_both_composable_declarations(self, tmp_path):
+        loading_path = tmp_path / "useLoading.js"
+        loading_source = (
+            "import { ref } from 'vue'\n"
+            "export function useLoading() {\n"
+            "  const isLoading = ref(false)\n"             # L3
+            "  return { isLoading }\n"
+            "}\n"
+        )
+        loading_path.write_text(loading_source)
+
+        status_path = tmp_path / "useStatus.js"
+        status_source = (
+            "import { ref } from 'vue'\n"
+            "export function useStatus() {\n"
+            "  const isLoading = ref(false)\n"             # L3
+            "  return { isLoading }\n"
+            "}\n"
+        )
+        status_path.write_text(status_source)
+
+        from vue3_migration.models import FileChange
+        composable_changes = [
+            FileChange(file_path=loading_path, original_content="", new_content=loading_source),
+            FileChange(file_path=status_path, original_content="", new_content=status_source),
+        ]
+
+        entry = MixinEntry(
+            local_name="loadingMixin",
+            mixin_path=tmp_path / "loadingMixin.js",
+            mixin_stem="loadingMixin",
+            members=MixinMembers(data=["isLoading"]),
+            composable=ComposableCoverage(
+                file_path=loading_path,
+                fn_name="useLoading",
+                import_path="./composables/useLoading",
+                return_keys=["isLoading"],
+                all_identifiers=["isLoading"],
+            ),
+            warnings=[
+                MigrationWarning("cross-composable", "name-collision",
+                    "In `CollisionTest`, member 'isLoading' is provided by both "
+                    "`useLoading` and `useStatus`. The version from `useLoading` "
+                    "(first import) will be used.",
+                    "Rename 'isLoading' in one of the composables",
+                    None, "warning"),
+            ],
+        )
+
+        entries = [(Path("<standalone>"), [entry])]
+        report = build_action_plan(entries, composable_changes=composable_changes,
+                                   project_root=tmp_path)
+
+        # Should show declaration lines from BOTH composables
+        assert "useLoading L3" in report, f"Expected useLoading L3 in report:\n{report}"
+        assert "useStatus L3" in report, f"Expected useStatus L3 in report:\n{report}"

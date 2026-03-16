@@ -1054,65 +1054,6 @@ def _find_standalone_mixin_stems(
     return standalone
 
 
-def _warn_unused_mixin_members(
-    entries_by_component: list[tuple[Path, list[MixinEntry]]],
-) -> None:
-    """Attach warnings for mixin members not used by any component.
-
-    Groups entries by mixin_stem, unions all used_members across components,
-    and compares against members.all_names to find globally unused members.
-    Standalone entries (Path("<standalone>")) are skipped.
-    """
-    # Group entries by mixin_stem, excluding standalone entries
-    by_stem: dict[str, list[MixinEntry]] = {}
-    for comp_path, entry_list in entries_by_component:
-        if comp_path == Path("<standalone>"):
-            continue
-        for entry in entry_list:
-            by_stem.setdefault(entry.mixin_stem, []).append(entry)
-
-    for stem, stem_entries in by_stem.items():
-        # Union of used_members across all components for this mixin
-        all_used: set[str] = set()
-        for entry in stem_entries:
-            all_used.update(entry.used_members)
-
-        # Use the first entry's members as the canonical definition
-        members = stem_entries[0].members
-        all_defined = members.all_names
-        unused = [name for name in all_defined if name not in all_used]
-
-        if not unused:
-            continue
-
-        # Build a section lookup for readable messages
-        section_map: dict[str, str] = {}
-        for name in members.data:
-            section_map[name] = "data"
-        for name in members.computed:
-            section_map[name] = "computed"
-        for name in members.methods:
-            section_map[name] = "methods"
-        for name in members.watch:
-            section_map[name] = "watch"
-
-        warnings = []
-        for name in unused:
-            section = section_map.get(name, "unknown")
-            warnings.append(MigrationWarning(
-                mixin_stem=stem,
-                category="unused-mixin-member",
-                message=f"'{name}' ({section}) defined in mixin but not used by any component",
-                action_required=f"Review whether '{name}' is needed; remove from composable if unused",
-                line_hint=None,
-                severity="info",
-            ))
-
-        # Attach warnings to every entry for this mixin
-        for entry in stem_entries:
-            entry.warnings.extend(warnings)
-
-
 def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     """Main entry point: scan, plan composable patches, plan component injections.
 
@@ -1125,8 +1066,6 @@ def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
     for stem in _find_standalone_mixin_stems(project_root, config, known_stems):
         standalone = _build_standalone_mixin_entry(stem, project_root)
         entries.extend(standalone)
-
-    _warn_unused_mixin_members(entries)
 
     composable_changes = _build_all_composable_changes(entries, project_root, config)
     _remove_resolved_lifecycle_warnings(entries, composable_changes)
@@ -1292,10 +1231,6 @@ def run_scoped(
         if not any_composable_work:
             standalone = _build_standalone_mixin_entry(mixin_stem, project_root)
             entries.extend(standalone)
-
-    # Use all_entries for unused-member analysis so the union of used_members
-    # spans every component in the project, not just the scoped subset.
-    _warn_unused_mixin_members(all_entries)
 
     composable_changes = _build_all_composable_changes(entries, project_root, config)
     _remove_resolved_lifecycle_warnings(entries, composable_changes)
