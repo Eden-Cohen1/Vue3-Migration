@@ -1659,8 +1659,7 @@ def _append_composable_steps(
         elif comp_source and comp_path:
             line_nums = _find_warning_lines(comp_source, w)
             if line_nums:
-                prefix = f"{name} " if name else ""
-                vscode_links = [_vscode_link(comp_path, ln, f"{prefix}L{ln}") for ln in line_nums[:5]]
+                vscode_links = [_vscode_link(comp_path, ln, f"L{ln}") for ln in line_nums[:5]]
                 line_refs = f" ({', '.join(vscode_links)})"
         # Fallback: link to mixin source lines
         if not line_refs and hasattr(entry, 'mixin_path'):

@@ -137,6 +137,51 @@ def suppress_resolved_warnings(
     return result
 
 
+def suppress_covered_member_warnings(
+    warnings: list[MigrationWarning],
+    covered_members: set[str],
+    member_line_ranges: dict[str, tuple[int, int]],
+) -> list[MigrationWarning]:
+    """Drop warnings whose source lines fall inside a covered member's body.
+
+    A member is *covered* when the composable both declares and returns it,
+    meaning the mixin's implementation is entirely replaced.  Warnings that
+    originate from inside a covered member's line range are irrelevant.
+
+    For warnings with multiple ``source_lines``, only the lines inside
+    covered ranges are removed.  The warning is dropped only when *all*
+    its source lines are covered.
+    """
+    from dataclasses import replace as _replace
+
+    # Build the list of (start, end) ranges for covered members only
+    covered_ranges = [
+        member_line_ranges[name]
+        for name in covered_members
+        if name in member_line_ranges
+    ]
+    if not covered_ranges:
+        return warnings
+
+    def _in_covered(line: int) -> bool:
+        return any(start <= line <= end for start, end in covered_ranges)
+
+    result: list[MigrationWarning] = []
+    for w in warnings:
+        if w.source_lines:
+            remaining = [ln for ln in w.source_lines if not _in_covered(ln)]
+            if not remaining:
+                continue  # all occurrences are inside covered members
+            # Keep the warning but narrow it to uncovered lines (copy to avoid mutation)
+            result.append(_replace(w, source_lines=remaining, source_line=remaining[0]))
+        elif w.source_line is not None and _in_covered(w.source_line):
+            continue  # single-line warning inside a covered member
+        else:
+            result.append(w)
+
+    return result
+
+
 def collect_mixin_warnings(
     mixin_source: str,
     mixin_members: MixinMembers,

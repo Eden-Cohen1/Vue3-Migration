@@ -1,6 +1,6 @@
 {
   "name": "vue3-migration",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "description": "Automatically migrate Vue 2 mixins to Vue 3 composables — data, computed, methods, watchers, lifecycle hooks, and all",
   "bin": {
     "vue3-migration": "./bin/cli.js"

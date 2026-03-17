@@ -6,7 +6,7 @@ import os
 import re
 from pathlib import Path
 
-from .js_parser import extract_brace_block, extract_property_names, skip_non_code, strip_comments
+from .js_parser import extract_brace_block, extract_property_names, skip_non_code, skip_string, strip_comments
 
 VUE_LIFECYCLE_HOOKS = [
     "beforeCreate", "created", "beforeMount", "mounted",
@@ -143,6 +143,106 @@ def resolve_external_dep_sources(
             result[dep] = {"kind": "ambiguous", "detail": None, "sources": sources}
 
     return result
+
+
+def extract_member_line_ranges(source: str) -> dict[str, tuple[int, int]]:
+    """Map mixin member names to their (start_line, end_line) in source.
+
+    Scans ``methods``, ``computed``, and ``watch`` sections.  For each
+    property inside those sections, records the 1-based inclusive line
+    range from the property name through the closing ``}`` of its body.
+
+    Lifecycle hooks and ``data()`` are intentionally excluded.
+
+    Returns:
+        Dict mapping member name → (start_line, end_line), e.g.
+        ``{"submit": (10, 18), "total": (20, 22)}``.
+    """
+
+    def _line_at(offset: int) -> int:
+        return source[:offset].count("\n") + 1
+
+    ranges: dict[str, tuple[int, int]] = {}
+
+    for section in ("computed", "methods", "watch"):
+        match = re.search(rf"\b{section}\s*:\s*\{{", source)
+        if not match:
+            continue
+        section_open = match.end() - 1  # points at '{'
+        section_body = extract_brace_block(source, section_open)
+        # Absolute char offset in `source` where section_body begins
+        abs_start = section_open + 1
+
+        # Walk the section body using the same expect_key + depth approach
+        # as extract_property_names, but record positions too.
+        depth = 0
+        expect_key = True
+        pos = 0
+        while pos < len(section_body):
+            ch = section_body[pos]
+            new_pos, skipped = skip_non_code(section_body, pos)
+            if skipped:
+                pos = new_pos
+                continue
+            if ch in "{[(":
+                depth += 1
+            elif ch in "}])":
+                depth -= 1
+            elif depth == 0 and ch == ",":
+                expect_key = True
+                pos += 1
+                continue
+            elif depth == 0 and expect_key and (ch.isalpha() or ch in "_$'\""):
+                name: str | None = None
+                name_start = pos  # position of property name in section_body
+
+                if ch in ("'", '"'):
+                    end = skip_string(section_body, pos)
+                    rest = section_body[end:].lstrip()
+                    if rest and rest[0] in (":", "("):
+                        name = section_body[pos + 1 : end - 1]
+                    pos = end
+                else:
+                    m = re.match(r"(?:async\s+)?(\w+)", section_body[pos:])
+                    if m:
+                        name = m.group(1)
+                        pos += m.end()
+                    else:
+                        pos += 1
+                        continue
+
+                if name is None:
+                    expect_key = False
+                    continue
+
+                expect_key = False
+
+                # Scan forward from current pos for the opening '{'
+                scan = pos
+                while scan < len(section_body):
+                    sp, sk = skip_non_code(section_body, scan)
+                    if sk:
+                        scan = sp
+                        continue
+                    if section_body[scan] == "{":
+                        break
+                    if section_body[scan] == ",":
+                        # No brace block (e.g. shorthand or arrow without braces)
+                        break
+                    scan += 1
+
+                if scan < len(section_body) and section_body[scan] == "{":
+                    inner = extract_brace_block(section_body, scan)
+                    close_pos = scan + 1 + len(inner)  # '}' position in section_body
+                    ranges[name] = (
+                        _line_at(abs_start + name_start),
+                        _line_at(abs_start + close_pos),
+                    )
+                    pos = close_pos + 1
+                    continue
+            pos += 1
+
+    return ranges
 
 
 def extract_lifecycle_hooks(source: str) -> list[str]:
