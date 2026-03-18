@@ -1656,6 +1656,24 @@ def _append_composable_steps(
                             refs.append(_vscode_link(cp, decl, f"{cn} L{decl}"))
                 if refs:
                     line_refs = f" ({', '.join(refs)})"
+        elif w.category == "data-setup-collision" and w.source_file:
+            # Find the data() declaration line in post-migration content
+            member_match = re.search(r"'(\w+)'", w.message)
+            member = member_match.group(1) if member_match else None
+            post_content = (component_content_map or {}).get(w.source_file)
+            found_line = None
+            if member and post_content:
+                data_started = False
+                for i, line in enumerate(post_content.splitlines(), 1):
+                    if re.search(r'\bdata\s*\(\)', line):
+                        data_started = True
+                    if data_started and re.match(rf'\s+{re.escape(member)}\s*:', line):
+                        found_line = i
+                        break
+            if found_line:
+                line_refs = f" ({_vscode_link(w.source_file, found_line, f'L{found_line}')})"
+            elif w.source_line:
+                line_refs = f" ({_vscode_link(w.source_file, w.source_line, f'L{w.source_line}')})"
         elif comp_source and comp_path:
             line_nums = _find_warning_lines(comp_source, w)
             if line_nums:

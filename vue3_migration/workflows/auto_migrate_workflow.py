@@ -557,12 +557,21 @@ def plan_component_injections(
                     from ..models import MigrationWarning
                     comp_name = comp_path.stem
                     fn_name = entry.composable.fn_name if entry.composable else "composable"
+                    # Find where data() starts so we search declarations, not template usage
+                    data_start_line = None
+                    data_m = re.search(r'\bdata\s*(?:\(\)|:\s*function\s*\(\))\s*\{', comp_source)
+                    if data_m:
+                        data_start_line = comp_source[:data_m.start()].count('\n') + 1
+
                     for name in sorted(collisions):
-                        # Find line number of the data property in the component
+                        # Find line number of the data property declaration in data()
                         data_line = None
+                        start = data_start_line or 1
                         for i, line in enumerate(comp_source.splitlines(), 1):
+                            if i < start:
+                                continue
                             stripped = line.strip()
-                            if not stripped.startswith('//') and re.search(rf'\b{re.escape(name)}\b', stripped):
+                            if not stripped.startswith('//') and re.match(rf'{re.escape(name)}\s*:', stripped):
                                 data_line = i
                                 break
                         entry.warnings.append(MigrationWarning(
