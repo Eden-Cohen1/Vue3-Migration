@@ -26,24 +26,16 @@ HOOK_MAP: dict[str, str | None] = {
 _DESTROY_HOOKS = {"beforeDestroy", "destroyed", "beforeUnmount", "unmounted"}
 
 
-def extract_hook_body(mixin_source: str, hook_name: str, exclude_sections: bool = True) -> str | None:
-    """Extract the body of a named function/property from mixin source.
+def _build_exclusion_context(
+    mixin_source: str, exclude_sections: bool = True,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Build non-code spans and section exclusion zones for hook scanning.
 
-    Handles patterns:
-      hookName() { ... }
-      hookName: function() { ... }
-      hookName: () => { ... }
-
-    Safety measures:
-    - Skips hook name occurrences in strings/comments (R-1)
-    - Skips hook name occurrences inside methods/computed/data blocks (R-2)
-      (only when exclude_sections=True; set False to extract members
-       that live *inside* those blocks, e.g. a method or computed property)
-
-    Uses extract_brace_block for correct nested-brace handling.
-    Returns the text between the outer braces, or None if not found.
+    Returns (non_code_spans, excluded_zones) where each is a list of
+    (start, end) character offset ranges.  Used by both
+    ``extract_hook_body`` and ``extract_hook_params`` to skip false
+    positives inside strings, comments, and nested option blocks.
     """
-    # R-1: Build non-code spans to skip string/comment false positives
     non_code: list[tuple[int, int]] = []
     pos = 0
     while pos < len(mixin_source):
@@ -54,19 +46,15 @@ def extract_hook_body(mixin_source: str, hook_name: str, exclude_sections: bool 
         else:
             pos += 1
 
-    def _in_non_code(p: int) -> bool:
-        return any(s <= p < e for s, e in non_code)
-
-    # R-2: Build exclusion zones for methods/computed/data sub-blocks
     excluded: list[tuple[int, int]] = []
     if exclude_sections:
         export_match = re.search(r'export\s+default\s*\{', mixin_source)
         if export_match:
-            obj_start = export_match.end() - 1  # position of {
+            obj_start = export_match.end() - 1
             obj_body = extract_brace_block(mixin_source, obj_start)
-            content_start = obj_start + 1  # first char inside {}
+            content_start = obj_start + 1
 
-            for section in ('methods', 'computed', 'watch'):
+            for section in ('methods', 'computed', 'watch', 'directives'):
                 sm = re.search(rf'\b{section}\s*:\s*\{{', mixin_source[content_start:content_start + len(obj_body)])
                 if sm:
                     abs_brace = content_start + sm.end() - 1
@@ -79,15 +67,42 @@ def extract_hook_body(mixin_source: str, hook_name: str, exclude_sections: bool 
                 blk = extract_brace_block(mixin_source, abs_brace)
                 excluded.append((abs_brace, abs_brace + 1 + len(blk) + 1))
 
-    def _in_excluded(p: int) -> bool:
-        return any(s <= p < e for s, e in excluded)
+    return non_code, excluded
+
+
+def _should_skip(pos: int, source: str, non_code: list, excluded: list) -> bool:
+    """Check if a match position should be skipped (non-code, excluded, or dot-access)."""
+    if any(s <= pos < e for s, e in non_code):
+        return True
+    if any(s <= pos < e for s, e in excluded):
+        return True
+    if pos > 0 and source[pos - 1] == '.':
+        return True
+    return False
+
+
+def extract_hook_body(mixin_source: str, hook_name: str, exclude_sections: bool = True) -> str | None:
+    """Extract the body of a named function/property from mixin source.
+
+    Handles patterns:
+      hookName() { ... }
+      hookName: function() { ... }
+      hookName: () => { ... }
+
+    Safety measures:
+    - Skips hook name occurrences in strings/comments (R-1)
+    - Skips hook name occurrences inside methods/computed/data/directives blocks (R-2)
+      (only when exclude_sections=True; set False to extract members
+       that live *inside* those blocks, e.g. a method or computed property)
+
+    Uses extract_brace_block for correct nested-brace handling.
+    Returns the text between the outer braces, or None if not found.
+    """
+    non_code, excluded = _build_exclusion_context(mixin_source, exclude_sections)
 
     pattern = re.compile(rf'\b{re.escape(hook_name)}\b')
     for match in pattern.finditer(mixin_source):
-        if _in_non_code(match.start()) or _in_excluded(match.start()):
-            continue
-        # Skip property access patterns like this.hookName or obj.hookName
-        if match.start() > 0 and mixin_source[match.start() - 1] == '.':
+        if _should_skip(match.start(), mixin_source, non_code, excluded):
             continue
         pos = match.end()
         brace_pos = None
@@ -121,17 +136,66 @@ def extract_hook_body(mixin_source: str, hook_name: str, exclude_sections: bool 
     return None
 
 
+def extract_hook_body_with_offset(
+    mixin_source: str, hook_name: str,
+) -> tuple[str, int, int] | None:
+    """Like ``extract_hook_body`` but also returns character offsets.
+
+    Returns ``(body_text, hook_name_offset, brace_offset)`` or ``None``.
+    """
+    non_code, excluded = _build_exclusion_context(mixin_source)
+
+    pattern = re.compile(rf'\b{re.escape(hook_name)}\b')
+    for match in pattern.finditer(mixin_source):
+        if _should_skip(match.start(), mixin_source, non_code, excluded):
+            continue
+        pos = match.end()
+        brace_pos = None
+        limit = pos + _MAX_SIGNATURE_SCAN
+        while pos < min(len(mixin_source), limit):
+            new_pos, skipped = skip_non_code(mixin_source, pos)
+            if skipped:
+                pos = new_pos
+                continue
+            ch = mixin_source[pos]
+            if ch == '{':
+                brace_pos = pos
+                break
+            if ch == '(':
+                depth = 1
+                pos += 1
+                while pos < len(mixin_source) and depth > 0:
+                    if mixin_source[pos] == '(':
+                        depth += 1
+                    elif mixin_source[pos] == ')':
+                        depth -= 1
+                    pos += 1
+                continue
+            if ch in (',', '}'):
+                break
+            pos += 1
+        if brace_pos is not None:
+            body = extract_brace_block(mixin_source, brace_pos)
+            return body, match.start(), brace_pos
+    return None
+
+
 def extract_hook_params(mixin_source: str, hook_name: str) -> str:
     """Extract the parameter list of a lifecycle hook.
 
-    Scans for ``hookName(params)`` or ``hookName: function(params)`` and
-    returns the text between the parentheses.  Returns '' if no params found.
+    Uses the same exclusion logic as ``extract_hook_body`` so that hooks
+    inside ``directives``, ``methods``, etc. are skipped.
     """
-    m = re.search(
-        rf'\b{re.escape(hook_name)}\s*(?::\s*(?:async\s+)?function\s*)?\(([^)]*)\)',
-        mixin_source,
+    non_code, excluded = _build_exclusion_context(mixin_source)
+
+    pattern = re.compile(
+        rf'\b{re.escape(hook_name)}\s*(?::\s*(?:async\s+)?function\s*)?\(([^)]*)\)'
     )
-    return m.group(1).strip() if m else ""
+    for m in pattern.finditer(mixin_source):
+        if _should_skip(m.start(), mixin_source, non_code, excluded):
+            continue
+        return m.group(1).strip()
+    return ""
 
 
 def convert_lifecycle_hooks(

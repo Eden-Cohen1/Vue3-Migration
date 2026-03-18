@@ -245,6 +245,32 @@ def extract_member_line_ranges(source: str) -> dict[str, tuple[int, int]]:
     return ranges
 
 
+def extract_lifecycle_line_ranges(source: str, hooks: list[str] | None = None) -> dict[str, tuple[int, int]]:
+    """Map lifecycle hook names to their (start_line, end_line) in source.
+
+    Args:
+        source: Full mixin JS source.
+        hooks: Pre-computed list of hook names present (from ``extract_lifecycle_hooks``).
+               If None, all HOOK_MAP keys are checked.
+    """
+    from ..transform.lifecycle_converter import extract_hook_body_with_offset, HOOK_MAP
+
+    def _line_at(offset: int) -> int:
+        return source[:offset].count("\n") + 1
+
+    candidates = hooks if hooks is not None else list(HOOK_MAP.keys())
+    ranges: dict[str, tuple[int, int]] = {}
+    for hook in candidates:
+        result = extract_hook_body_with_offset(source, hook)
+        if result is None:
+            continue
+        body, hook_offset, brace_offset = result
+        start_line = _line_at(hook_offset)
+        end_line = _line_at(brace_offset + 1 + len(body))
+        ranges[hook] = (start_line, end_line)
+    return ranges
+
+
 def extract_lifecycle_hooks(source: str) -> list[str]:
     """Find Vue lifecycle hooks defined in the mixin source."""
     return [

@@ -19,7 +19,8 @@ from ..core.composable_analyzer import (
 from ..core.composable_search import find_composable_dirs, search_for_composable
 from ..core.file_resolver import compute_import_path, resolve_import_path
 from ..core.mixin_analyzer import (
-    extract_lifecycle_hooks, extract_member_line_ranges, extract_mixin_members,
+    extract_lifecycle_hooks, extract_lifecycle_line_ranges,
+    extract_member_line_ranges, extract_mixin_members,
     find_external_this_refs,
 )
 from ..core.warning_collector import (
@@ -45,12 +46,20 @@ def _suppress_covered_warnings(
     mixin_warnings: list[MigrationWarning],
     composable: ComposableCoverage,
     mixin_source: str,
+    hooks: list[str] | None = None,
 ) -> list[MigrationWarning]:
     """Suppress warnings from mixin member bodies already covered by the composable."""
     covered = set(composable.declared_identifiers) & set(composable.return_keys)
+    member_ranges = extract_member_line_ranges(mixin_source)
+    # Lifecycle hook bodies are auto-transformed (mounted → onMounted, etc.),
+    # so warnings inside them are covered even though hooks aren't "returned".
+    if hooks:
+        lifecycle_ranges = extract_lifecycle_line_ranges(mixin_source, hooks)
+        if lifecycle_ranges:
+            member_ranges.update(lifecycle_ranges)
+            covered.update(lifecycle_ranges.keys())
     if not covered:
         return mixin_warnings
-    member_ranges = extract_member_line_ranges(mixin_source)
     return suppress_covered_member_warnings(mixin_warnings, covered, member_ranges)
 
 
@@ -148,7 +157,7 @@ def _analyze_mixin_silent(
             entry.composable.declared_identifiers,
             comp_source,
         )
-        mixin_warnings = _suppress_covered_warnings(mixin_warnings, entry.composable, mixin_source)
+        mixin_warnings = _suppress_covered_warnings(mixin_warnings, entry.composable, mixin_source, entry.lifecycle_hooks)
 
         resolved_names = set(entry.composable.declared_identifiers)
         entry.external_deps = [d for d in entry.external_deps if d not in resolved_names]
@@ -1184,7 +1193,7 @@ def _build_standalone_mixin_entry(
             entry.composable.declared_identifiers,
             comp_source,
         )
-        mixin_warnings = _suppress_covered_warnings(mixin_warnings, entry.composable, mixin_source)
+        mixin_warnings = _suppress_covered_warnings(mixin_warnings, entry.composable, mixin_source, entry.lifecycle_hooks)
 
         resolved_names = set(entry.composable.declared_identifiers)
         entry.external_deps = [d for d in entry.external_deps if d not in resolved_names]
