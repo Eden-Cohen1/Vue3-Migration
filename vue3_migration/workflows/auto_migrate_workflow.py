@@ -139,6 +139,28 @@ def _analyze_mixin_silent(
                         source_context="composable",
                     ))
 
+            # Detect divergences for covered members
+            covered = [
+                m for m in used
+                if m not in entry.classification.missing
+                and m not in entry.classification.not_returned
+            ]
+            if covered:
+                from ..core.divergence_detector import detect_divergences
+                from ..core.mixin_analyzer import extract_member_line_ranges
+                ref_members = members.data + members.computed + members.watch
+                plain_members = members.methods
+                mixin_line_ranges = extract_member_line_ranges(mixin_source)
+                entry.divergences = detect_divergences(
+                    mixin_source=mixin_source,
+                    composable_source=comp_source,
+                    mixin_members=members,
+                    covered_members=covered,
+                    ref_members=ref_members,
+                    plain_members=plain_members,
+                    mixin_line_ranges=mixin_line_ranges,
+                )
+
     # Collect migration warnings
     mixin_warnings = collect_mixin_warnings(
         mixin_source, members, hooks,

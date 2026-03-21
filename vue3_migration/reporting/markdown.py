@@ -1231,17 +1231,23 @@ def build_action_plan(
         a("")
         a(f"These {len(quick_wins)} composable{'s are' if len(quick_wins) != 1 else ' is'} fully migrated. Apply the diff and test.\n")
 
+        # Show divergences for quick wins that have them
+        for e in quick_wins:
+            if e.divergences:
+                comp_path = e.composable.file_path if e.composable else None
+                a(_build_divergence_section(e, comp_path, project_root))
+
     # Drop-in fixes — per-composable numbered steps
     if dropin_fixes:
         a("---\n")
         for entry in dropin_fixes:
-            _append_composable_steps(a, entry, "\U0001f7e1", composable_content_map, composable_path_by_stem, component_content_map)
+            _append_composable_steps(a, entry, "\U0001f7e1", composable_content_map, composable_path_by_stem, component_content_map, project_root)
 
     # Design decisions — per-composable numbered steps
     if design_decisions:
         a("---\n")
         for entry in design_decisions:
-            _append_composable_steps(a, entry, "\U0001f534", composable_content_map, composable_path_by_stem, component_content_map)
+            _append_composable_steps(a, entry, "\U0001f534", composable_content_map, composable_path_by_stem, component_content_map, project_root)
 
     # Unused mixins — not imported by any component
     if unused_mixins:
@@ -1578,6 +1584,59 @@ def _build_direct_access_step(
     return f"Direct mixin access \u2014 breaks after migration{suffix}:\n{bullet_lines}"
 
 
+def _build_divergence_section(
+    entry: "MixinEntry",
+    composable_path: "Path | None",
+    project_root: "Path | None",
+) -> str:
+    """Build a markdown section showing divergences between mixin and composable members."""
+    if not entry.divergences:
+        return ""
+
+    lines: list[str] = []
+    # Reuse existing _rel_link() helper for file links
+    comp_link = _rel_link(composable_path, project_root) if project_root and composable_path else f"`{composable_path}`"
+    mixin_link = _rel_link(entry.mixin_path, project_root) if project_root else f"`{entry.mixin_path}`"
+
+    count = len(entry.divergences)
+    lines.append(f"\n#### Implementation Divergences — {count} member{'s differ' if count != 1 else ' differs'}")
+    lines.append(f"> {comp_link} · {mixin_link}\n")
+
+    for div in entry.divergences:
+        # Build location links
+        mixin_link_str = ""
+        if div.mixin_lines and entry.mixin_path:
+            s, e = div.mixin_lines
+            label = f"mixin L{s}" if s == e else f"mixin L{s}-{e}"
+            mixin_link_str = _vscode_link(entry.mixin_path, s, label)
+        comp_link_str = ""
+        if div.composable_lines and composable_path:
+            s, e = div.composable_lines
+            label = f"composable L{s}" if s == e else f"composable L{s}-{e}"
+            comp_link_str = _vscode_link(composable_path, s, label)
+
+        lines.append(f"<details>")
+        lines.append(f"<summary><b>{div.member_name}</b> — implementation differs</summary>\n")
+
+        # Mixin source
+        mixin_header = f"**Mixin** ({mixin_link_str}):" if mixin_link_str else "**Mixin:**"
+        lines.append(mixin_header)
+        lines.append(f"```js")
+        lines.append(div.mixin_source)
+        lines.append(f"```\n")
+
+        # Composable source
+        comp_header = f"**Composable** ({comp_link_str}):" if comp_link_str else "**Composable:**"
+        lines.append(comp_header)
+        lines.append(f"```js")
+        lines.append(div.composable_source)
+        lines.append(f"```")
+
+        lines.append(f"\n</details>\n")
+
+    return "\n".join(lines)
+
+
 def _append_composable_steps(
     a: "callable",
     entry: MixinEntry,
@@ -1585,6 +1644,7 @@ def _append_composable_steps(
     composable_content_map: "dict[Path, str] | None" = None,
     composable_path_by_stem: "dict[str, Path] | None" = None,
     component_content_map: "dict[Path, str] | None" = None,
+    project_root: "Path | None" = None,
 ) -> None:
     """Append numbered action steps for one composable to the output."""
     import re
@@ -1736,6 +1796,10 @@ def _append_composable_steps(
 
         for w in other_info:
             a(f"- \u2139\ufe0f {w.message}")
+
+    # Divergence section
+    if entry.divergences:
+        a(_build_divergence_section(entry, comp_path, project_root))
 
     a("")
 

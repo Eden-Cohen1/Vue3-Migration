@@ -166,6 +166,17 @@ class ComposableCoverage:
 
 
 @dataclass
+class MemberDivergence:
+    """A mixin member whose composable implementation differs from the mixin logic."""
+    member_name: str
+    mixin_kind: str                        # "data" | "computed" | "methods" | "watch"
+    mixin_source: str                      # Raw mixin member source code
+    composable_source: str                 # Raw composable member source code
+    mixin_lines: tuple[int, int] | None = None      # (start, end) 1-based in mixin file
+    composable_lines: tuple[int, int] | None = None  # (start, end) 1-based in composable file
+
+
+@dataclass
 class MixinEntry:
     """Complete analysis of a single mixin used by a component."""
     local_name: str
@@ -190,6 +201,8 @@ class MixinEntry:
     """Migration warnings detected during analysis and generation."""
     external_deps: list[str] = field(default_factory=list)
     """External this.X references not defined in this mixin."""
+    divergences: list[MemberDivergence] = field(default_factory=list)
+    """Members where composable implementation diverges from mixin."""
 
     def compute_status(self) -> MigrationStatus:
         """Determine the migration status based on analysis results."""
