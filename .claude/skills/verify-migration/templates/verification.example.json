@@ -1,0 +1,49 @@
+{
+  "_doc": "Example manifest. Copy to <env>/verification.json and edit. 'fixture' is the pristine project root (relative to repo root). Each run resets a fresh copy and runs the real CLI applied. Expectations are substring checks on the tool's migration report and on named output files (paths relative to the project root). For a bugfix, put the OLD buggy text in *_absent and the correct behavior in *_contains.",
+  "fixture": "tests/fixtures/scoping_project",
+  "out": "tests/fixtures/.verify/scoping_project",
+  "runs": [
+    {
+      "name": "side-effects-drops-unused-emit",
+      "command": "component",
+      "target": "src/components/SideEffects.vue",
+      "expect": {
+        "report_contains": ["Scoped out", "notify (this.$emit)", "no manual steps"],
+        "report_absent": ["Replace `this.$emit`"],
+        "files": {
+          "src/composables/useSideEffects.js": {
+            "contains": ["function tick(", "0 issues"],
+            "absent": ["$emit", "$refs", "$router"]
+          },
+          "src/components/SideEffects.vue": {
+            "contains": ["useSideEffects()"],
+            "absent": ["mixins:"]
+          }
+        }
+      }
+    },
+    {
+      "name": "used-emit-is-kept-and-flagged",
+      "command": "component",
+      "target": "src/components/UsedEmit.vue",
+      "expect": {
+        "files": {
+          "src/composables/useUsedEmit.js": {
+            "contains": ["function announce(", "$emit"]
+          }
+        }
+      }
+    },
+    {
+      "name": "side-effect-only-mixin-migrates-bare",
+      "command": "component",
+      "target": "src/components/SideEffectOnly.vue",
+      "expect": {
+        "files": {
+          "src/composables/useSideEffectOnly.js": {"contains": ["onMounted("]},
+          "src/components/SideEffectOnly.vue": {"contains": ["useSideEffectOnly()"], "absent": ["mixins:"]}
+        }
+      }
+    }
+  ]
+}

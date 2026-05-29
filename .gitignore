@@ -41,8 +41,9 @@ Thumbs.db
 .env
 .env.*
 
-# Claude Code
-.claude/
+# Claude Code (ignore local config, but track shared project skills)
+.claude/*
+!.claude/skills/
 
 # Git worktrees
 .worktrees/
@@ -66,3 +67,5 @@ npm-debug.log*
 uv.lock
 
 .todo
+# verify-migration skill review output (reproducible)
+tests/fixtures/.verify/
