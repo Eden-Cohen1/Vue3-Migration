@@ -33,6 +33,7 @@ from ..models import (
 )
 from ..transform.composable_generator import (
     generate_composable_from_mixin, mixin_stem_to_composable_name,
+    compute_scoped_members,
 )
 from ..transform.composable_patcher import patch_composable
 from ..transform.injector import (
@@ -345,12 +346,18 @@ def plan_composable_patches(
 def plan_new_composables(
     entries_by_component: list[tuple[Path, list[MixinEntry]]],
     project_root: Path,
+    scope_to_used: bool = False,
 ) -> list[FileChange]:
     """Generate new composable files for BLOCKED_NO_COMPOSABLE entries.
 
     For each unique mixin that has no composable at all, scaffolds a new
     composable file in the project's first composables directory.
     Returns FileChange objects with original_content="" (new files).
+
+    When ``scope_to_used`` is True (single-component flow), the generated
+    composable contains only the members the component needs — the transitive
+    closure of its used members plus lifecycle-referenced members — instead of
+    every mixin member. Transitive-only helpers are declared but kept private.
     """
     composable_dirs = find_composable_dirs(project_root)
     if composable_dirs:
@@ -374,14 +381,71 @@ def plan_new_composables(
             fn_name = mixin_stem_to_composable_name(entry.mixin_stem)
             composable_path = target_dir / f"{fn_name}.js"
 
+            gen_kwargs = {}
+            if scope_to_used:
+                scoped, return_names = compute_scoped_members(
+                    mixin_source, entry.members, entry.used_members,
+                    entry.lifecycle_hooks,
+                )
+                gen_kwargs = {
+                    "mixin_members": scoped,
+                    "return_members": return_names,
+                    "full_members": entry.members,
+                }
+                # The generated composable only contains the scoped members.
+                # Drop analysis warnings for members that were scoped out so the
+                # migration report matches the clean composable, and record one
+                # info note listing what was dropped (safety trail).
+                dropped = [m for m in entry.members.all_names
+                           if m not in set(scoped.all_names)]
+                if dropped:
+                    from ..core.mixin_analyzer import extract_member_line_ranges
+                    from ..core.warning_collector import suppress_covered_member_warnings
+                    from ..models import MigrationWarning
+                    ranges = extract_member_line_ranges(mixin_source)
+
+                    def _label(name: str) -> str:
+                        if name not in ranges:
+                            return name
+                        s, e = ranges[name]
+                        cats = sorted({
+                            w.category for w in entry.warnings
+                            for ln in (w.source_lines or
+                                       ([w.source_line] if w.source_line else []))
+                            if s <= ln <= e
+                        })
+                        return f"{name} ({', '.join(cats)})" if cats else name
+
+                    labels = [_label(m) for m in dropped]
+                    entry.warnings = suppress_covered_member_warnings(
+                        entry.warnings, set(dropped), ranges,
+                    )
+                    entry.warnings.append(MigrationWarning(
+                        mixin_stem=entry.mixin_stem,
+                        category="members-dropped-unused",
+                        message=(
+                            f"{len(dropped)} mixin member(s) not migrated — unused "
+                            f"by this component: {', '.join(labels)}."
+                        ),
+                        action_required=(
+                            "If the component relied on these via the mixin, "
+                            "migrate them manually."
+                        ),
+                        line_hint=None,
+                        severity="info",
+                        source_context="mixin",
+                    ))
+            else:
+                gen_kwargs = {"mixin_members": entry.members}
+
             content = generate_composable_from_mixin(
                 mixin_source=mixin_source,
                 mixin_stem=entry.mixin_stem,
-                mixin_members=entry.members,
                 lifecycle_hooks=entry.lifecycle_hooks,
                 mixin_path=entry.mixin_path,
                 composable_path=composable_path,
                 project_root=project_root,
+                **gen_kwargs,
             )
             changes.append(FileChange(
                 file_path=composable_path,
@@ -639,14 +703,23 @@ def plan_component_injections(
         for entry in ready_entries:
             injectable = list(entry.classification.injectable if entry.classification else entry.used_members)
 
-            # Augment injectable with members referenced in lifecycle hook bodies —
-            # the composable contains the hooks and needs these members destructured.
+            # Augment injectable with lifecycle-hook-referenced members that the
+            # composable actually RETURNS, so the component can destructure them.
+            # Members the composable keeps private (e.g. helpers scoped out of the
+            # return in single-component mode) run inside the composable's own
+            # hook closure and must NOT be destructured — doing so would bind
+            # `undefined`. In full/mixin mode every member is returned, so this
+            # filter is a no-op and behavior is unchanged.
             lifecycle_members: list[str] = []
             if entry.lifecycle_hooks and entry.composable:
                 mixin_content = read_source(entry.mixin_path)
-                lifecycle_members = find_lifecycle_referenced_members(
-                    mixin_content, entry.lifecycle_hooks, entry.members.all_names
-                )
+                returned_keys = set(entry.composable.return_keys)
+                lifecycle_members = [
+                    m for m in find_lifecycle_referenced_members(
+                        mixin_content, entry.lifecycle_hooks, entry.members.all_names
+                    )
+                    if m in returned_keys
+                ]
                 for m in lifecycle_members:
                     if m not in injectable:
                         injectable.append(m)
@@ -984,14 +1057,19 @@ def _build_all_composable_changes(
     entries: list[tuple[Path, list[MixinEntry]]],
     project_root: Path,
     config: MigrationConfig | None = None,
+    scope_to_used: bool = False,
 ) -> list[FileChange]:
-    """Combine patched-existing + newly-generated composable changes."""
+    """Combine patched-existing + newly-generated composable changes.
+
+    ``scope_to_used`` is forwarded to generation (single-component flow) so a
+    newly-created composable only contains the members the component needs.
+    """
     if config and config.regenerate:
         regenerated = plan_regenerated_composables(entries, project_root)
-        generated = plan_new_composables(entries, project_root)
+        generated = plan_new_composables(entries, project_root, scope_to_used=scope_to_used)
         return regenerated + generated
     patched = plan_composable_patches(entries, project_root=project_root)
-    generated = plan_new_composables(entries, project_root)
+    generated = plan_new_composables(entries, project_root, scope_to_used=scope_to_used)
     changes = patched + generated
 
     # Inject kind-mismatch inline comments into existing composables that
@@ -1292,7 +1370,11 @@ def run_scoped(
             standalone = _build_standalone_mixin_entry(mixin_stem, project_root)
             entries.extend(standalone)
 
-    composable_changes = _build_all_composable_changes(entries, project_root, config)
+    # Single-component flow: scope generated composables to what the component
+    # needs. Mixin-stem flow keeps full generation (the composable is shared).
+    composable_changes = _build_all_composable_changes(
+        entries, project_root, config, scope_to_used=component_path is not None,
+    )
     _remove_resolved_lifecycle_warnings(entries, composable_changes)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(

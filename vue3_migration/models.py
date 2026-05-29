@@ -206,10 +206,19 @@ class MixinEntry:
 
     def compute_status(self) -> MigrationStatus:
         """Determine the migration status based on analysis results."""
-        if not self.used_members:
+        if not self.used_members and not self.lifecycle_hooks:
+            # Nothing to migrate: the component references no members and the
+            # mixin contributes no lifecycle side effects.
             self.status = MigrationStatus.READY
         elif not self.composable or not self.classification:
+            # No matching composable — one must be generated. This also covers
+            # side-effect-only mixins (no used members, but lifecycle hooks that
+            # must move into a composable rather than being silently dropped).
             self.status = MigrationStatus.BLOCKED_NO_COMPOSABLE
+        elif not self.used_members:
+            # Lifecycle-only mixin whose composable already exists: no members
+            # to inject, so it's ready (the patch path handles hook coverage).
+            self.status = MigrationStatus.READY
         elif self.classification.is_ready:
             self.status = MigrationStatus.READY
         elif self.classification.truly_missing:

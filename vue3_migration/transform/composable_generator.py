@@ -3,10 +3,13 @@ import re
 import textwrap
 from pathlib import Path
 from ..core.js_parser import extract_brace_block
-from ..core.mixin_analyzer import extract_mixin_imports, filter_imports_by_usage, rewrite_import_path
+from ..core.mixin_analyzer import (
+    extract_mixin_imports, filter_imports_by_usage, rewrite_import_path,
+    extract_member_line_ranges,
+)
 from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
-    suppress_resolved_warnings,
+    suppress_resolved_warnings, suppress_covered_member_warnings,
 )
 from ..models import MigrationWarning, MixinMembers
 from .composable_patcher import (
@@ -128,6 +131,107 @@ def _normalize_indentation(body: str, indent: str) -> str:
     return "\n".join(normalized)
 
 
+def compute_scoped_members(
+    mixin_source: str,
+    mixin_members: MixinMembers,
+    used_members: list[str],
+    lifecycle_hooks: list[str],
+) -> tuple[MixinMembers, list[str]]:
+    """Compute the minimal set of mixin members a single component actually needs.
+
+    Used by the single-component migration flow to avoid emitting every mixin
+    member into a freshly generated composable.
+
+    Returns ``(scoped_members, return_names)`` where:
+
+    - ``scoped_members`` is a ``MixinMembers`` containing the transitive closure of
+      members reachable from the component's ``used_members`` plus any member
+      referenced by a preserved lifecycle hook body or by the handler body of a
+      watcher that survives scoping. Original section order is kept.
+    - ``return_names`` is the list of directly-used members present in the closure
+      (order-preserved, dotted watch keys excluded) — exactly what belongs in the
+      composable's ``return {...}``. Transitive-only helpers are declared but kept
+      private (omitted here).
+    """
+    from .lifecycle_converter import extract_hook_body
+
+    all_names = mixin_members.all_names
+    name_set = set(all_names)
+    methods_set = set(mixin_members.methods)
+    computed_set = set(mixin_members.computed)
+    data_set = set(mixin_members.data)
+
+    methods_body = _extract_section_body(mixin_source, "methods")
+    computed_body = _extract_section_body(mixin_source, "computed")
+
+    # A surviving watcher's handler body is emitted into the composable, so its
+    # references must be part of the closure too (a watcher fires when its target
+    # member changes, so map each handler to its target's first path segment).
+    watch_section = _extract_watch_section_body(mixin_source)
+    watch_handlers: dict[str, str] = {}
+    if watch_section:
+        for w in mixin_members.watch:
+            entry = parse_watch_entry(watch_section, w)
+            if entry and entry.get("body"):
+                target = w.split('.')[0]
+                watch_handlers[target] = (
+                    watch_handlers.get(target, "") + "\n" + entry["body"]
+                )
+
+    def body_of(name: str) -> str | None:
+        if name in methods_set:
+            return _extract_func_body(methods_body, name) if methods_body else None
+        if name in computed_set:
+            return _extract_func_body(computed_body, name) if computed_body else None
+        if name in data_set:
+            return _extract_data_default(mixin_source, name)
+        return None
+
+    def refs_in(text: str | None) -> set[str]:
+        if not text:
+            return set()
+        return {
+            n for n in all_names
+            if re.search(rf"(?<!\w){re.escape(n)}(?!\w)", text)
+        }
+
+    def refs_of(name: str) -> set[str]:
+        """References from a member's own body plus, if it's a watch target, the
+        watcher handler that gets emitted alongside it."""
+        refs = refs_in(body_of(name))
+        if name in watch_handlers:
+            refs |= refs_in(watch_handlers[name])
+        return refs
+
+    # Seed: component-used members that exist in this mixin, plus any member
+    # referenced by a (always-preserved) lifecycle hook body.
+    closure: set[str] = {m for m in used_members if m in name_set}
+    for hook in lifecycle_hooks:
+        closure |= refs_in(extract_hook_body(mixin_source, hook))
+
+    # Fixpoint expansion: a member's body (or its watcher handler) may reference
+    # other members it depends on; pull those in too.
+    queue = list(closure)
+    while queue:
+        name = queue.pop()
+        for ref in refs_of(name):
+            if ref not in closure:
+                closure.add(ref)
+                queue.append(ref)
+
+    scoped = MixinMembers(
+        data=[n for n in mixin_members.data if n in closure],
+        computed=[n for n in mixin_members.computed if n in closure],
+        methods=[n for n in mixin_members.methods if n in closure],
+        # A watch entry targets a data/computed member (dotted keys → first segment).
+        watch=[w for w in mixin_members.watch if w.split('.')[0] in closure],
+    )
+
+    used_set = set(used_members)
+    return_names = [n for n in scoped.all_names if n in used_set]
+    return scoped, return_names
+
+
 def mixin_stem_to_composable_name(stem: str) -> str:
     """Convert a mixin file stem to a Vue 3 composable function name.
 
@@ -152,6 +256,8 @@ def generate_composable_from_mixin(
     mixin_path: Path | None = None,
     composable_path: Path | None = None,
     project_root: "Path | None" = None,
+    return_members: "list[str] | None" = None,
+    full_members: "MixinMembers | None" = None,
 ) -> str:
     """Generate a complete Vue 3 composable file from a mixin.
 
@@ -165,11 +271,19 @@ def generate_composable_from_mixin(
       - lifecycle (created/beforeCreate) inlined directly in function body
       - lifecycle (mounted/etc) wrapped in onMounted(() => { ... })
     - return { all members }
+
+    When ``return_members`` is given (single-component scoped mode), only those
+    members are returned (transitive-only helpers stay private) and ``full_members``
+    supplies the complete member kind sets for correct ``this.x`` rewriting.
     """
     fn_name = mixin_stem_to_composable_name(mixin_stem)
     factory_params = _extract_factory_params(mixin_source)
-    ref_members = mixin_members.data + mixin_members.computed + mixin_members.watch
-    plain_members = mixin_members.methods
+    # `this.x` rewriting must classify every referenced member (refs vs methods),
+    # including private transitive-only helpers, so source the kind sets from the
+    # FULL member set when scoping is active. Defaults to mixin_members (full mode).
+    member_src = full_members or mixin_members
+    ref_members = member_src.data + member_src.computed + member_src.watch
+    plain_members = member_src.methods
 
     methods_body = _extract_section_body(mixin_source, "methods")
     computed_body = _extract_section_body(mixin_source, "computed")
@@ -300,9 +414,11 @@ def generate_composable_from_mixin(
     if body_parts and body_parts[-1] != "":
         body_parts.append("")
 
-    # Return statement
-    all_members = mixin_members.all_names
-    return_items = ", ".join(all_members)
+    # Return statement. In scoped (single-component) mode, return only the
+    # directly-used members; transitive-only helpers stay private. Default
+    # (None) returns every declared member — preserves full/mixin-mode output.
+    return_list = return_members if return_members is not None else mixin_members.all_names
+    return_items = ", ".join(return_list)
     body_parts.append(f"{indent}return {{ {return_items} }}")
 
     body = "\n".join(body_parts)
@@ -393,6 +509,16 @@ def generate_composable_from_mixin(
         mixin_path=mixin_path, project_root=project_root,
     )
     warnings = suppress_resolved_warnings(warnings, [], result)
+
+    # In scoped (single-component) mode, members that were scoped out aren't in
+    # the generated composable — so drop their warnings, which would otherwise
+    # inflate the confidence header with manual steps for code that isn't here.
+    if full_members is not None:
+        dropped_members = set(full_members.all_names) - set(mixin_members.all_names)
+        if dropped_members:
+            warnings = suppress_covered_member_warnings(
+                warnings, dropped_members, extract_member_line_ranges(mixin_source),
+            )
 
     # Add nested-lifecycle warnings from post-generation validation
     for msg in _nested_lifecycle_warnings:

@@ -1,4 +1,5 @@
 # tests/test_composable_generator.py
+import re
 from vue3_migration.core.mixin_analyzer import extract_lifecycle_hooks, extract_mixin_members
 from vue3_migration.models import MixinMembers
 from vue3_migration.transform.composable_generator import (
@@ -979,3 +980,193 @@ export default function createMixin(x, y = 10, z = 'hello') {
         members = MixinMembers(data=['a', 'b'], computed=[], methods=[], watch=[])
         result = generate_composable_from_mixin(mixin, 'testMixin', members, [])
         assert "export function useTest(x, y = 10, z = 'hello')" in result
+
+
+class TestComputeScopedMembers:
+    """Single-component scoping: only emit members the component needs, plus
+    their transitive internal dependencies. See compute_scoped_members."""
+
+    SCOPE_MIXIN = """
+export default {
+  data() {
+    return {
+      results: [],
+      query: '',
+      page: 1,
+    }
+  },
+  computed: {
+    hasResults() {
+      return this.results.length > 0
+    },
+  },
+  methods: {
+    runSearch() {
+      const q = this.buildQuery()
+      this.results = q
+    },
+    buildQuery() {
+      return this.query + this.page
+    },
+    unusedEmit() {
+      this.$emit('thing')
+    },
+  },
+}
+"""
+
+    MEMBERS = MixinMembers(
+        data=["results", "query", "page"],
+        computed=["hasResults"],
+        methods=["runSearch", "buildQuery", "unusedEmit"],
+    )
+
+    def _scope(self, used, hooks=None):
+        from vue3_migration.transform.composable_generator import compute_scoped_members
+        return compute_scoped_members(self.SCOPE_MIXIN, self.MEMBERS, used, hooks or [])
+
+    def test_transitive_helper_pulled_in_but_private(self):
+        # Component uses only runSearch; it internally calls buildQuery (which
+        # reads query + page). All of those must be declared; only runSearch returned.
+        scoped, return_names = self._scope(["runSearch"])
+        assert "runSearch" in scoped.methods
+        assert "buildQuery" in scoped.methods          # transitive dep declared
+        assert "query" in scoped.data and "page" in scoped.data
+        assert return_names == ["runSearch"]           # helper stays private
+
+    def test_unused_emit_method_excluded(self):
+        # The unused this.$emit method must not appear at all (no clutter/warnings).
+        scoped, return_names = self._scope(["runSearch"])
+        assert "unusedEmit" not in scoped.methods
+        assert "unusedEmit" not in return_names
+
+    def test_directly_used_member_is_returned(self):
+        scoped, return_names = self._scope(["results", "hasResults"])
+        assert set(return_names) == {"results", "hasResults"}
+        # hasResults reads results, which is already used; no extra deps.
+        assert "results" in scoped.data
+        assert "hasResults" in scoped.computed
+
+    def test_lifecycle_referenced_member_forced_into_closure(self):
+        # A created() hook that calls runSearch must pull runSearch (and its
+        # deps) into the closure even though the component never references it.
+        from vue3_migration.transform.composable_generator import compute_scoped_members
+        hook_mixin = """
+export default {
+  data() { return { results: [], query: '' } },
+  methods: {
+    runSearch() { this.results = this.query },
+    other() { return 1 },
+  },
+  created() {
+    this.runSearch()
+  },
+}
+"""
+        members = MixinMembers(data=["results", "query"], methods=["runSearch", "other"])
+        scoped, return_names = compute_scoped_members(
+            hook_mixin, members, used_members=[], lifecycle_hooks=["created"],
+        )
+        assert "runSearch" in scoped.methods       # forced by hook
+        assert "query" in scoped.data              # transitive dep of runSearch
+        assert "other" not in scoped.methods       # unrelated, dropped
+        assert return_names == []                  # not used by component → private
+
+    def test_watch_included_only_when_target_in_closure(self):
+        watch_mixin = """
+export default {
+  data() { return { a: 1, b: 2 } },
+  watch: {
+    a() { console.log('a changed') },
+    b() { console.log('b changed') },
+  },
+}
+"""
+        members = MixinMembers(data=["a", "b"], watch=["a", "b"])
+        from vue3_migration.transform.composable_generator import compute_scoped_members
+        scoped, _ = compute_scoped_members(watch_mixin, members, used_members=["a"], lifecycle_hooks=[])
+        assert "a" in scoped.watch
+        assert "b" not in scoped.watch             # target not in closure
+
+    def test_watch_handler_body_pulls_in_referenced_members(self):
+        # A surviving watcher's handler body is emitted into the composable, so
+        # the members it references must be in the closure (and declared private),
+        # else the generated watch() references undeclared symbols.
+        watch_ref_mixin = """
+export default {
+  data() { return { keyword: '', results: [] } },
+  methods: {
+    runSearch() { this.results = [this.keyword] },
+  },
+  watch: {
+    keyword() { this.runSearch() },
+  },
+}
+"""
+        members = MixinMembers(
+            data=["keyword", "results"], methods=["runSearch"], watch=["keyword"],
+        )
+        from vue3_migration.transform.composable_generator import compute_scoped_members
+        scoped, return_names = compute_scoped_members(
+            watch_ref_mixin, members, used_members=["keyword"], lifecycle_hooks=[],
+        )
+        assert "keyword" in scoped.watch           # watcher kept
+        assert "runSearch" in scoped.methods       # pulled in via watch handler
+        assert "results" in scoped.data            # transitive dep of runSearch
+        assert return_names == ["keyword"]         # helpers stay private
+
+        result = generate_composable_from_mixin(
+            watch_ref_mixin, "searchMixin", scoped, [],
+            return_members=return_names, full_members=members,
+        )
+        # The emitted watcher references runSearch, which must now be declared.
+        assert "function runSearch(" in result
+        assert "watch(keyword" in result
+
+    def test_scoped_generation_omits_unused_and_keeps_helper_private(self):
+        # End-to-end through the generator with the scoped params.
+        scoped, return_names = self._scope(["runSearch"])
+        result = generate_composable_from_mixin(
+            self.SCOPE_MIXIN, "searchMixin", scoped, [],
+            return_members=return_names, full_members=self.MEMBERS,
+        )
+        assert "function runSearch(" in result
+        assert "function buildQuery(" in result     # declared
+        assert "unusedEmit" not in result           # fully dropped
+        # buildQuery is private: in declarations but not in the return object.
+        m = re.search(r"return \{([^}]*)\}", result)
+        assert m and "runSearch" in m.group(1)
+        assert "buildQuery" not in m.group(1)
+
+    def test_dropped_member_warning_excluded_from_header(self):
+        # A $emit method NOT used by the component must be dropped AND must not
+        # inflate the composable's confidence header with manual steps for code
+        # that was never generated (regression for the report/header lie).
+        from vue3_migration.transform.composable_generator import compute_scoped_members
+        mixin = """
+export default {
+  data() { return { ticks: 0 } },
+  methods: {
+    tick() { this.ticks++ },
+    notify() { this.$emit('x') },
+  },
+}
+"""
+        members = MixinMembers(data=["ticks"], methods=["tick", "notify"])
+        scoped, return_names = compute_scoped_members(mixin, members, ["tick", "ticks"], [])
+        assert "notify" not in scoped.methods
+        result = generate_composable_from_mixin(
+            mixin, "sideMixin", scoped, [],
+            return_members=return_names, full_members=members,
+        )
+        assert "$emit" not in result          # dropped method's code is gone
+        assert "0 issues" in result.splitlines()[0]  # header is clean, no fake steps
+
+    def test_default_full_path_returns_all_members(self):
+        # return_members=None preserves the original behavior (all members).
+        result = generate_composable_from_mixin(
+            self.SCOPE_MIXIN, "searchMixin", self.MEMBERS, [],
+        )
+        m = re.search(r"return \{([^}]*)\}", result)
+        returned = {x.strip() for x in m.group(1).split(",")}
+        assert returned == set(self.MEMBERS.all_names)

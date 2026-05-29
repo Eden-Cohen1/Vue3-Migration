@@ -225,6 +225,30 @@ def write_migration_report(plan: MigrationPlan, project_root: Path) -> Path:
             sections.append(action_plan)
             sections.append("")
 
+        # Section 2b: Members scoped out (single-component mode info trail).
+        # Only present when scoping dropped unused members; full-project mode
+        # keeps every member, so this stays empty there.
+        dropped_msgs: list[str] = []
+        _seen_d: set[str] = set()
+        for _cp, _el in plan.entries_by_component:
+            for _e in _el:
+                if _e.mixin_stem in _seen_d:
+                    continue
+                for w in _e.warnings:
+                    if w.category == "members-dropped-unused":
+                        _seen_d.add(_e.mixin_stem)
+                        dropped_msgs.append(w.message)
+                        break
+        if dropped_msgs:
+            scoped_sec = [
+                "## Scoped out — unused by this component\n",
+                "Omitted from the generated composable to keep it minimal. If the "
+                "component relied on these via the mixin, migrate them manually.\n",
+            ]
+            scoped_sec.extend(f"- {m}" for m in dropped_msgs)
+            sections.append("\n".join(scoped_sec))
+            sections.append("")
+
         # Section 3: Migration Patterns (reference, at the end)
         patterns = build_recipes_section(plan.entries_by_component)
         if patterns:

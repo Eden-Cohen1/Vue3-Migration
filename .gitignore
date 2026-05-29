@@ -52,6 +52,9 @@ migration-*.md
 migration_*.md
 mixin_audit_*.md
 
+# Generated verification output from the scoping harness (reproducible)
+tests/fixtures/scoping_results/
+
 # Internal dev plans
 docs/plans/
 

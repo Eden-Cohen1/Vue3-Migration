@@ -45,6 +45,31 @@ def _run_mixin(project, mixin_stem):
         )
 
 
+def _find_composable(plan, name):
+    return next(
+        (c for c in plan.composable_changes
+         if name in str(c.file_path) and c.has_changes),
+        None,
+    )
+
+
+def _return_members(content):
+    """Parse the member names from a composable's `return { ... }` statement."""
+    import re
+    m = re.search(r"return \{([^}]*)\}", content)
+    if not m:
+        return []
+    return [x.strip() for x in m.group(1).split(",") if x.strip()]
+
+
+def _declared_names(content):
+    """Parse const/let/var/function declaration names from composable content."""
+    import re
+    names = re.findall(r"\b(?:const|let|var)\s+(\w+)\s*=", content)
+    names += re.findall(r"\bfunction\s+(\w+)\s*\(", content)
+    return names
+
+
 # ---------------------------------------------------------------------------
 # Cross-flow integration tests
 # ---------------------------------------------------------------------------
@@ -114,31 +139,59 @@ class TestCrossFlowConsistency:
         assert comp_nc is not None, "NoComposable.vue missing from component plan"
         assert full_nc.new_content == comp_nc.new_content
 
-    def test_generated_composable_identical_across_flows(self, project):
+    def test_generated_composable_full_equals_mixin(self, project):
         """useNotification.js is generated (no pre-existing composable).
-        All three flows should produce identical content."""
+        Full-project and mixin-scoped flows both process every consumer of the
+        mixin, so they must produce byte-identical content (no scoping)."""
         full_plan = _run_full(project)
-        comp_plan = _run_component(project, "NoComposable.vue")
         mixin_plan = _run_mixin(project, "notificationMixin")
 
-        contents = []
-        for plan, label in [
-            (full_plan, "full"),
-            (comp_plan, "component"),
-            (mixin_plan, "mixin"),
-        ]:
-            notif = next(
-                (c for c in plan.composable_changes
-                 if "useNotification" in str(c.file_path) and c.has_changes),
-                None,
-            )
-            assert notif is not None, f"[{label}] useNotification not generated"
-            contents.append((label, notif.new_content))
+        full_notif = _find_composable(full_plan, "useNotification")
+        mixin_notif = _find_composable(mixin_plan, "useNotification")
+        assert full_notif is not None, "[full] useNotification not generated"
+        assert mixin_notif is not None, "[mixin] useNotification not generated"
+        assert full_notif.new_content == mixin_notif.new_content, (
+            "full-project and mixin-scoped flows should generate identical composables"
+        )
 
-        for i in range(1, len(contents)):
-            assert contents[0][1] == contents[i][1], (
-                f"Generated composable differs between "
-                f"{contents[0][0]} and {contents[i][0]}"
+    def test_generated_composable_component_is_subset(self, project):
+        """Single-component flow scopes the generated composable to what the
+        component needs: its members are a subset of the full-project output,
+        and at least one unused mixin member is omitted (the scoping behavior)."""
+        full_plan = _run_full(project)
+        comp_plan = _run_component(project, "NoComposable.vue")
+
+        full_notif = _find_composable(full_plan, "useNotification")
+        comp_notif = _find_composable(comp_plan, "useNotification")
+        assert full_notif is not None, "[full] useNotification not generated"
+        assert comp_notif is not None, "[component] useNotification not generated"
+
+        full_returns = set(_return_members(full_notif.new_content))
+        comp_returns = set(_return_members(comp_notif.new_content))
+
+        # The component flow returns a strict subset — it omits members the
+        # component never uses (the whole point of scoping).
+        assert comp_returns <= full_returns, (
+            f"component returns {comp_returns} not a subset of full {full_returns}"
+        )
+        assert comp_returns < full_returns, (
+            "component flow should omit at least one unused mixin member from the return"
+        )
+
+        # NoComposable.vue uses every notificationMixin member EXCEPT
+        # addNotification, so scoping must drop it entirely (not just from the
+        # return — it isn't a dependency of any used member).
+        assert "addNotification" in full_notif.new_content
+        assert "addNotification" not in comp_notif.new_content, (
+            "scoped composable should omit the unused addNotification method"
+        )
+
+        # Every member the scoped composable declares must also exist in the
+        # full composable (it's a slice, never a divergent rewrite).
+        full_decls = set(_declared_names(full_notif.new_content))
+        for decl in _declared_names(comp_notif.new_content):
+            assert decl in full_decls, (
+                f"scoped composable declares '{decl}' absent from full composable"
             )
 
     def test_warnings_consistent_across_flows(self, project):
@@ -159,12 +212,53 @@ class TestCrossFlowConsistency:
                 if not matching:
                     continue
                 ce = matching[0]
-                full_cats = sorted(w.category for w in fe.warnings)
-                comp_cats = sorted(w.category for w in ce.warnings)
-                assert full_cats == comp_cats, (
-                    f"Warning categories differ for {fe.mixin_stem} "
-                    f"in {comp_path.name}: full={full_cats} comp={comp_cats}"
+                # Single-component mode legitimately produces a SUBSET of the
+                # full-project warnings: it scopes the composable to the members
+                # the component uses, so warnings for scoped-out members are
+                # dropped, and it adds flow-dependent injection notes
+                # ('lifecycle-only-call') plus a 'members-dropped-unused' trail.
+                # So: every warning the component flow keeps (excluding those
+                # component-only categories) must also exist in the full flow.
+                component_only = {
+                    "lifecycle-only-call", "skipped-lifecycle-only",
+                    "members-dropped-unused",
+                }
+                full_cats = {w.category for w in fe.warnings}
+                comp_cats = {
+                    w.category for w in ce.warnings
+                    if w.category not in component_only
+                }
+                assert comp_cats <= full_cats, (
+                    f"Component-flow warnings for {fe.mixin_stem} in {comp_path.name} "
+                    f"are not a subset of full-flow: extra={sorted(comp_cats - full_cats)}"
                 )
+
+    def test_lifecycle_only_mixin_migrates_with_bare_call(self, project):
+        """A mixin whose members aren't referenced by the component but which
+        contributes lifecycle hooks (PollingTest/pollingMixin) must still be
+        migrated: a composable is generated and the component calls it bare for
+        its side effects, rather than being silently dropped. Regression for the
+        old `compute_status` bug that marked it READY and stripped the mixin."""
+        comp_plan = _run_component(project, "PollingTest.vue")
+
+        polling = next(
+            (c for c in comp_plan.composable_changes
+             if "usePolling" in str(c.file_path) and c.has_changes),
+            None,
+        )
+        assert polling is not None, "usePolling should be generated for lifecycle-only mixin"
+        # The composable carries the lifecycle hook (the whole reason to migrate).
+        assert "onMounted(" in polling.new_content or "onBeforeUnmount(" in polling.new_content
+
+        comp = next(
+            (c for c in comp_plan.component_changes
+             if c.file_path.name == "PollingTest.vue" and c.has_changes),
+            None,
+        )
+        assert comp is not None, "PollingTest.vue should be migrated, not left untouched"
+        # Bare side-effect call, and the mixin must be gone.
+        assert "usePolling()" in comp.new_content
+        assert "mixins:" not in comp.new_content
 
     def test_shared_composable_full_aggregates_all_needs(self, project):
         """usePagination.js is shared — full-project run must patch it with
