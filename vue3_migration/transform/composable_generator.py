@@ -5,7 +5,7 @@ from pathlib import Path
 from ..core.js_parser import extract_brace_block
 from ..core.mixin_analyzer import (
     extract_mixin_imports, filter_imports_by_usage, rewrite_import_path,
-    extract_member_line_ranges,
+    extract_member_line_ranges, find_internal_private_props,
 )
 from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
@@ -448,17 +448,15 @@ def generate_composable_from_mixin(
                     )
         i += 1
 
-    # Detect this._xxx internal properties (e.g. this._searchTimeout for debounce)
-    # These are non-reactive private properties that should become local variables.
-    internal_props = set(re.findall(r'this\.(_\w+)', body))
-    known = set(mixin_members.all_names)
-    internal_props = {p for p in internal_props if p not in known}
-
+    # Localize this._xxx private scratch props (e.g. this._searchTimeout for debounce)
+    # to non-reactive local variables — but ONLY ones the mixin actually ASSIGNS.
+    # A read-only this._x comes from the component (external dependency); localizing
+    # it to null would be a silent bug, so leave it as-is and let the external-dep
+    # warning flag it. Uses the same helper as the warning system so the two agree.
+    internal_props = find_internal_private_props(mixin_source, member_src.all_names)
     if internal_props:
-        # Rewrite this._xxx to _xxx throughout the body
         for p in internal_props:
             body = body.replace(f"this.{p}", p)
-        # Prepend let declarations at the beginning of the body
         internal_decls = "\n".join(f"{indent}let {p} = null" for p in sorted(internal_props))
         body = internal_decls + "\n\n" + body
 

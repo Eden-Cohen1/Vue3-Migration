@@ -1,0 +1,34 @@
+{
+  "_doc": "Before/after proof for the assignment-aware this._private fix. Run via the verify-migration skill runner. Expectations encode the FIXED behavior, so the BEFORE run (old code) shows failing checks = the bug; the AFTER run is all green.",
+  "fixture": "tests/fixtures/scoping_project",
+  "runs": [
+    {
+      "name": "debounce-assigned-timer",
+      "command": "component",
+      "target": "src/components/Debounce.vue",
+      "expect": {
+        "report_absent": ["external dep", "_timer"],
+        "files": {
+          "src/composables/useDebounce.js": {
+            "contains": ["let _timer"],
+            "absent": ["external dep"]
+          }
+        }
+      }
+    },
+    {
+      "name": "readonly-underscore-stays-external",
+      "command": "component",
+      "target": "src/components/ReadOnlyUnderscore.vue",
+      "expect": {
+        "report_contains": ["_injected"],
+        "files": {
+          "src/composables/useReadOnlyUnderscore.js": {
+            "contains": ["this._injected"],
+            "absent": ["let _injected"]
+          }
+        }
+      }
+    }
+  ]
+}

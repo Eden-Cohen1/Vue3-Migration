@@ -56,11 +56,14 @@ def find_external_this_refs(
     Skips:
     - Members in *own_member_names* (data, computed, methods, watch of this mixin)
     - ``this.$xxx`` references (handled by the ``this.$`` warning system)
+    - Internal private scratch props the mixin assigns (e.g. ``this._timer = ...``),
+      which the generator localizes to a ``let`` — they are NOT external deps
     - Matches inside strings, comments, and template literals
 
     Returns a deduplicated list of external member names.
     """
     own_set = set(own_member_names)
+    internal = find_internal_private_props(code, own_member_names)
     pattern = re.compile(r"\bthis\.(\w+)")
     seen: list[str] = []
     pos = 0
@@ -72,12 +75,63 @@ def find_external_this_refs(
         m = pattern.match(code, pos)
         if m:
             name = m.group(1)
-            if name not in own_set and not name.startswith("$") and name not in seen:
+            if (name not in own_set and not name.startswith("$")
+                    and name not in internal and name not in seen):
                 seen.append(name)
             pos = m.end()
         else:
             pos += 1
     return seen
+
+
+# Assignment operators that follow `this.X`: ++/-- (postfix), compound (+=, **=,
+# <<=, ??=, ...), and plain `=` (but not ==/===/=>). Longest alternatives first.
+_THIS_ASSIGN_OP = re.compile(
+    r"\s*(?:\+\+|--|\*\*=|<<=|>>>=|>>=|&&=|\|\|=|\?\?=|[-+*/%&|^]=|=(?![=>]))"
+)
+
+
+def find_assigned_this_props(code: str) -> set[str]:
+    """Return names X where ``code`` assigns to or mutates ``this.X``.
+
+    Detects plain assignment (``=``, not ``==``/``===``/``=>``), compound
+    assignment (``+=`` … ``??=``), and ``++``/``--`` (postfix and prefix).
+    Ignores matches inside strings and comments (via ``skip_non_code``).
+    """
+    assigned: set[str] = set()
+    pattern = re.compile(r"\bthis\.(\w+)")
+    pos = 0
+    while pos < len(code):
+        new_pos, skipped = skip_non_code(code, pos)
+        if skipped:
+            pos = new_pos
+            continue
+        m = pattern.match(code, pos)
+        if m:
+            if _THIS_ASSIGN_OP.match(code, m.end()):
+                assigned.add(m.group(1))
+            pos = m.end()
+        else:
+            pos += 1
+    # Prefix ++this.x / --this.x (rare); scan with comments stripped.
+    for name in re.findall(r"(?:\+\+|--)\s*this\.(\w+)", strip_comments(code)):
+        assigned.add(name)
+    return assigned
+
+
+def find_internal_private_props(code: str, member_names) -> set[str]:
+    """Underscore-prefixed ``this._x`` that the mixin ASSIGNS and that aren't
+    declared members — private non-reactive scratch state the generator should
+    localize to a ``let``, NOT treat as an external dependency.
+
+    Read-only ``this._x`` (never assigned) is excluded: it comes from the
+    component, so it's a genuine external dependency and must stay flagged.
+    """
+    members = set(member_names)
+    return {
+        n for n in find_assigned_this_props(code)
+        if n.startswith("_") and n not in members
+    }
 
 
 def resolve_external_dep_sources(

@@ -9,12 +9,15 @@ Given a manifest of runs, for EACH run it:
   4. checks expectations (substring contains/absent on the report + named files),
   5. writes per-run artifacts + INDEX.md + results.json under the out dir.
 
-The out dir defaults OUTSIDE any project root the tool scans
-(`<repo>/tests/fixtures/.verify/<fixture-name>/`) so saved output can't pollute
-a later run. Inputs stay pristine; every run resets a fresh copy.
+The out base defaults OUTSIDE any project root the tool scans
+(`<repo>/tests/fixtures/.verify/<fixture-name>/`). Inputs stay pristine; every
+run resets a fresh copy. EVERY run is KEPT: results are written to a per-run
+subdir `<out-base>/run-<timestamp>/` (or `<out-base>/<label>/` with --label),
+never overwriting prior runs, and a `<out-base>/latest` pointer tracks the most
+recent one — so the developer can review and compare past runs.
 
 Usage:
-    python3 run_verification.py path/to/verification.json [--out DIR]
+    python3 run_verification.py path/to/verification.json [--out DIR] [--label NAME]
 
 Manifest schema (see templates/verification.example.json):
     {
@@ -161,18 +164,31 @@ def main():
     out_arg = None
     if "--out" in sys.argv:
         out_arg = sys.argv[sys.argv.index("--out") + 1]
-    out_dir = Path(out_arg) if out_arg else Path(manifest.get(
+    label = None
+    if "--label" in sys.argv:
+        label = sys.argv[sys.argv.index("--label") + 1]
+
+    # Output base — every run is KEPT under its own timestamped (or labeled)
+    # subdir so previous runs are never destroyed and stay reviewable.
+    out_base = Path(out_arg) if out_arg else Path(manifest.get(
         "out", repo_root / "tests" / "fixtures" / ".verify" / fixture.name))
-    if not out_dir.is_absolute():
-        out_dir = (repo_root / out_dir).resolve()
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
+    if not out_base.is_absolute():
+        out_base = (repo_root / out_base).resolve()
+
+    from datetime import datetime
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_name = label or f"run-{stamp}"
+    out_dir = out_base / run_name
+    n = 2
+    while out_dir.exists():
+        out_dir = out_base / f"{run_name}-{n}"
+        n += 1
     out_dir.mkdir(parents=True)
 
     results = [run_one(r, fixture, repo_root, out_dir) for r in manifest["runs"]]
 
     # INDEX.md
-    md = [f"# Verification — {fixture.name}\n",
+    md = [f"# Verification — {fixture.name}  ·  {stamp}\n",
           "Real CLI runs (reset-then-apply per scenario). Each row links the tool's "
           "own migration report and the generated/changed files.\n",
           "| Scenario | Verdict | Report tier | Report | Files |",
@@ -191,8 +207,18 @@ def main():
     (out_dir / "INDEX.md").write_text("\n".join(md) + "\n")
     (out_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
 
+    # Stable pointer to the most recent run for easy review.
+    latest = out_base / "latest"
+    try:
+        if latest.is_symlink() or latest.exists():
+            latest.unlink()
+        latest.symlink_to(out_dir.name, target_is_directory=True)
+    except OSError:
+        (out_base / "LATEST.txt").write_text(out_dir.name + "\n")
+
     n_pass = sum(1 for r in results if r["passed"])
     print(f"Wrote {out_dir}/INDEX.md  ({n_pass}/{len(results)} scenarios passed all checks)")
+    print(f"Kept under {out_base}  (previous runs preserved; latest -> {out_dir.name})")
     for r in results:
         if not r["passed"]:
             bad = [c["label"] for c in r["checks"] if not c["ok"]]

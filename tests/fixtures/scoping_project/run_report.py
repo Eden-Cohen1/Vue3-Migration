@@ -111,6 +111,9 @@ SCENARIOS = [
          present=["onMounted("]),
     dict(file="WatchRef.vue", title="16. Watch handler body refs followed by closure",
          ret={"keyword"}, decl={"keyword", "runSearch", "results"}, drop=set()),
+    dict(file="ReadOnlyUnderscore.vue", title="17. Read-only this._x stays external (not localized)",
+         ret={"render"}, decl={"render"}, drop=set(),
+         present=["this._injected", "external dep"], absent=["let _injected"]),
 ]
 
 

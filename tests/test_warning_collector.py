@@ -744,9 +744,11 @@ export default {
         for l in items_code_lines:
             assert "as param" in l, f"Missing icon+hint on line: {l}"
 
-    def test_underscore_external_dep_rewritten_still_gets_hints(self):
-        """End-to-end: mixin with this._searchTimeout (underscore external dep)
-        that gets rewritten by internal_props should still get ❌ + hint."""
+    def test_assigned_underscore_prop_localized_without_external_warning(self):
+        """End-to-end: this._searchTimeout is ASSIGNED by the mixin, so it's the
+        mixin's own private scratch state. It must be localized to `let
+        _searchTimeout = null` and must NOT be flagged as an external dependency —
+        the generator localization and the warning system now agree."""
         source = """
 export default {
     methods: {
@@ -762,21 +764,31 @@ export default {
 """
         members = MixinMembers(methods=["search", "doSearch"])
         result = generate_composable_from_mixin(source, "searchMixin", members, [])
-        # internal_props rewrites this._searchTimeout -> _searchTimeout
+        # Assigned underscore prop is still localized.
         assert "let _searchTimeout = null" in result
-        # The bare _searchTimeout usages should have ❌ + hint
-        lines = result.splitlines()
-        bare_lines = [
-            l for l in lines
-            if "_searchTimeout" in l
-            and not l.lstrip().startswith("//")
-            and "let _searchTimeout" not in l
-        ]
-        assert len(bare_lines) >= 1, (
-            f"Expected >=1 code lines with _searchTimeout usage, got {len(bare_lines)}"
+        # ...but it is NOT an external dependency, so no external-dep hint anywhere.
+        assert "external dep" not in result, (
+            "assigned private _searchTimeout should not be flagged as external"
         )
-        for l in bare_lines:
-            assert "as param" in l, f"Missing icon+hint on rewritten line: {l}"
+        # Header reflects a clean migration (no manual steps for the localized prop).
+        assert "0 issues" in result.splitlines()[0]
+
+    def test_readonly_underscore_prop_stays_external(self):
+        """A read-only this._injected (never assigned) comes from the component:
+        it must NOT be localized to a null local, and must keep its external-dep
+        warning so the developer resolves it."""
+        source = """
+export default {
+    methods: {
+        show() { return formatThing(this._injected) }
+    }
+}
+"""
+        members = MixinMembers(methods=["show"])
+        result = generate_composable_from_mixin(source, "roMixin", members, [])
+        assert "let _injected" not in result, "read-only prop must not be localized"
+        assert "this._injected" in result        # left as-is for the developer
+        assert "external dep" in result          # and flagged
 
 
 # ---------------------------------------------------------------------------

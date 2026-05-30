@@ -4,7 +4,9 @@ import pytest
 from vue3_migration.core.mixin_analyzer import (
     extract_lifecycle_hooks,
     extract_mixin_members,
+    find_assigned_this_props,
     find_external_this_refs,
+    find_internal_private_props,
     resolve_external_dep_sources,
 )
 from vue3_migration.models import MixinEntry, MixinMembers
@@ -565,3 +567,48 @@ def test_rewrite_double_quote():
         composable_dir=Path("/project/src/composables/nested"),
     )
     assert result == 'import { helper } from "../../utils/helpers"'
+
+
+# ---------------------------------------------------------------------------
+# Assignment detection — find_assigned_this_props / find_internal_private_props
+# ---------------------------------------------------------------------------
+
+class TestAssignmentDetection:
+    def test_detects_plain_and_compound_and_incdec(self):
+        code = "f(){ this.a = 1; this.b += 2; this.c++; --this.d; this.e ??= 3 }"
+        assert find_assigned_this_props(code) == {"a", "b", "c", "d", "e"}
+
+    def test_ignores_comparisons_and_arrow_and_reads(self):
+        code = "f(){ if (this.x == this.y && this.z <= 1 && this.w !== 2) return this.r }"
+        assert find_assigned_this_props(code) == set()
+
+    def test_ignores_assignment_inside_strings_and_comments(self):
+        code = "f(){ const s = 'this.x = 1'; /* this.y = 2 */ return s }"
+        assert find_assigned_this_props(code) == set()
+
+    def test_assigned_underscore_is_internal_private(self):
+        code = "f(){ clearTimeout(this._t); this._t = setTimeout(g, 10) }"
+        assert find_internal_private_props(code, []) == {"_t"}
+
+    def test_readonly_underscore_is_not_internal(self):
+        code = "f(){ return format(this._injected) }"
+        assert find_internal_private_props(code, []) == set()
+
+    def test_non_underscore_assigned_is_not_internal_private(self):
+        # Only underscore-prefixed scratch props are localized; others stay external.
+        code = "f(){ this.cache = {} }"
+        assert find_internal_private_props(code, []) == set()
+
+    def test_declared_member_excluded_from_internal(self):
+        code = "f(){ this._x = 1 }"
+        assert find_internal_private_props(code, ["_x"]) == set()
+
+    def test_find_external_excludes_assigned_underscore_keeps_readonly(self):
+        code = (
+            "f(){ this._timer = setTimeout(g, 5); clearTimeout(this._timer);"
+            " return this._injected + this.userId }"
+        )
+        external = find_external_this_refs(code, [])
+        assert "_timer" not in external          # assigned private → internal
+        assert "_injected" in external           # read-only underscore → external
+        assert "userId" in external              # read-only non-underscore → external

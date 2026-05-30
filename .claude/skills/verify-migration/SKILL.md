@@ -68,20 +68,24 @@ python3 .claude/skills/verify-migration/scripts/run_verification.py <env>/verifi
 ```
 For each run it: resets a fresh copy → runs the real CLI applied → captures the
 tool's `migration-report-*.md`, the generated composable(s), the migrated
-component, and the CLI log → checks expectations → writes
-`tests/fixtures/.verify/<env>/` with per-scenario folders, an `INDEX.md` (links +
-verdicts) and a machine-readable `results.json`.
+component, and the CLI log → checks expectations → writes a **kept** per-run folder
+`tests/fixtures/.verify/<env>/run-<timestamp>/` (never overwriting prior runs) with
+per-scenario subfolders, an `INDEX.md` (links + verdicts) and a machine-readable
+`results.json`. A `tests/fixtures/.verify/<env>/latest` pointer always tracks the
+most recent run. **Every run is preserved for the developer to review and compare** —
+do not delete past runs.
 
 ### 6. (Bugfix only, optional but strong) capture before/after
-To prove a regression is fixed: `git stash` the fix, run the manifest into a
-`…/before/` out dir, `git stash pop`, run again into `…/after/`. Link both so the
+To prove a regression is fixed, use `--label` so the runs are named:
+`git stash` the fix → run with `--label before`, `git stash pop` → run with
+`--label after`. Both are kept side by side under the out base; link both so the
 developer sees the report change.
 
 ### 7. Examine, then present
-Read `results.json` and `INDEX.md`. If any check fails, investigate — a failure
-may be a real bug worth surfacing, not just a bad expectation. Then report to the
-developer with:
-- a link to `INDEX.md`,
+Read `results.json` and `INDEX.md` from the run folder (or `latest/`). If any check
+fails, investigate — a failure may be a real bug worth surfacing, not just a bad
+expectation. Then report to the developer with:
+- the run-folder path + a link to its `INDEX.md` (and `latest/INDEX.md`),
 - a link to the tool's `migration-report.md` for the key scenario(s),
 - links to the exact proof (generated composable / migrated component lines),
 - a one-line verdict per scenario (expected vs actual).
