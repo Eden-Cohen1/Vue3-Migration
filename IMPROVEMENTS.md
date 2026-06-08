@@ -23,15 +23,17 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 | [CORR-1](#corr-1) | 🔴 high | Correctness / Behavior | Mixin array stripped while component still uses `this.$options.mixins[N]` → runtime TypeError, no warning | open |
 | [CORR-2](#corr-2) | 🔴 high | Correctness / Behavior | Divergences never gate readiness — behavior-changing migrations land in '🟢 no manual steps needed' | open |
 | [CORR-3](#corr-3) | 🔴 high | Correctness / Behavior | Divergence detector silently ignores DELETED `this.` side-effect lines (missed `$emit`/`$forceUpdate` drops) | open |
+| [CORR-4](#corr-4) | 🟠 med | Correctness / Behavior | Patched composables inline created() body at the BOTTOM (before return), not at the top — stale-read hazard | open |
 | [RPT-1](#rpt-1) | 🔴 high | Report Accuracy | In-file '⚠️ N manual steps needed' banner contradicts the report's 'no manual steps needed' for the SAME composable | open |
 | [RPT-2](#rpt-2) | 🟠 med | Report Accuracy | Divergence 'composable Lxx' vscode links are off by the inserted header/import line count | open |
+| [RPT-4](#rpt-4) | 🟠 med | Report Accuracy | Partially-migrated component (mixin left in array) is never reported at the component level — it silently looks 'done' | open |
 | [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
 | [CG-1](#cg-1) | 🟠 med | Codegen Quality | Private `_`-prefixed scratch state leaked into the composable's public `return {}` | open |
 | [CG-2](#cg-2) | 🟡 low | Codegen Quality | Propagated mixin import lands above `vue` with two stray blank lines | open |
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 | [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_10 open: 4 high, 2 med, 4 low._
+_12 open: 4 high, 4 med, 4 low._
 <!-- INDEX:END -->
 
 ## Issues
@@ -128,6 +130,36 @@ Only treat a `delete` opcode as ignorable when the deleted line is a genuinely u
 Unit test in tests/test_divergence_detector.py: a composable that drops a `this.$emit(...)` line flags that member as divergent.
 <!-- /ISSUE id=CORR-3 -->
 
+<!-- ISSUE id=CORR-4 severity=med category=correctness status=open discovered=2026-06-08 source=review-migration-output -->
+### CORR-4 · Patched composables inline created() body at the BOTTOM (before return), not at the top — stale-read hazard
+
+**🟠 med** · Correctness / Behavior · status: `open`
+
+**Symptom**
+
+When PATCHING an existing composable, a mixin created() body is inserted just above the return instead of at the top of the function. Demo: useTheme.js:38-41 (the `const savedTheme = localStorage.getItem('selectedTheme'); if (...) currentTheme.value = savedTheme` block from themeMixin.js:82 created()) lands after every const/function declaration; same in useNotification.js:75-79 (the `// Simulate loading notification settings` block from notificationMixin.js created()). CLAUDE.md's documented contract says created() is 'Inlined at function top'. The generator path puts it at the top; the patcher path does not — so only PATCHED (pre-existing) composables are affected.
+
+**Reproduce**
+
+python3 -m vue3_migration --root /home/user/dummy_vue_migration_project mixin themeMixin (apply), then `sed -n '36,42p' src/composables/useTheme.js` — the inlined created() block appears at the bottom, just before `return {`, after themeClass/isDarkMode/setTheme/etc.
+
+**Root cause / likely source**
+
+transform/composable_patcher.py:702 calls add_members_to_composable(content, hook_lines) with hook_lines = inline_lines + wrapped_lines (L700). add_members_to_composable (~L235-243) has a single insertion point: 'just before the return statement' (regex `\n([ \t]*)\breturn\s*\{`). It does not distinguish inline-created lines (contract: top of function body) from wrapped onMounted/onBeforeUnmount lines (legitimately before return). The generator (transform/composable_generator.py:405-408) correctly puts inline_lines at the top via body_parts.extend — the patcher and generator disagree for the same construct.
+
+**Why it matters**
+
+created() semantics are 'run before anything that depends on the mutated state.' Placing the block last means a non-lazy consumer reading the value during setup sees the pre-mutation value. Currently MASKED in useTheme/useNotification only because the dependent reads are lazy computeds; the moment another inlined hook or a non-lazy expression reads currentTheme/notificationSettings during setup it gets the stale initial value. Silent (no warning), and breaks generator/patcher parity + the documented contract.
+
+**Fix direction**
+
+In composable_patcher.py:697-702 split the two streams: insert inline_lines at the TOP of the function body (right after `export function …() {`, mirroring composable_generator.py and the i18n-destructure top-insertion already at composable_patcher.py:727-731), and route only wrapped_lines (onMounted/onBeforeUnmount) through add_members_to_composable (before-return). Add an add_inline_to_top() helper or a position='top' flag. Preserve the existing idempotency guard (_inline_body_present, ~L663).
+
+**Verify when fixed**
+
+tests/test_composable_patcher.py: patch a composable whose mixin created() mutates a ref declared at the top; assert the inlined body appears BEFORE the first const/computed/function declaration and before `return {`. Negative: a mounted()->onMounted block still lands before return. Idempotency: patch twice -> inline body appears exactly once.
+<!-- /ISSUE id=CORR-4 -->
+
 <!-- ISSUE id=RPT-1 severity=high category=report status=open discovered=2026-06-08 source=review-migration-output -->
 ### RPT-1 · In-file '⚠️ N manual steps needed' banner contradicts the report's 'no manual steps needed' for the SAME composable
 
@@ -217,6 +249,36 @@ Inline single-`return` pass-through helpers before comparison (fixes canCreate �
 
 `canCreate` no longer appears as a divergence; `canEdit` (real difference) still does.
 <!-- /ISSUE id=RPT-3 -->
+
+<!-- ISSUE id=RPT-4 severity=med category=report status=open discovered=2026-06-08 source=review-migration-output -->
+### RPT-4 · Partially-migrated component (mixin left in array) is never reported at the component level — it silently looks 'done'
+
+**🟠 med** · Report Accuracy · status: `open`
+
+**Symptom**
+
+When a mixin is correctly KEPT because the component uses a member the composable doesn't return (BLOCKED_NOT_RETURNED), the component still ends up importing composables + gaining setup() yet retaining `mixins: [X]` — and nothing in the report names the component as partially migrated. Demo: AdvancedSearch.vue:134 keeps `mixins: [filterMixin]` (it uses appliedFilterSummary, filterMixin.js:19-21, template L77; useFilter didn't return it at that point) while gaining usePagination/useSearch via setup(); NotificationCenter.vue:96 keeps `mixins: [notificationMixin]` (uses formattedNotifications). The only signal is a composable-keyed warning ('Add appliedFilterSummary to the return statement of useFilter, then re-run' — migration-report-20260608-103711.md:100) that never names AdvancedSearch.vue and never says 'filterMixin was left in this component.' The report Summary/Action Plan is organized by composable, so there is no 'components only partially migrated' list.
+
+**Reproduce**
+
+python3 -m vue3_migration --root /home/user/dummy_vue_migration_project component src/components/common/AdvancedSearch.vue (with useFilter missing appliedFilterSummary in its return). After apply: `grep -n 'mixins:' src/components/common/AdvancedSearch.vue` still shows `[filterMixin]`, the component has a setup(), and no report line names the component as partially migrated.
+
+**Root cause / likely source**
+
+workflows/auto_migrate_workflow.py BLOCKED warning emitter (~L595-627) attributes the leftover to the composable and prescribes 'fix + re-run'; the report layer (reporting/markdown.py summary + action-plan builders) has no per-component 'partially migrated / N mixins left in place' section. remove_mixin_from_array (transform/injector.py:74) is correctly NOT called — the gap is purely reporting/DX. Related: there is no mixin<->setup member-collision check (cf. the data/setup collision check at reporting/markdown.py ~L463).
+
+**Why it matters**
+
+A developer can believe a component is fully migrated when it still depends on a mixin (the diff looks done). Worse, on a later re-run after the composable is fixed, the tool injects useX() into a component that STILL defines the same names via the leftover mixin — mixin-provided members and setup()-returned members collide/shadow per Vue 3 merge rules, with no warning (the existing collision check only covers data()<->setup, not mixin<->setup).
+
+**Fix direction**
+
+Add a component-level 'Partially migrated' section to the report listing each component still carrying a mixin after migration, the blocking member, and the reason; optionally drop an inline `// TODO(vue3-migration): filterMixin not migrated — useFilter missing appliedFilterSummary` marker in the component. Extend the collision check to compare leftover-mixin member names against injected composable returns.
+
+**Verify when fixed**
+
+Run the component migration above; assert the report names AdvancedSearch.vue as partially migrated and cites appliedFilterSummary. Then patch useFilter to return appliedFilterSummary and re-run; assert filterMixin is removed and no member collision is introduced. Cover in an integration test + a reporting unit test.
+<!-- /ISSUE id=RPT-4 -->
 
 <!-- ISSUE id=CG-1 severity=med category=codegen status=open discovered=2026-06-08 source=review-migration-output -->
 ### CG-1 · Private `_`-prefixed scratch state leaked into the composable's public `return {}`
