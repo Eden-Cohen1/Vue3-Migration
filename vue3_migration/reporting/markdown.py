@@ -20,13 +20,10 @@ _SKIPPED_CATEGORIES = frozenset({
     "skipped-no-usage",
 })
 
-# Categories that the tool rewrites automatically — no manual step needed
-_AUTO_REWRITTEN_CATEGORIES = frozenset({
-    "this.$t", "this.$tc", "this.$te", "this.$d", "this.$n",  # i18n → useI18n()
-    "this.$nextTick",   # → nextTick()
-    "this.$set",        # → direct assignment
-    "this.$delete",     # → delete obj[key]
-})
+# Categories that the tool rewrites automatically — no manual step needed.
+# Defined once in core.warning_collector so the report tier and the inline
+# composable banner agree on what counts as a manual step (RPT-1).
+from ..core.warning_collector import AUTO_REWRITTEN_CATEGORIES as _AUTO_REWRITTEN_CATEGORIES
 
 _CONF_DOT = {
     ConfidenceLevel.LOW: "\U0001f534",      # red dot
@@ -1084,8 +1081,9 @@ def build_summary_section(
     active_entries = [e for e in entries if not any(w.category == "unused-mixin" for w in e.warnings)]
     unused_count = len(entries) - len(active_entries)
 
-    # Classify into tiers matching the Action Plan (🟢/🟡/🔴)
+    # Classify into tiers matching the Action Plan (🟢/🔵/🟡/🔴)
     quick_wins: list[MixinEntry] = []
+    needs_review: list[MixinEntry] = []
     dropin_fixes: list[MixinEntry] = []
     design_decisions: list[MixinEntry] = []
 
@@ -1095,7 +1093,15 @@ def build_summary_section(
         has_errors = any(w.severity == "error" and w.category not in _AUTO_REWRITTEN_CATEGORIES
                          for w in entry.warnings)
         if not non_info:
-            quick_wins.append(entry)
+            # CORR-2: a covered member whose composable body diverges from the
+            # mixin is a behavior change — it must NOT sit in the green "no manual
+            # steps needed" tier. Demote it to a review tier so the divergence is
+            # surfaced rather than buried under "apply and test". (Reducing
+            # divergence false positives is tracked separately as RPT-3.)
+            if entry.divergences:
+                needs_review.append(entry)
+            else:
+                quick_wins.append(entry)
         elif has_errors:
             design_decisions.append(entry)
         else:
@@ -1110,6 +1116,9 @@ def build_summary_section(
 
     if quick_wins:
         a(f"- \U0001f7e2 **{len(quick_wins)}** ready to apply — no manual steps needed")
+    if needs_review:
+        div_count = sum(len(e.divergences) for e in needs_review)
+        a(f"- \U0001f535 **{len(needs_review)}** need a behavior review ({div_count} member{'s' if div_count != 1 else ''} differ from the mixin)")
     if dropin_fixes:
         warn_count = sum(1 for e in dropin_fixes for w in e.warnings
                          if w.severity == "warning" and w.category not in _AUTO_REWRITTEN_CATEGORIES)
@@ -1183,7 +1192,8 @@ def build_action_plan(
                 component_content_map[change.file_path] = change.new_content
 
     # Classify each entry into tiers
-    quick_wins: list[MixinEntry] = []    # HIGH confidence, no error/warning
+    quick_wins: list[MixinEntry] = []    # HIGH confidence, no error/warning, no divergence
+    needs_review: list[MixinEntry] = []  # No warnings but composable body diverges (CORR-2)
     dropin_fixes: list[MixinEntry] = []  # MEDIUM confidence, only warnings
     design_decisions: list[MixinEntry] = []  # LOW confidence or errors
     unused_mixins: list[MixinEntry] = []  # Not imported by any component
@@ -1209,7 +1219,13 @@ def build_action_plan(
                          for w in entry.warnings)
 
         if not non_info:
-            quick_wins.append(entry)
+            # CORR-2: divergent covered members are behavior changes — keep them
+            # out of the green "no manual steps needed" tier and surface them for
+            # review instead. (Divergence false-positive reduction is RPT-3.)
+            if entry.divergences:
+                needs_review.append(entry)
+            else:
+                quick_wins.append(entry)
         elif has_errors:
             design_decisions.append(entry)
         else:
@@ -1238,11 +1254,22 @@ def build_action_plan(
         a("")
         a(f"These {len(quick_wins)} composable{'s are' if len(quick_wins) != 1 else ' is'} fully migrated. Apply the diff and test.\n")
 
-        # Show divergences for quick wins that have them
-        for e in quick_wins:
-            if e.divergences:
-                comp_path = e.composable.file_path if e.composable else None
-                a(_build_divergence_section(e, comp_path, project_root))
+    # Review behavior — no warnings, but the composable body diverges from the
+    # mixin, so the developer must confirm the logic was ported faithfully (CORR-2).
+    if needs_review:
+        a("---\n")
+        a("### \U0001f535 Review Behavior — implementation differs from the mixin\n")
+        div_total = sum(len(e.divergences) for e in needs_review)
+        a(
+            f"These {len(needs_review)} composable{'s' if len(needs_review) != 1 else ''} are wired up, "
+            f"but {div_total} covered member{'s' if div_total != 1 else ''} differ from the original mixin. "
+            "These have **no auto-detected blockers** — but a difference can be a silent behavior change "
+            "(an auth check, a dropped event, a stubbed body). **Verify each member below behaves the same "
+            "before applying.**\n"
+        )
+        for e in needs_review:
+            comp_path = e.composable.file_path if e.composable else None
+            a(_build_divergence_section(e, comp_path, project_root))
 
     # Drop-in fixes — per-composable numbered steps
     if dropin_fixes:

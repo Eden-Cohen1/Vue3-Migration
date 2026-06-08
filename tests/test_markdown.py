@@ -971,3 +971,80 @@ class TestNameCollisionCrossComposableLineRefs:
         # Should show declaration lines from BOTH composables
         assert "useLoading L3" in report, f"Expected useLoading L3 in report:\n{report}"
         assert "useStatus L3" in report, f"Expected useStatus L3 in report:\n{report}"
+
+
+# ---------------------------------------------------------------------------
+# CORR-2: a divergence on a covered member must demote the entry out of the
+# green "no manual steps needed" tier into a behavior-review tier.
+# ---------------------------------------------------------------------------
+
+from vue3_migration.models import MemberDivergence
+from vue3_migration.reporting.markdown import build_summary_section
+
+
+def _make_diverging_clean_entry() -> MixinEntry:
+    """usePermission: fully covered (no warnings) but canEdit diverges from the
+    mixin ('write' vs 'update') — a silent behavior change."""
+    coverage = ComposableCoverage(
+        file_path=FIXTURES / 'src/composables/usePermission.js',
+        fn_name='usePermission',
+        import_path='@/composables/usePermission',
+        all_identifiers=['userPermissions', 'canEdit', 'checkPermission'],
+        declared_identifiers=['userPermissions', 'canEdit', 'checkPermission'],
+        return_keys=['userPermissions', 'canEdit', 'checkPermission'],
+    )
+    classification = MemberClassification(injectable=['canEdit'])
+    return MixinEntry(
+        local_name='permissionMixin',
+        mixin_path=FIXTURES / 'src/mixins/permissionMixin.js',
+        mixin_stem='permissionMixin',
+        members=MixinMembers(computed=['canEdit'], methods=['checkPermission']),
+        used_members=['canEdit'],
+        composable=coverage,
+        classification=classification,
+        status=MigrationStatus.READY,
+        divergences=[
+            MemberDivergence(
+                member_name='canEdit',
+                mixin_kind='computed',
+                mixin_source="canEdit() {\n  return this.checkPermission('update')\n}",
+                composable_source="const canEdit = computed(() => userPermissions.value.includes('write'))",
+                mixin_lines=(15, 17),
+                composable_lines=(11, 11),
+            )
+        ],
+    )
+
+
+class TestDivergenceGatesReadiness:
+    """CORR-2: behavior-changing migrations must not land in the green tier."""
+
+    def test_diverging_entry_not_under_no_manual_steps(self):
+        entry = _make_diverging_clean_entry()
+        report = build_action_plan([(Path("fake/Editor.vue"), [entry])])
+        # The Quick Wins / "no manual steps needed" block must not contain it.
+        if "no manual steps needed" in report:
+            quick_section = report.split("no manual steps needed", 1)[1].split("###", 1)[0]
+            assert "usePermission" not in quick_section, (
+                "Diverging composable leaked into the quick-wins tier:\n" + report
+            )
+
+    def test_diverging_entry_surfaces_review_item(self):
+        entry = _make_diverging_clean_entry()
+        report = build_action_plan([(Path("fake/Editor.vue"), [entry])])
+        assert "Review Behavior" in report, report
+        # The diverging member is shown for review.
+        assert "canEdit" in report, report
+
+    def test_summary_counts_review_tier(self):
+        entry = _make_diverging_clean_entry()
+        summary = build_summary_section([(Path("fake/Editor.vue"), [entry])])
+        assert "behavior review" in summary, summary
+        # It must NOT be counted as "ready to apply — no manual steps needed".
+        assert "ready to apply" not in summary, summary
+
+    def test_clean_entry_without_divergence_still_quick_win(self):
+        entry = _make_ready_entry()  # no divergences
+        report = build_action_plan([(Path("fake/Comp.vue"), [entry])])
+        assert "Quick Wins" in report
+        assert "Review Behavior" not in report
