@@ -40,6 +40,16 @@ No linter is configured. Uses `uv` for Python package management. Tests use real
 
 ## Architecture
 
+> **Before changing the engine, read [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** — the
+> project's invariants (preview-then-apply, never-remove-a-mixin-you-can't-replace,
+> idempotency), the recurring bug classes, and the direction. For a function-level
+> map see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+>
+> **Known bugs & improvement backlog: [IMPROVEMENTS.md](IMPROVEMENTS.md)** — pick an
+> issue (each is self-contained: symptom→repro→source→fix→verify) and reference its
+> ID in the fix commit (`fix(CORR-1): …`). Manage entries with the `track-improvement`
+> skill; **delete an issue when it's fixed**. Find new issues with `review-migration-output`.
+
 ### Dual Entry Point
 `bin/cli.js` (Node wrapper) → `python -m vue3_migration` → `cli.py:main()`
 
