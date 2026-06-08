@@ -10,6 +10,54 @@ from ..models import MEMBER_KIND_LABELS, ConfidenceLevel, MigrationWarning, Mixi
 from .js_parser import skip_non_code
 
 
+# Categories the tool rewrites automatically — they require NO manual step.
+# Canonical home: both the migration report's tiering (reporting/markdown.py)
+# and the inline composable banner (the "N manual steps needed" header) must
+# count manual steps the same way, or the two artifacts contradict each other
+# (RPT-1). They share this one definition rather than each keeping their own.
+AUTO_REWRITTEN_CATEGORIES = frozenset({
+    "this.$t", "this.$tc", "this.$te", "this.$d", "this.$n",  # i18n → useI18n()
+    "this.$nextTick",   # → nextTick()
+    "this.$set",        # → direct assignment
+    "this.$delete",     # → delete obj[key]
+})
+
+
+def count_manual_steps(warnings: "list[MigrationWarning]") -> int:
+    """Number of warnings that represent a real manual step for the developer.
+
+    A "manual step" is an error/warning-severity warning the tool can't rewrite
+    automatically. This is the single source of truth for the count shown both
+    in the report tier (quick-win vs drop-in vs design) and in the composable's
+    inline banner, so the two never disagree (RPT-1).
+    """
+    return sum(
+        1 for w in warnings
+        if w.severity in ("error", "warning")
+        and w.category not in AUTO_REWRITTEN_CATEGORIES
+    )
+
+
+def build_banner_header(manual_steps: int, advisory_notes: int = 0) -> str:
+    """Build the inline composable banner header line (with trailing newline).
+
+    Single source of truth for the banner text so it can be (re)built both when a
+    composable is first generated/patched and when the count is reconciled against
+    the final report tier (RPT-1).
+    """
+    if manual_steps:
+        plural = "s" if manual_steps != 1 else ""
+        return f"// ⚠️ {manual_steps} manual step{plural} needed — see migration report for details\n"
+    if advisory_notes:
+        plural = "s" if advisory_notes != 1 else ""
+        return f"// ⚠️ {advisory_notes} advisory note{plural} — see migration report for details\n"
+    return "// ✅ 0 issues — all mixin members have composable equivalents\n"
+
+
+# Matches a previously-emitted banner header line (any variant) at file start.
+BANNER_HEADER_RE = re.compile(r"^// (?:⚠️|✅) .*\n")
+
+
 def _line_number(source: str, position: int) -> int:
     """Compute 1-based line number from a character offset."""
     return source[:position].count("\n") + 1
@@ -181,6 +229,41 @@ def suppress_covered_member_warnings(
             result.append(w)
 
     return result
+
+
+def suppress_covered_warnings(
+    warnings: list[MigrationWarning],
+    composable_declared: "list[str]",
+    composable_returns: "list[str]",
+    mixin_source: str,
+    hooks: list[str] | None = None,
+) -> list[MigrationWarning]:
+    """Suppress warnings from mixin member bodies already covered by the composable.
+
+    A member is *covered* when the composable both declares and returns it, so the
+    mixin's implementation is fully replaced and its in-body warnings are moot.
+    Lifecycle hook bodies are auto-transformed (mounted → onMounted, …) and count
+    as covered too.
+
+    This is the single source of truth for covered-member suppression, shared by
+    the migration report (workflow) and the inline composable banner (patcher) so
+    they can't disagree on the manual-step count (RPT-1). It keys only off the
+    composable's own declared/returned members and the mixin source, so the result
+    is independent of which component is being migrated (preserves the three-modes
+    invariant).
+    """
+    from .mixin_analyzer import extract_member_line_ranges, extract_lifecycle_line_ranges
+
+    covered = set(composable_declared) & set(composable_returns)
+    member_ranges = extract_member_line_ranges(mixin_source)
+    if hooks:
+        lifecycle_ranges = extract_lifecycle_line_ranges(mixin_source, hooks)
+        if lifecycle_ranges:
+            member_ranges.update(lifecycle_ranges)
+            covered.update(lifecycle_ranges.keys())
+    if not covered:
+        return warnings
+    return suppress_covered_member_warnings(warnings, covered, member_ranges)
 
 
 def collect_mixin_warnings(
@@ -593,16 +676,12 @@ def inject_inline_warnings(
     # Strip any existing inline warnings from previous runs
     source = _strip_old_inline_warnings(source)
 
-    # Build header: count of error+warning severity (not info)
+    # Build header. Manual-step count uses the shared definition so the banner
+    # and the migration report's tier never disagree (RPT-1). This count is
+    # provisional \u2014 it's reconciled against the final report tier once all
+    # warnings are known (see _reconcile_composable_banners).
     if confidence is not None:
-        actionable = sum(1 for w in warnings if w.severity in ("error", "warning"))
-        if actionable:
-            header = f"// \u26a0\ufe0f {actionable} manual step{'s' if actionable != 1 else ''} needed \u2014 see migration report for details\n"
-        elif warning_count:
-            header = f"// \u26a0\ufe0f {warning_count} advisory note{'s' if warning_count != 1 else ''} \u2014 see migration report for details\n"
-        else:
-            header = "// \u2705 0 issues \u2014 all mixin members have composable equivalents\n"
-        source = header + source
+        source = build_banner_header(count_manual_steps(warnings), warning_count) + source
 
     if not warnings:
         return source

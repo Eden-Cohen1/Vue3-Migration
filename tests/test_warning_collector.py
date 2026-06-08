@@ -2961,3 +2961,64 @@ class TestWarningSkipsStringLiterals:
             f"String-only line should not get inline warning: {lines[0]}"
         # Second line has real this.$emit — SHOULD get icon
         assert "❌" in lines[1], f"Real usage line should get inline warning: {lines[1]}"
+
+
+# ---------------------------------------------------------------------------
+# RPT-1: single source of truth for the "manual steps" count shared by the
+# report tier and the inline composable banner.
+# ---------------------------------------------------------------------------
+
+from vue3_migration.core.warning_collector import (
+    AUTO_REWRITTEN_CATEGORIES,
+    count_manual_steps,
+    suppress_covered_warnings,
+)
+
+
+def _w(category, severity, line):
+    return MigrationWarning(
+        mixin_stem="m", category=category, message=category,
+        action_required="", line_hint=None, severity=severity,
+        source_line=line, source_lines=[line],
+    )
+
+
+def test_count_manual_steps_excludes_auto_rewritten_and_info():
+    warnings = [
+        _w("this.$refs", "error", 1),       # manual step
+        _w("this.$emit", "error", 2),       # manual step
+        _w("this.$nextTick", "warning", 3), # auto-rewritten — not a step
+        _w("overridden-member", "info", 4), # info — not a step
+    ]
+    assert "this.$nextTick" in AUTO_REWRITTEN_CATEGORIES
+    assert count_manual_steps(warnings) == 2
+
+
+def test_suppress_covered_warnings_drops_only_covered_members():
+    # submitForm spans mixin lines 5-9 (contains $refs at 7, $emit at 8).
+    mixin_source = (
+        "export default {\n"            # 1
+        "  methods: {\n"                # 2
+        "    initForm() {},\n"          # 3
+        "\n"                            # 4
+        "    submitForm() {\n"          # 5
+        "      this.isSubmitting = true\n"  # 6
+        "      this.$refs.form.x()\n"   # 7
+        "      this.$emit('done')\n"    # 8
+        "    }\n"                        # 9
+        "  }\n"                          # 10
+        "}\n"                            # 11
+    )
+    warnings = [_w("this.$refs", "error", 7), _w("this.$emit", "error", 8)]
+
+    # Covered: composable declares AND returns submitForm -> both suppressed.
+    covered = suppress_covered_warnings(
+        warnings, ["initForm", "submitForm"], ["initForm", "submitForm"], mixin_source,
+    )
+    assert count_manual_steps(covered) == 0
+
+    # Not covered (declared but not returned) -> warnings survive.
+    uncovered = suppress_covered_warnings(
+        warnings, ["initForm", "submitForm"], ["initForm"], mixin_source,
+    )
+    assert count_manual_steps(uncovered) == 2

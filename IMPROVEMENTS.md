@@ -21,10 +21,8 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 | ID | Sev | Category | Title | Status |
 |----|-----|----------|-------|--------|
 | [CORR-1](#corr-1) | 🔴 high | Correctness / Behavior | Mixin array stripped while component still uses `this.$options.mixins[N]` → runtime TypeError, no warning | open |
-| [CORR-2](#corr-2) | 🔴 high | Correctness / Behavior | Divergences never gate readiness — behavior-changing migrations land in '🟢 no manual steps needed' | open |
 | [CORR-3](#corr-3) | 🔴 high | Correctness / Behavior | Divergence detector silently ignores DELETED `this.` side-effect lines (missed `$emit`/`$forceUpdate` drops) | open |
 | [CORR-4](#corr-4) | 🟠 med | Correctness / Behavior | Patched composables inline created() body at the BOTTOM (before return), not at the top — stale-read hazard | open |
-| [RPT-1](#rpt-1) | 🔴 high | Report Accuracy | In-file '⚠️ N manual steps needed' banner contradicts the report's 'no manual steps needed' for the SAME composable | open |
 | [RPT-2](#rpt-2) | 🟠 med | Report Accuracy | Divergence 'composable Lxx' vscode links are off by the inserted header/import line count | open |
 | [RPT-4](#rpt-4) | 🟠 med | Report Accuracy | Partially-migrated component (mixin left in array) is never reported at the component level — it silently looks 'done' | open |
 | [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
@@ -33,7 +31,7 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 | [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_12 open: 4 high, 4 med, 4 low._
+_10 open: 2 high, 4 med, 4 low._
 <!-- INDEX:END -->
 
 ## Issues
@@ -69,36 +67,6 @@ Extend `detect_direct_mixin_access` (and/or run the `this.$options.mixins` detec
 
 Add a fixture component that calls `this.$options.mixins[0].methods.X.call(this)`; after migration the `mixins:` array must remain (or the component is blocked) and an error warning is emitted. Cover in tests/test_warning_collector.py + an integration assertion.
 <!-- /ISSUE id=CORR-1 -->
-
-<!-- ISSUE id=CORR-2 severity=high category=correctness status=open discovered=2026-06-08 source=review-migration-output -->
-### CORR-2 · Divergences never gate readiness — behavior-changing migrations land in '🟢 no manual steps needed'
-
-**🔴 high** · Correctness / Behavior · status: `open`
-
-**Symptom**
-
-`models.py:is_ready` (~L92-94) = `not truly_missing and not truly_not_returned`; `entry.divergences` is computed (`auto_migrate_workflow.py:154`) but never consulted by status/tiering. Real shipped regressions in the demo, all under the green tier: `usePermission.canEdit` checks `'write'` vs mixin's `'update'` (silent AUTH bug); `useSearch.search` is a stub (`// Simulate search logic`) so search is dead; `useChart.prepareChartData` expects `{labels,datasets}` but `StatsOverview.vue:152` passes an array; `useLoading.startLoading` default `'Loading...'`→`''`.
-
-**Reproduce**
-
-Run demo-migration (3 components). Open any migration-report-*.md: composables that have an 'Implementation Divergences' section still appear under '🟢 Quick Wins — no manual steps needed / Apply the diff and test.'
-
-**Root cause / likely source**
-
-`reporting/markdown.py:build_action_plan` (~L1206-1216) buckets quick-wins purely on `entry.warnings` severity; `entry.divergences` is rendered (~L1241-1245) but never feeds the tier. `models.py:compute_status` (~L212-233) ignores divergences too.
-
-**Why it matters**
-
-A developer triaging by the green summary ships silent behavior changes — including an authorization bug and a non-functional search — believing the migration was clean. Undercuts the entire divergence feature.
-
-**Fix direction**
-
-Make a non-trivial divergence on a covered member demote the entry out of READY/Quick-Win into a 'review required' tier — synthesize a warning per real divergence, or consult `entry.divergences` in `compute_status`/`build_action_plan`. Trivial/false-positive divergences (see RPT-3) must NOT demote.
-
-**Verify when fixed**
-
-Integration test: a component matched to a composable with a real divergence must NOT appear under 'no manual steps needed' and must surface a review item.
-<!-- /ISSUE id=CORR-2 -->
 
 <!-- ISSUE id=CORR-3 severity=high category=correctness status=open discovered=2026-06-08 source=review-migration-output -->
 ### CORR-3 · Divergence detector silently ignores DELETED `this.` side-effect lines (missed `$emit`/`$forceUpdate` drops)
@@ -159,36 +127,6 @@ In composable_patcher.py:697-702 split the two streams: insert inline_lines at t
 
 tests/test_composable_patcher.py: patch a composable whose mixin created() mutates a ref declared at the top; assert the inlined body appears BEFORE the first const/computed/function declaration and before `return {`. Negative: a mounted()->onMounted block still lands before return. Idempotency: patch twice -> inline body appears exactly once.
 <!-- /ISSUE id=CORR-4 -->
-
-<!-- ISSUE id=RPT-1 severity=high category=report status=open discovered=2026-06-08 source=review-migration-output -->
-### RPT-1 · In-file '⚠️ N manual steps needed' banner contradicts the report's 'no manual steps needed' for the SAME composable
-
-**🔴 high** · Report Accuracy · status: `open`
-
-**Symptom**
-
-`useChart.js:1` says `// ⚠️ 2 manual steps needed`, but migration-report lists `useChart` under '🟢 Quick Wins — no manual steps needed'. The banner is the honest one (chartMixin's resizeChart/exportChart use `this.$el`/`this.$refs`).
-
-**Reproduce**
-
-Migrate StatsOverview (uses chartMixin). Compare the top comment of `src/composables/useChart.js` to the useChart tier in the migration report.
-
-**Root cause / likely source**
-
-Two separate suppression regimes. Banner path: `composable_patcher.py` (~L755-761) → `warning_collector.py:inject_inline_warnings` (~L597-605) counts `$el`/`$refs` errors. Report path: `_suppress_covered_warnings` (`auto_migrate_workflow.py:182`) drops them because resizeChart/exportChart are 'covered' members.
-
-**Why it matters**
-
-Two artifacts the developer reads side-by-side give opposite instructions; the optimistic (report) one is the dangerous one. Exactly the 'two subsystems disagree' failure docs/DEVELOPMENT.md §4.3 warns about.
-
-**Fix direction**
-
-Single source of truth for the 'manual steps' count — drive both the inline banner and the report tier from the same filtered warning set.
-
-**Verify when fixed**
-
-For a composable with a covered member that still has a `$el`/`$refs` error, the banner count and the report tier agree.
-<!-- /ISSUE id=RPT-1 -->
 
 <!-- ISSUE id=RPT-2 severity=med category=report status=open discovered=2026-06-08 source=review-migration-output -->
 ### RPT-2 · Divergence 'composable Lxx' vscode links are off by the inserted header/import line count

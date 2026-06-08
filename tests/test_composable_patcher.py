@@ -905,3 +905,59 @@ def test_add_keys_to_return_string_with_unbalanced_braces():
     assert "newKey" in return_section[:close_brace], (
         f"newKey not in return block: {return_section[:200]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# RPT-1: the inline banner's "manual steps" count must use the same covered-
+# member suppression as the migration report, so the two never contradict
+# (e.g. banner "2 manual steps needed" vs report "no manual steps needed").
+# ---------------------------------------------------------------------------
+
+_FORM_MIXIN = (
+    "export default {\n"
+    "  data() { return { formData: {}, isSubmitting: false } },\n"
+    "  methods: {\n"
+    "    initForm(data) { this.formData = data },\n"
+    "    submitForm() {\n"
+    "      this.isSubmitting = true\n"
+    "      if (this.$refs.form) { this.$refs.form.reportValidity() }\n"
+    "      this.$emit('form-submitted', this.formData)\n"
+    "    }\n"
+    "  }\n"
+    "}\n"
+)
+_FORM_MEMBERS = MixinMembers(data=["formData", "isSubmitting"],
+                             methods=["initForm", "submitForm"])
+
+
+def test_banner_suppresses_covered_member_warnings():
+    """A covered member (declared AND returned) whose mixin body uses $refs/$emit
+    must not inflate the banner — the composable replaced that implementation."""
+    src = (
+        "export function useForm() {\n"
+        "  const formData = ref({})\n"
+        "  function initForm(data) { formData.value = { ...data } }\n"
+        "  function submitForm() { return true }\n"
+        "  return { formData, initForm, submitForm }\n"
+        "}\n"
+    )
+    result = patch_composable(src, _FORM_MIXIN, not_returned=[], missing=[],
+                              mixin_members=_FORM_MEMBERS)
+    banner = result.splitlines()[0]
+    assert "manual step" not in banner, f"covered $refs/$emit leaked into banner: {banner}"
+
+
+def test_banner_keeps_uncovered_member_warnings():
+    """The same mixin member, when NOT covered by the composable, must still be
+    counted as a manual step — matching the report, which also keeps it."""
+    src = (
+        "export function useForm() {\n"
+        "  const formData = ref({})\n"
+        "  function initForm(data) { formData.value = { ...data } }\n"
+        "  return { formData, initForm }\n"
+        "}\n"
+    )
+    result = patch_composable(src, _FORM_MIXIN, not_returned=[], missing=[],
+                              mixin_members=_FORM_MEMBERS)
+    banner = result.splitlines()[0]
+    assert "manual step" in banner, f"uncovered $refs/$emit missing from banner: {banner}"

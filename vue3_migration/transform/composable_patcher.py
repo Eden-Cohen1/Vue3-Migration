@@ -7,7 +7,7 @@ from ..core.js_parser import extract_brace_block, extract_value_at
 from ..core.mixin_analyzer import extract_mixin_imports, filter_imports_by_usage, rewrite_import_path
 from ..core.warning_collector import (
     collect_mixin_warnings, compute_confidence, inject_inline_warnings,
-    suppress_resolved_warnings,
+    suppress_covered_warnings, suppress_resolved_warnings,
 )
 from ..models import MixinMembers
 from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs, rewrite_this_i18n_refs
@@ -757,6 +757,18 @@ def patch_composable(
         mixin_path=mixin_path, project_root=project_root,
     )
     warnings = suppress_resolved_warnings(warnings, [], content)
+    # RPT-1: drop warnings inside members the composable already covers (declares
+    # AND returns), exactly as the migration report does — using the pre-patch
+    # composable so the banner's "manual steps" count matches the report tier.
+    # Keyed only off the composable + mixin, so it's identical across the three
+    # migration modes.
+    warnings = suppress_covered_warnings(
+        warnings,
+        extract_declared_identifiers(composable_content),
+        extract_return_keys(composable_content),
+        mixin_content,
+        lifecycle_hooks,
+    )
     confidence = compute_confidence(content, warnings)
     content = inject_inline_warnings(content, warnings, confidence, len(warnings))
 
