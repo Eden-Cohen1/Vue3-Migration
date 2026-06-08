@@ -27,6 +27,11 @@ class ConfidenceLevel(str, Enum):
     LOW = "LOW"         # has remaining this.$, unbalanced brackets, or structural warnings
 
 
+# Maps a mixin section name to the Vue 3 construct it becomes in a composable.
+# Used in kind-mismatch warnings, e.g. "mixin expects ref, composable has function".
+MEMBER_KIND_LABELS = {"data": "ref", "computed": "computed", "methods": "function"}
+
+
 @dataclass
 class MigrationWarning:
     """A single warning detected during mixin analysis or composable generation."""

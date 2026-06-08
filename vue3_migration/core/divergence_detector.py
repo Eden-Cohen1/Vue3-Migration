@@ -232,27 +232,6 @@ def _extract_body_content(code: str, kind: str) -> str:
 
 # ---- Divergence detection ----
 
-# Patterns the tool genuinely cannot auto-convert — lines with these are "manual review".
-# Note: this.$t, this.$tc, this.$watch, this.$nextTick, this.$set, this.$delete
-# ARE converted by rewrite_this_dollar_refs / rewrite_this_i18n_refs (applied above),
-# so they should NOT be listed here.
-_NON_CONVERTIBLE_PATTERNS = [
-    re.compile(r"this\.\$emit\b"),
-    re.compile(r"\bemit\s*\("),
-    re.compile(r"this\.\$refs\b"),
-    re.compile(r"\$refs\b"),
-    re.compile(r"this\.\$router\b"),
-    re.compile(r"this\.\$route\b"),
-    re.compile(r"this\.\$store\b"),
-    re.compile(r"this\.\$"),  # catch-all for any remaining this.$X the rewriters missed
-]
-
-
-def _is_non_convertible(line: str) -> bool:
-    """Check if a normalized line contains a non-convertible pattern."""
-    return any(p.search(line) for p in _NON_CONVERTIBLE_PATTERNS)
-
-
 def _determine_mixin_kind(name: str, mixin_members) -> str:
     if name in mixin_members.data:
         return "data"

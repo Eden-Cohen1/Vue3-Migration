@@ -18,7 +18,6 @@ from typing import Optional
 from ..core.file_utils import read_source
 from ..core.component_analyzer import extract_own_members, find_used_members
 from ..core.composable_analyzer import (
-    extract_all_identifiers,
     extract_declared_identifiers,
     extract_function_name,
 )
@@ -31,7 +30,7 @@ from ..core.file_resolver import compute_import_path
 from ..core.mixin_analyzer import extract_lifecycle_hooks, extract_mixin_members
 from ..models import FileChange, MigrationConfig
 from ..reporting.markdown import build_audit_report
-from ..reporting.terminal import bold, cyan, dim, green, red, red_bold, yellow
+from ..reporting.terminal import bold, cyan, dim, green, red_bold, yellow
 from ..transform.injector import (
     add_composable_import,
     find_mixin_import_name,
@@ -203,7 +202,7 @@ def prompt_and_inject(
               f"{red_bold('missing from the composable')}:")
         print(f"  {red_bold(', '.join(missing_members))}")
         print(f"  These members are defined in the mixin but not found in {cyan(fn_name)}.")
-        print(f"  Components using these members may break after injection.")
+        print("  Components using these members may break after injection.")
 
     # Collect per-file usage
     files_with_usage = []
@@ -218,7 +217,7 @@ def prompt_and_inject(
     # Show injection summary
     print(f"\n{bold('Ready to inject')} {cyan(fn_name)} {bold('into')} "
           f"{cyan(str(files_to_inject))} {bold('file(s)')}")
-    print(f"  This will, for each file:")
+    print("  This will, for each file:")
     print(f"    - Remove the {bold(mixin_path.stem)} import and mixins: [] entry")
     print(f"    - Add {cyan('import { ' + fn_name + ' }')} from '{import_path}'")
     print(f"    - Create or merge a {cyan('setup()')} function that destructures "
@@ -230,7 +229,7 @@ def prompt_and_inject(
         print(f"  {red_bold('Note')}: {len(missing_members)} member(s) missing from "
               f"composable (see warning above).")
 
-    answer = input(f"\n  Proceed? (y/n): ").strip().lower()
+    answer = input("\n  Proceed? (y/n): ").strip().lower()
     if answer != "y":
         print("Skipped injection.")
         return
@@ -303,7 +302,7 @@ def run(mixin_arg: str, composable_arg: Optional[str] = None, config: MigrationC
         if len(matches) == 1:
             found_path = matches[0]
             print(f"  Found: {green(str(found_path))}")
-            answer = input(f"  Is this the correct composable? (y/n): ").strip().lower()
+            answer = input("  Is this the correct composable? (y/n): ").strip().lower()
             if answer == "y":
                 composable_path_resolved = str(found_path)
             else:
@@ -313,7 +312,7 @@ def run(mixin_arg: str, composable_arg: Optional[str] = None, config: MigrationC
                     composable_path_resolved = user_path
 
         elif len(matches) > 1:
-            print(f"  Multiple candidates found:")
+            print("  Multiple candidates found:")
             for i, fp in enumerate(matches, 1):
                 print(f"    {i}. {fp}")
             choice = input(f"  Pick one (1-{len(matches)}), or 0 for none: ").strip()

@@ -172,7 +172,7 @@ Under the hood, the tool runs a **three-phase pipeline** — no files are modifi
 
 Every change is collected as a plan object — original content paired with new content. The CLI shows you a unified diff of the full plan, and only writes files after you type `y`.
 
-For the full architectural deep-dive — parsing internals, data models, warning system, and module-by-module breakdown — see [ARCHITECTURE.md](ARCHITECTURE.md).
+For the full architectural deep-dive — parsing internals, data models, warning system, and module-by-module breakdown — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Contributors should also read [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the project's invariants, hard-won lessons, and direction.
 
 ## Safety Features
 

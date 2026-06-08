@@ -413,7 +413,6 @@ def rewrite_import_path(import_line: str, mixin_dir: Path, composable_dir: Path)
     if not m:
         return import_line
 
-    quote = m.group(2)
     old_path = m.group(3)
 
     # Resolve the import target against the mixin's directory

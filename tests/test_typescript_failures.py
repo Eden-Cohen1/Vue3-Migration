@@ -1,10 +1,15 @@
-"""Tests proving TypeScript failure modes of the current string-based parser.
+"""Tests documenting TypeScript failure modes of the string-based parser.
 
-Each test documents a specific TS construct that breaks the parser.
-These tests are expected to FAIL with the current parser, proving
-the limitation exists. After AST migration, they should PASS.
+Each test pins a specific TS construct that the hand-rolled parser handles
+(plain assertions) or cannot yet handle (marked ``@pytest.mark.xfail``).
 
-Run with: pytest tests/test_typescript_failures.py -v
+The xfailed tests are executable specifications of known limitations: they
+keep the suite green today, but the moment the parser improves (e.g. an AST
+migration) they will report XPASS — a signal to delete the marker and treat
+the behavior as supported. Several modes that originally failed now pass and
+have been left as plain regression tests.
+
+Run with: pytest tests/test_typescript_failures.py -v -rxX   # show xfail/xpass
 """
 
 import re
@@ -41,6 +46,7 @@ def _read(name: str) -> str:
 class TestTypedVariableDeclarations:
     """Failure 1: `const x: string = ...` not detected by extract_declaration_names."""
 
+    @pytest.mark.xfail(reason="TS limitation: string parser's declaration regex can't handle a type annotation between name and '='", strict=False)
     def test_typed_const_detected(self):
         """extract_declaration_names must find 'count' in 'const count: number = ref(0)'."""
         body = "const count: number = ref(0)"
@@ -50,24 +56,28 @@ class TestTypedVariableDeclarations:
             "The regex can't handle type annotations between name and ="
         )
 
+    @pytest.mark.xfail(reason="TS limitation: string parser's declaration regex can't handle a type annotation between name and '='", strict=False)
     def test_typed_let_detected(self):
         """extract_declaration_names must find 'label' in 'let label: string = ...'."""
         body = 'let label: string = "default"'
         names = extract_declaration_names(body)
         assert "label" in names
 
+    @pytest.mark.xfail(reason="TS limitation: string parser's declaration regex can't handle 'string[]' type annotation", strict=False)
     def test_typed_complex_type_detected(self):
         """extract_declaration_names must find 'items' in 'const items: string[] = ...'."""
         body = "const items: string[] = []"
         names = extract_declaration_names(body)
         assert "items" in names
 
+    @pytest.mark.xfail(reason="TS limitation: string parser's declaration regex can't handle 'Map<...>' generic type annotation", strict=False)
     def test_typed_generic_type_detected(self):
         """extract_declaration_names must find 'map' in 'const map: Map<string, number> = ...'."""
         body = "const map: Map<string, number> = new Map()"
         names = extract_declaration_names(body)
         assert "map" in names
 
+    @pytest.mark.xfail(reason="TS limitation: string parser's declaration regex can't handle 'string | null' union annotation", strict=False)
     def test_typed_union_type_detected(self):
         """extract_declaration_names must find 'value' in 'const value: string | null = ...'."""
         body = "const value: string | null = null"
@@ -170,6 +180,7 @@ class TestGenericAndTypeAssertions:
             f"Value extraction over-captured past generics: '{val}'"
         )
 
+    @pytest.mark.xfail(reason="TS limitation: type assertions ('as T') and generics confuse data property extraction", strict=False)
     def test_data_members_extracted_from_generic_mixin(self):
         """All data members must be found even with type assertions."""
         source = _read("genericRefsMixin.ts")
@@ -191,6 +202,7 @@ class TestGenericAndTypeAssertions:
 class TestOptionalChaining:
     """Failure 4: `this?.x` references are invisible to the parser."""
 
+    @pytest.mark.xfail(reason="TS limitation: optional chaining 'this?.x' is invisible to the 'this.' regex", strict=False)
     def test_optional_chain_this_detected(self):
         """find_external_this_refs must detect 'this?.count' as referencing 'count'."""
         code = "const current = this?.count ?? 0"
@@ -202,6 +214,7 @@ class TestOptionalChaining:
             "Optional chaining `this?.count` is invisible to the `this\\.` regex"
         )
 
+    @pytest.mark.xfail(reason="TS limitation: optional chaining 'this?.reset?.()' is invisible to the 'this.' regex", strict=False)
     def test_optional_chain_method_call(self):
         """find_external_this_refs must detect 'this?.reset?.()' as referencing 'reset'."""
         code = "this?.reset?.()"
@@ -211,6 +224,7 @@ class TestOptionalChaining:
             "Optional chaining on method call not detected"
         )
 
+    @pytest.mark.xfail(reason="TS limitation: optional chaining 'this?.x' is invisible to the 'this.' regex", strict=False)
     def test_mixed_normal_and_optional_chain(self):
         """Both `this.isActive` and `this?.count` must be found in the same block."""
         code = """
@@ -246,6 +260,7 @@ class TestOptionalChaining:
 class TestImportTypePreservation:
     """Failure 5: `import type { X }` must preserve the `type` keyword."""
 
+    @pytest.mark.xfail(reason="TS limitation: 'import type { X }' lines are not captured by extract_mixin_imports", strict=False)
     def test_import_type_detected(self):
         """extract_mixin_imports must capture 'import type { UserConfig }' line."""
         source = _read("importTypeMixin.ts")
@@ -257,6 +272,7 @@ class TestImportTypePreservation:
             f"UserConfig import not captured at all. Lines: {import_lines}"
         )
 
+    @pytest.mark.xfail(reason="TS limitation: the 'type' keyword in 'import type { X }' is not preserved", strict=False)
     def test_import_type_keyword_preserved(self):
         """The captured import line must retain 'import type', not just 'import'."""
         source = _read("importTypeMixin.ts")

@@ -198,10 +198,11 @@ def write_migration_report(plan: MigrationPlan, project_root: Path) -> Path:
         if _ic:
             _header_parts.append(f"{_ic} info")
 
+    _header_summary = " \u00b7 ".join(_header_parts)
     sections: list[str] = [
         "# Migration Report",
         "",
-        f"`{now.strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {' \u00b7 '.join(_header_parts)}",
+        f"`{now.strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {_header_summary}",
         "",
         "> Use `git diff` to review the actual code changes.",
         "",

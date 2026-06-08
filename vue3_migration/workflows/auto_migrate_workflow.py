@@ -28,8 +28,8 @@ from ..core.warning_collector import (
     suppress_covered_member_warnings, suppress_resolved_warnings,
 )
 from ..models import (
-    ComposableCoverage, FileChange, MigrationConfig, MigrationPlan, MigrationStatus,
-    MigrationWarning, MixinEntry, MixinMembers,
+    MEMBER_KIND_LABELS, ComposableCoverage, FileChange, MigrationConfig, MigrationPlan,
+    MigrationStatus, MigrationWarning, MixinEntry, MixinMembers,
 )
 from ..transform.composable_generator import (
     generate_composable_from_mixin, mixin_stem_to_composable_name,
@@ -128,8 +128,7 @@ def _analyze_mixin_silent(
             # Surface kind mismatches as warnings
             if entry.classification.kind_mismatched:
                 for name, mixin_kind, comp_kind in entry.classification.kind_mismatched:
-                    _kind_labels = {"data": "ref", "computed": "computed", "methods": "function"}
-                    expected = _kind_labels.get(mixin_kind, mixin_kind)
+                    expected = MEMBER_KIND_LABELS.get(mixin_kind, mixin_kind)
                     entry.warnings.append(MigrationWarning(
                         mixin_stem=entry.mixin_stem,
                         category="kind-mismatch",
@@ -401,7 +400,6 @@ def plan_new_composables(
                 if dropped:
                     from ..core.mixin_analyzer import extract_member_line_ranges
                     from ..core.warning_collector import suppress_covered_member_warnings
-                    from ..models import MigrationWarning
                     ranges = extract_member_line_ranges(mixin_source)
 
                     def _label(name: str) -> str:
@@ -462,14 +460,26 @@ def plan_component_injections(
     composable_patches: list[FileChange],
     config: MigrationConfig,
 ) -> list[FileChange]:
-    """Plan all component setup() injections.
+    """Phase 3 of the pipeline: plan every component's setup() injection.
+
+    This is the most involved step because it has to reconcile each component
+    against the composables that Phase 2 just created or patched. For every
+    component it:
+
+    1. Re-classifies entries whose composables were patched, so the decision
+       uses the updated return_keys/identifiers — not the pre-patch view.
+    2. Detects name collisions across composables, against the component's own
+       data(), and against identifiers already declared in an existing setup().
+    3. Removes the mixin import and its entry in the `mixins: [...]` array, adds
+       the composable import, and creates or merges into setup() — destructuring
+       only the injectable (non-overridden, non-conflicting) members.
+    4. Skips removal and emits a warning for entries that have no working
+       replacement (lifecycle-only, no usage, or all members overridden), so a
+       component is never left with a mixin removed and nothing in its place.
 
     Lifecycle hooks live in the composable (generated or patched), never in
-    setup(). Members referenced in lifecycle hook bodies are included in the
-    composable destructure so the hooks can access them.
-
-    Re-classifies entries whose composables were patched to account for
-    the updated return_keys and identifiers.
+    setup(); members referenced in hook bodies are still destructured so the
+    hooks can reach them.
     """
     patched_content: dict[Path, str] = {
         c.file_path: c.new_content for c in composable_patches if c.has_changes
@@ -548,7 +558,6 @@ def plan_component_injections(
             MigrationStatus.READY, MigrationStatus.FORCE_UNBLOCKED,
         )]
         for entry in blocked_entries:
-            from ..models import MigrationWarning
             if entry.status == MigrationStatus.BLOCKED_NO_COMPOSABLE:
                 if entry.composable:
                     detail = (
@@ -649,7 +658,6 @@ def plan_component_injections(
                 )
                 collisions = set(injectable) & set(data_props)
                 if collisions:
-                    from ..models import MigrationWarning
                     comp_name = comp_path.stem
                     fn_name = entry.composable.fn_name if entry.composable else "composable"
                     # Find where data() starts so we search declarations, not template usage
@@ -767,7 +775,6 @@ def plan_component_injections(
                 seen_members.update(injectable)
                 # Warn about cross-composable collision dedup
                 if collision_skipped:
-                    from ..models import MigrationWarning
                     skipped_names = ", ".join(collision_skipped)
                     entry.warnings.append(MigrationWarning(
                         mixin_stem=entry.mixin_stem,
@@ -787,7 +794,6 @@ def plan_component_injections(
                     ))
                 # Warn about setup() identifier conflicts
                 if setup_conflicts_in_injectable:
-                    from ..models import MigrationWarning
                     names = ", ".join(setup_conflicts_in_injectable)
                     entry.warnings.append(MigrationWarning(
                         mixin_stem=entry.mixin_stem,
@@ -806,7 +812,6 @@ def plan_component_injections(
                     ))
                 # Warn about overridden members that won't be destructured
                 if overridden_in_injectable:
-                    from ..models import MigrationWarning
                     names = ", ".join(overridden_in_injectable)
                     entry.warnings.append(MigrationWarning(
                         mixin_stem=entry.mixin_stem,
@@ -828,7 +833,6 @@ def plan_component_injections(
                 # a bare call (no destructuring) to activate side effects.
                 migratable_entries.append(entry)
                 composable_calls.append((entry.composable.fn_name, []))
-                from ..models import MigrationWarning
                 hooks_str = ", ".join(entry.lifecycle_hooks)
                 entry.warnings.append(MigrationWarning(
                     mixin_stem=entry.mixin_stem,
@@ -844,7 +848,6 @@ def plan_component_injections(
                 ))
             else:
                 # Entry won't produce a composable call — keep the mixin.
-                from ..models import MigrationWarning
                 if not entry.used_members:
                     if entry.lifecycle_hooks:
                         hooks_str = ", ".join(entry.lifecycle_hooks)
@@ -1018,16 +1021,13 @@ def _inject_kind_mismatch_comments(
     warnings: list[MigrationWarning],
 ) -> str:
     """Add inline // ⚠️ comments to composable lines with kind mismatches."""
-    import re
-    _kind_labels = {"data": "ref", "computed": "computed", "methods": "function"}
-
     # Build member→hint map
     hints: dict[str, str] = {}
     for w in warnings:
         m = re.match(r"'(\w+)' is (\w+) in mixin but (\w+) in composable", w.message)
         if m:
             name, mixin_kind, comp_kind = m.group(1), m.group(2), m.group(3)
-            expected = _kind_labels.get(mixin_kind, mixin_kind)
+            expected = MEMBER_KIND_LABELS.get(mixin_kind, mixin_kind)
             hints[name] = f"\u26a0\ufe0f type mismatch \u2014 mixin expects {expected}, composable has {comp_kind}"
 
     if not hints:
@@ -1309,7 +1309,7 @@ def _build_standalone_mixin_entry(
             "This mixin file can be safely deleted."
         ),
         action_required=(
-            f"Delete the mixin file or keep it if used outside "
+            "Delete the mixin file or keep it if used outside "
             "this project (shared library, dynamic import, etc.)"
         ),
         line_hint=None,

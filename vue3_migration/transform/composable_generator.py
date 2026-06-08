@@ -370,7 +370,6 @@ def generate_composable_from_mixin(
     # Reference check: scan lifecycle hook bodies for method references
     # that are in mixin_members.methods. Verify they were generated.
     from .lifecycle_converter import extract_hook_body
-    _generated_method_names = set(mixin_members.methods)
     _lifecycle_ref_warnings: list[str] = []
     for hook in lifecycle_hooks:
         hook_body = extract_hook_body(mixin_source, hook)
@@ -485,7 +484,7 @@ def generate_composable_from_mixin(
     i18n_import_line = ""
     if i18n_functions:
         sorted_fns = sorted(i18n_functions)
-        i18n_import_line = f"import {{ useI18n }} from 'vue-i18n'\n"
+        i18n_import_line = "import { useI18n } from 'vue-i18n'\n"
         i18n_destructure = f"{indent}const {{ {', '.join(sorted_fns)} }} = useI18n()"
         body = i18n_destructure + "\n\n" + body
 

@@ -5,8 +5,14 @@ Markdown report generation for migration analysis results.
 from pathlib import Path
 
 from ..core.file_utils import read_source
-from ..models import ConfidenceLevel, FileChange, MigrationWarning, MixinEntry
-from .terminal import md_green, md_yellow
+from ..models import (
+    MEMBER_KIND_LABELS, ConfidenceLevel, FileChange, MigrationWarning, MixinEntry,
+)
+from .terminal import md_yellow
+
+# Cap clickable line links per warning so a many-occurrence warning doesn't
+# flood the report; the first few are enough to navigate to the pattern.
+_MAX_VSCODE_LINKS = 5
 
 _SKIPPED_CATEGORIES = frozenset({
     "skipped-all-overridden",
@@ -641,7 +647,10 @@ def build_component_report(
     parts = [f"{len(mixin_entries)} mixin{'s' if len(mixin_entries) != 1 else ''}"]
     parts.append(f"{ready_count} ready")
     parts.append(f"{blocked_count} blocked")
-    w(f"`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {' \u00b7 '.join(parts)}\n")
+    # Join outside the f-string: a backslash escape inside an f-string expression
+    # is a SyntaxError before Python 3.12 (PEP 701), and we support 3.9+.
+    summary = " \u00b7 ".join(parts)
+    w(f"`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {summary}\n")
     w("---\n")
 
     ready_entries = []
@@ -852,14 +861,15 @@ def generate_status_report(project_root: Path, config) -> str:
         header_parts.append(f"{needs_manual_count} manual")
     header_parts.append(f"{blocked} blocked")
 
+    header_summary = " \u00b7 ".join(header_parts)
     lines: list[str] = [
         "# Vue Migration Status Report",
         "",
-        f"`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {' \u00b7 '.join(header_parts)}",
+        f"`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {header_summary}",
         "",
         "---",
         "",
-        "> Run `vue3-migration auto` to generate a detailed diff report with warnings, per-component guide, and checklist.",
+        "> Run `vue3-migration all` to generate a detailed diff report with warnings, per-component guide, and checklist.",
         "",
         "## Mixin Overview",
         "",
@@ -927,8 +937,9 @@ def build_audit_report(
     header_parts.append(f"{len(lifecycle_hooks)} hook{'s' if len(lifecycle_hooks) != 1 else ''}")
     header_parts.append(f"{len(importing_files)} file{'s' if len(importing_files) != 1 else ''}")
 
+    header_summary = " \u00b7 ".join(header_parts)
     w(f"# Mixin Audit: {_rel_link(mixin_path, project_root, mixin_path.name)}\n")
-    w(f"`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {' \u00b7 '.join(header_parts)}\n")
+    w(f"`{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}` \u2014 {header_summary}\n")
     w("---\n")
 
     w("## Mixin Members\n")
@@ -1124,10 +1135,6 @@ def build_action_plan(
     component_changes: "list[FileChange] | None" = None,
 ) -> str:
     """Build an action plan grouped by difficulty tier with per-composable steps."""
-    from collections import OrderedDict
-
-    from ..core.warning_collector import compute_confidence
-
     # De-duplicate entries by mixin_stem
     seen_stems: set[str] = set()
     entries: list[MixinEntry] = []
@@ -1264,7 +1271,7 @@ def build_action_plan(
                 a(f"- **`{entry.mixin_stem}`** \u2014 [`{rel}`]({rel})")
             else:
                 a(f"- **`{entry.mixin_stem}`**")
-            a(f"  - Delete this file, or keep it if used outside this project (shared library, dynamic import, etc.)")
+            a("  - Delete this file, or keep it if used outside this project (shared library, dynamic import, etc.)")
         a("")
 
     return "\n".join(lines)
@@ -1447,7 +1454,7 @@ def _step_label(
             f" Pass as param, function arg, or use another composable"
         )
     if warning.category == "direct-mixin-access":
-        return f"Direct mixin object access \u2014 replace with composable call"
+        return "Direct mixin object access \u2014 replace with composable call"
     if warning.category == "this-alias":
         return "`this` alias won't work \u2014 replace with direct refs"
     if warning.category.startswith("mixin-option:"):
@@ -1488,10 +1495,6 @@ def _step_label(
     return f"Replace `{warning.category}`"
 
 
-# Map mixin section names to human-readable composable kind names
-_MIXIN_KIND_LABELS = {"data": "ref", "computed": "computed", "methods": "function"}
-
-
 def _build_kind_mismatch_step(
     warnings: list[MigrationWarning],
     comp_source: str,
@@ -1509,7 +1512,7 @@ def _build_kind_mismatch_step(
         m = re.match(r"'(\w+)' is (\w+) in mixin but (\w+) in composable", w.message)
         if m:
             name, mixin_kind, comp_kind = m.group(1), m.group(2), m.group(3)
-            expected = _MIXIN_KIND_LABELS.get(mixin_kind, mixin_kind)
+            expected = MEMBER_KIND_LABELS.get(mixin_kind, mixin_kind)
         else:
             name = None
 
@@ -1615,24 +1618,24 @@ def _build_divergence_section(
             label = f"composable L{s}" if s == e else f"composable L{s}-{e}"
             comp_link_str = _vscode_link(composable_path, s, label)
 
-        lines.append(f"<details>")
+        lines.append("<details>")
         lines.append(f"<summary><b>{div.member_name}</b> — implementation differs</summary>\n")
 
         # Mixin source
         mixin_header = f"**Mixin** ({mixin_link_str}):" if mixin_link_str else "**Mixin:**"
         lines.append(mixin_header)
-        lines.append(f"```js")
+        lines.append("```js")
         lines.append(div.mixin_source)
-        lines.append(f"```\n")
+        lines.append("```\n")
 
         # Composable source
         comp_header = f"**Composable** ({comp_link_str}):" if comp_link_str else "**Composable:**"
         lines.append(comp_header)
-        lines.append(f"```js")
+        lines.append("```js")
         lines.append(div.composable_source)
-        lines.append(f"```")
+        lines.append("```")
 
-        lines.append(f"\n</details>\n")
+        lines.append("\n</details>\n")
 
     return "\n".join(lines)
 
@@ -1646,7 +1649,21 @@ def _append_composable_steps(
     component_content_map: "dict[Path, str] | None" = None,
     project_root: "Path | None" = None,
 ) -> None:
-    """Append numbered action steps for one composable to the output."""
+    """Append one composable's full action-plan section to the report.
+
+    `a` is the output-accumulator callback (appends a line). For the given
+    mixin entry this renders, in order:
+
+    - the composable header (resolving its name/path, reading its current
+      content from the provided maps or falling back to disk),
+    - de-duplicated, non-auto-rewritten warnings as numbered manual steps, each
+      with clickable file:line links (capped at `_MAX_VSCODE_LINKS`),
+    - kind-mismatch and direct-mixin-access notes, and
+    - the divergence section for members whose composable body differs from the
+      mixin (see `_build_divergence_section`).
+
+    Appends nothing and returns None when the entry has no reportable steps.
+    """
     import re
     from ..transform.composable_generator import mixin_stem_to_composable_name
     name = entry.composable.fn_name if entry.composable else mixin_stem_to_composable_name(entry.mixin_stem)
@@ -1737,7 +1754,7 @@ def _append_composable_steps(
         elif comp_source and comp_path:
             line_nums = _find_warning_lines(comp_source, w)
             if line_nums:
-                vscode_links = [_vscode_link(comp_path, ln, f"L{ln}") for ln in line_nums[:5]]
+                vscode_links = [_vscode_link(comp_path, ln, f"L{ln}") for ln in line_nums[:_MAX_VSCODE_LINKS]]
                 line_refs = f" ({', '.join(vscode_links)})"
         # Fallback: link to mixin source lines
         if not line_refs and hasattr(entry, 'mixin_path'):
@@ -1746,7 +1763,7 @@ def _append_composable_steps(
                 # Prefer source_lines (all occurrences) over single source_line
                 lines_to_show = w.source_lines if w.source_lines else ([w.source_line] if w.source_line else [])
                 if lines_to_show:
-                    vscode_links = [_vscode_link(mixin_path, ln, f"mixin L{ln}") for ln in lines_to_show[:5]]
+                    vscode_links = [_vscode_link(mixin_path, ln, f"mixin L{ln}") for ln in lines_to_show[:_MAX_VSCODE_LINKS]]
                     line_refs = f" ({', '.join(vscode_links)})"
 
         if link:

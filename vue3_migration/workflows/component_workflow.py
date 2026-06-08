@@ -379,7 +379,7 @@ def run(component_arg: str, config: MigrationConfig | None = None):
         print(f"  {bold('q')}. Skip\n")
         choice = input("  > ").strip().lower()
     else:
-        choice = input(f"\nInject all composables? (y/n): ").strip().lower()
+        choice = input("\nInject all composables? (y/n): ").strip().lower()
         if choice == "y":
             choice = "r"  # treat as inject-ready (all are ready)
 
@@ -421,7 +421,7 @@ def run(component_arg: str, config: MigrationConfig | None = None):
             print(f"\n  {yellow('WARNING')}: Interrupted after {len(written)} file(s) written.")
             if written:
                 print(f"  Already written: {', '.join(f.name for f in written)}")
-            print(f"  Run: git diff to review. Run: git checkout . to undo.")
+            print("  Run: git diff to review. Run: git checkout . to undo.")
             raise
 
     elif choice == "r":

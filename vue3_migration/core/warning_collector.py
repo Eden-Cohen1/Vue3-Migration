@@ -4,8 +4,9 @@ Warning collector is a separate module so Plans 2-4 can add detectors
 here without touching the generator or patcher.
 """
 import re
+from pathlib import Path
 
-from ..models import ConfidenceLevel, MigrationWarning, MixinMembers
+from ..models import MEMBER_KIND_LABELS, ConfidenceLevel, MigrationWarning, MixinMembers
 from .js_parser import skip_non_code
 
 
@@ -637,7 +638,7 @@ def inject_inline_warnings(
                 alias = m.group(1)
                 hint = _get_short_hint(w)
                 # Match the declaration line
-                pat = f"= this"
+                pat = "= this"
                 pattern_info[pat] = (w.severity, hint)
                 # Also match all alias.x usage lines
                 alias_usage_patterns[f"{alias}."] = (w.severity, f"{alias}.x won't auto-rewrite — use direct refs")
@@ -647,8 +648,7 @@ def inject_inline_warnings(
             m = re.match(r"'(\w+)' is (\w+) in mixin but (\w+) in composable", w.message)
             if m:
                 name, mixin_kind, comp_kind = m.group(1), m.group(2), m.group(3)
-                _kind_labels = {"data": "ref", "computed": "computed", "methods": "function"}
-                expected = _kind_labels.get(mixin_kind, mixin_kind)
+                expected = MEMBER_KIND_LABELS.get(mixin_kind, mixin_kind)
                 hint = f"type mismatch — mixin expects {expected}, composable has {comp_kind}"
                 # Use the member name as pattern to match its declaration line
                 pat = name
@@ -906,7 +906,6 @@ def resolve_nested_mixin_members(
     (with keys 'data', 'computed', 'methods', 'watch'), or None if the
     mixin file could not be resolved.
     """
-    from pathlib import Path as _Path
     from .component_analyzer import parse_imports, parse_mixins_array
     from .file_resolver import resolve_import_path
     from .mixin_analyzer import extract_mixin_members
@@ -922,7 +921,7 @@ def resolve_nested_mixin_members(
         _visited = set()
 
     # Add current mixin to visited set (use resolved path string for uniqueness)
-    current_key = str(_Path(mixin_path).resolve())
+    current_key = str(Path(mixin_path).resolve())
     _visited.add(current_key)
 
     imports = parse_imports(mixin_source)
@@ -987,15 +986,13 @@ def resolve_nested_member_chains(
     Returns e.g. {"midFlag": ("mixinB", ["mixinA", "mixinB"]),
                   "deepVal": ("mixinC", ["mixinA", "mixinB", "mixinC"])}
     """
-    from pathlib import Path as _Path
     from .component_analyzer import parse_imports, parse_mixins_array
     from .file_resolver import resolve_import_path
-    from .mixin_analyzer import extract_mixin_members
 
     if mixin_path is None or project_root is None:
         return {}
 
-    stem = _Path(mixin_path).stem
+    stem = Path(mixin_path).stem
     resolved = resolve_nested_mixin_members(
         mixin_source, mixin_path, project_root,
         all_mixin_members=all_mixin_members,
@@ -1033,31 +1030,8 @@ def resolve_nested_member_chains(
                 except (OSError, UnicodeDecodeError):
                     pass
 
-    _traverse(mixin_source, mixin_path, [stem], {str(_Path(mixin_path).resolve())})
+    _traverse(mixin_source, mixin_path, [stem], {str(Path(mixin_path).resolve())})
     return result
-
-
-def _format_resolved_nested_warning(
-    raw_names: str,
-    resolved: "dict[str, dict[str, list[str]] | None]",
-) -> str:
-    """Format an enriched nested mixin warning message with resolved members."""
-    parts = []
-    for name, members in resolved.items():
-        if members is None:
-            parts.append(f"{name} (file not found — check manually)")
-        else:
-            member_parts = []
-            for kind in ("data", "computed", "methods", "watch"):
-                names = members.get(kind, [])
-                if names:
-                    member_parts.append(f"{kind}({', '.join(names)})")
-            if member_parts:
-                parts.append(f"{name}: {', '.join(member_parts)}")
-            else:
-                parts.append(f"{name}: (no members found)")
-    detail = "; ".join(parts)
-    return f"Nested mixins [{raw_names}] — transitive members: {detail}"
 
 
 def detect_structural_patterns(

@@ -7,10 +7,8 @@ direct module imports.
 """
 
 import os
-import re
 from collections import Counter
 from pathlib import Path
-from typing import Optional
 
 from .core.component_analyzer import parse_imports, parse_mixins_array
 from .core.file_utils import read_source
@@ -21,7 +19,7 @@ from .core.composable_search import (
 )
 from .core.file_resolver import resolve_mixin_stem
 from .models import MigrationConfig
-from .reporting.terminal import bold, cyan, dim, green, red, yellow
+from .reporting.terminal import bold, dim, green, yellow
 
 
 # =============================================================================
@@ -38,20 +36,6 @@ def _parse_imports(source: str) -> dict[str, str]:
     return parse_imports(source)
 
 
-def _find_mixin_file(mixin_stem: str, project_root: Path) -> Optional[Path]:
-    """Try to find a mixin file by its stem name."""
-    for dirpath, _, filenames in os.walk(project_root):
-        rel = Path(dirpath).relative_to(project_root)
-        if any(p in {"node_modules", "dist", ".git"} for p in rel.parts):
-            continue
-        for fn in filenames:
-            fp = Path(dirpath) / fn
-            if fp.suffix in (".js", ".ts") and fp.stem == mixin_stem:
-                return fp
-    return None
-
-
-
 # =============================================================================
 # Interactive Menu
 # =============================================================================
@@ -64,20 +48,20 @@ def interactive_menu(config: MigrationConfig):
     print(f"  {dim('Migrate Vue 2 mixins to Vue 3 composables.')}")
     print()
     print(f"  {bold('1.')} {green('Full project')}")
-    print(f"     Migrate every component at once. Auto-patches and generates")
-    print(f"     composables as needed. Shows a change summary before writing.\n")
+    print("     Migrate every component at once. Auto-patches and generates")
+    print("     composables as needed. Shows a change summary before writing.\n")
     print(f"  {bold('2.')} {green('Pick a component')}")
-    print(f"     Choose one component from a list. Migrate only that component.")
-    print(f"     Safe for large projects -- low blast radius, easy to test.\n")
+    print("     Choose one component from a list. Migrate only that component.")
+    print("     Safe for large projects -- low blast radius, easy to test.\n")
     print(f"  {bold('3.')} {green('Pick a mixin')}")
-    print(f"     Choose one mixin. Fully retires it across all components that use it.")
-    print(f"     Patches/generates the composable and updates every affected component.\n")
+    print("     Choose one mixin. Fully retires it across all components that use it.")
+    print("     Patches/generates the composable and updates every affected component.\n")
     print(f"  {bold('4.')} {green('Project status')}")
-    print(f"     Read-only. Generates a detailed report of what's migrated,")
-    print(f"     what's ready, and what's blocked. No files are changed.\n")
+    print("     Read-only. Generates a detailed report of what's migrated,")
+    print("     what's ready, and what's blocked. No files are changed.\n")
     print(f"  {bold('q.')} Quit\n")
 
-    choice = input(f"  Choose (1/2/3/4/q): ").strip()
+    choice = input("  Choose (1/2/3/4/q): ").strip()
     print()
 
     if choice == "1":
@@ -156,13 +140,13 @@ def _apply_plan(plan, project_root: Path) -> None:
         print(f"\n  {yellow('WARNING')}: Interrupted after {len(written)} file(s) written.")
         if written:
             print(f"  Written so far: {', '.join(f.name for f in written)}")
-        print(f"  Run: git diff   to review.")
-        print(f"  Run: git checkout . to undo all changes.")
+        print("  Run: git diff   to review.")
+        print("  Run: git checkout . to undo all changes.")
         raise
 
     report_path = write_migration_report(plan, project_root)
     print(f"\n  {bold('Done.')} Diff report: {dim(str(report_path.name))}")
-    print(f"  Review changes: git diff")
+    print("  Review changes: git diff")
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +155,6 @@ def _apply_plan(plan, project_root: Path) -> None:
 
 def _scan_components_with_mixins(project_root: Path, config: MigrationConfig) -> list[dict]:
     """Return list of component info dicts for all .vue files that use mixins."""
-    from .core.composable_search import collect_composable_stems, find_composable_dirs, mixin_has_composable
-
     composable_dirs = find_composable_dirs(project_root)
     composable_stems = collect_composable_stems(composable_dirs, project_root=project_root)
     results: list[dict] = []
@@ -237,8 +219,6 @@ def _find_all_mixin_files(project_root: Path, config: MigrationConfig) -> list[P
 
 def _scan_mixin_usage(project_root: Path, config: MigrationConfig) -> list[dict]:
     """Return list of mixin info dicts sorted by usage count."""
-    from .core.composable_search import collect_composable_stems, find_composable_dirs, mixin_has_composable
-
     composable_dirs = find_composable_dirs(project_root)
     composable_stems = collect_composable_stems(composable_dirs, project_root=project_root)
     mixin_counter: Counter[str] = Counter()
@@ -515,7 +495,7 @@ def _run_mixin_migration(mixin_stem: str, config: MigrationConfig) -> None:
         component_word = "component" if component_count == 1 else "components"
         print(f"  This will update {yellow(str(component_count))} {component_word}.\n")
     elif composable_count:
-        print(f"  No components use this mixin. Will generate composable only.\n")
+        print("  No components use this mixin. Will generate composable only.\n")
 
     _show_change_summary(plan, config.project_root)
 
@@ -581,12 +561,12 @@ def main(argv: list[str] | None = None):
         full_project_migration(config)
     elif command == "component":
         if len(args) < 2:
-            print(f"\n  Usage: vue3-migration component <path/to/Component.vue>\n")
+            print("\n  Usage: vue3-migration component <path/to/Component.vue>\n")
             return
         component_migration(args[1], config)
     elif command == "mixin":
         if len(args) < 2:
-            print(f"\n  Usage: vue3-migration mixin <mixinName>\n")
+            print("\n  Usage: vue3-migration mixin <mixinName>\n")
             return
         mixin_migration(args[1], config)
     elif command == "status":
