@@ -20,7 +20,6 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 <!-- INDEX:START -->
 | ID | Sev | Category | Title | Status |
 |----|-----|----------|-------|--------|
-| [CORR-3](#corr-3) | 🔴 high | Correctness / Behavior | Divergence detector silently ignores DELETED `this.` side-effect lines (missed `$emit`/`$forceUpdate` drops) | open |
 | [CORR-4](#corr-4) | 🟠 med | Correctness / Behavior | Patched composables inline created() body at the BOTTOM (before return), not at the top — stale-read hazard | open |
 | [RPT-2](#rpt-2) | 🟠 med | Report Accuracy | Divergence 'composable Lxx' vscode links are off by the inserted header/import line count | open |
 | [RPT-4](#rpt-4) | 🟠 med | Report Accuracy | Partially-migrated component (mixin left in array) is never reported at the component level — it silently looks 'done' | open |
@@ -30,42 +29,12 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 | [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_9 open: 1 high, 4 med, 4 low._
+_8 open: 0 high, 4 med, 4 low._
 <!-- INDEX:END -->
 
 ## Issues
 
 <!-- ISSUES:START -->
-
-<!-- ISSUE id=CORR-3 severity=high category=correctness status=open discovered=2026-06-08 source=review-migration-output -->
-### CORR-3 · Divergence detector silently ignores DELETED `this.` side-effect lines (missed `$emit`/`$forceUpdate` drops)
-
-**🔴 high** · Correctness / Behavior · status: `open`
-
-**Symptom**
-
-`core/divergence_detector.py:_lines_match_ignoring_unconverted` (~L326-344): on a SequenceMatcher `delete` opcode it does `all("this." in l for l in expected[...])` and treats the deletion as ignorable 'unconverted' noise. So `deselectAll`'s dropped `this.$emit('selection-changed', ...)` (`selectionMixin.js:61` vs `useSelection.js`) is NOT flagged, and `setError`'s dropped `this.$forceUpdate()` is omitted. `deselectAll` is called 3× in BatchActions → parent sync silently broken, reported as clean.
-
-**Reproduce**
-
-Diff `selectionMixin.deselectAll` (has `this.$emit`) against `useSelection.deselectAll` (no emit); migrate and read the report — useSelection's divergence list omits `deselectAll`.
-
-**Root cause / likely source**
-
-`_lines_match_ignoring_unconverted` cannot distinguish 'line present but unconverted' from 'line deleted entirely' — both look like a `delete` opcode of `this.`-containing lines.
-
-**Why it matters**
-
-The one feature meant to catch dropped behavior produces a FALSE NEGATIVE: affirmatively reports a member as clean while a side-effecting line was dropped. Generalizes to any dropped `this.*` side effect.
-
-**Fix direction**
-
-Only treat a `delete` opcode as ignorable when the deleted line is a genuinely unconvertible construct with no counterpart. A pure deletion of `this.$emit`/`this.$forceUpdate`/side-effecting method call must count as a divergence.
-
-**Verify when fixed**
-
-Unit test in tests/test_divergence_detector.py: a composable that drops a `this.$emit(...)` line flags that member as divergent.
-<!-- /ISSUE id=CORR-3 -->
 
 <!-- ISSUE id=CORR-4 severity=med category=correctness status=open discovered=2026-06-08 source=review-migration-output -->
 ### CORR-4 · Patched composables inline created() body at the BOTTOM (before return), not at the top — stale-read hazard

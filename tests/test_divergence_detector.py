@@ -223,6 +223,33 @@ export function useSearch() {
     try {
       const res = await http.get('/api/search', { params: { q: query } })
       results.value = res.data.items
+      emit('search-complete', results.value.length)
+    } catch (err) {
+      error.value = err.message
+      emit('search-error', err)
+    } finally {
+      loading.value = false
+    }
+  }
+
+  return { loading, results, error, fetchResults }
+}
+"""
+
+# --- Composable: identical convertible logic but DROPS both $emit side effects ---
+COMPOSABLE_DROPPED_EMITS = """\
+import { ref } from 'vue'
+
+export function useSearch() {
+  const loading = ref(false)
+  const results = ref([])
+  const error = ref(null)
+
+  async function fetchResults(query) {
+    loading.value = true
+    try {
+      const res = await http.get('/api/search', { params: { q: query } })
+      results.value = res.data.items
     } catch (err) {
       error.value = err.message
     } finally {
@@ -253,8 +280,57 @@ def test_detect_divergences_matching_logic():
         ref_members=members.data,
         plain_members=members.methods,
     )
-    # The composable matches the convertible mixin logic. Members with
-    # unconverted this.X (external deps) are skipped entirely.
+    # The composable matches the convertible mixin logic AND keeps both $emit
+    # side effects (converted to emit()), so there is no divergence. The only
+    # remaining this.X (this.$http external dep) is ignorable unconverted noise.
+    assert divs == []
+
+
+def test_detect_divergences_dropped_emit_is_flagged():
+    """CORR-3: a composable that DROPS a this.$emit side effect must be flagged.
+
+    Regression test for the false negative where a deleted this.-side-effect line
+    was treated as ignorable 'unconverted' noise and the member reported clean.
+    """
+    members = _make_members()
+    divs = detect_divergences(
+        mixin_source=MIXIN_WITH_ERROR_HANDLING,
+        composable_source=COMPOSABLE_DROPPED_EMITS,
+        mixin_members=members,
+        covered_members=["fetchResults"],
+        ref_members=members.data,
+        plain_members=members.methods,
+    )
+    assert len(divs) == 1
+    assert divs[0].member_name == "fetchResults"
+
+
+def test_detect_divergences_converted_emit_not_flagged():
+    """A this.$emit converted to emit() (not dropped) is NOT a divergence."""
+    mixin_src = """\
+export default {
+  methods: {
+    notify() {
+      this.$emit('changed', 1)
+    }
+  }
+}"""
+    comp_src = """\
+export function useX() {
+  function notify() {
+    emit('changed', 1)
+  }
+  return { notify }
+}"""
+    members = _MixinMembers(methods=["notify"])
+    divs = detect_divergences(
+        mixin_source=mixin_src,
+        composable_source=comp_src,
+        mixin_members=members,
+        covered_members=["notify"],
+        ref_members=[],
+        plain_members=["notify"],
+    )
     assert divs == []
 
 

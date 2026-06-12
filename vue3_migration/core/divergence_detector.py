@@ -323,19 +323,66 @@ def detect_divergences(
     return divergences
 
 
+def _is_dropped_side_effect(line: str, actual_text: str) -> bool:
+    """True when `line` is a `this.`-side-effect call that the composable dropped.
+
+    A side effect here is a `this.` *method invocation* the generator could not
+    convert and therefore left in `expected` — most importantly Vue 2 instance
+    calls like ``this.$emit(...)`` / ``this.$forceUpdate()`` / ``this.$set(...)``,
+    but also a plain ``this.someMethod(...)`` call.
+
+    It counts as DROPPED — a genuine behavioral divergence (CORR-3) — only if the
+    effect does not reappear anywhere in the composable body. That distinguishes
+    a line that was merely *converted* (``this.$emit`` → ``emit``) or *reordered*
+    (which still contains the effect's token) from one that was deleted outright.
+    Reads and assignments are excluded: the generator rewrites those, so a
+    surviving ``this.`` read is a real external dependency already covered by the
+    unconverted-noise rule.
+    """
+    if "this." not in line:
+        return False
+    # First `this.`-access that is actually a call (has a trailing `(`).
+    m = re.search(r"this\.(\$?\w+)(?:\s*\.\s*\w+)*\s*\(", line)
+    if not m:
+        return False
+    token = m.group(1).lstrip("$")  # e.g. 'emit' from this.$emit, 'doThing' from this.doThing
+    if not token:
+        return False
+    # Effect still present in the composable (converted/reordered) → not dropped.
+    if re.search(rf"(?<!\w){re.escape(token)}(?!\w)", actual_text):
+        return False
+    return True
+
+
 def _lines_match_ignoring_unconverted(expected: list[str], actual: list[str]) -> bool:
     """Check if expected and actual match, ignoring diffs caused by unconverted this. patterns.
 
     Uses SequenceMatcher to align lines, then checks if all non-equal opcodes
     are explainable by this. references (i.e., the generator couldn't convert them).
+
+    Exception (CORR-3): a `this.`-side-effect line (e.g. ``this.$emit`` /
+    ``this.$forceUpdate``) that was DELETED with no counterpart anywhere in the
+    composable is a genuine dropped behavior, NOT ignorable unconverted noise.
+    Previously such deletions were silently swallowed, producing a false
+    negative that reported a member as clean while a side effect was lost.
     """
     import difflib
+    actual_text = "\n".join(actual)
     matcher = difflib.SequenceMatcher(None, expected, actual)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
-        # Check if ALL expected lines in this opcode have this. (unconverted)
         exp_lines = expected[i1:i2]
+        # A dropped this.-side-effect whose token never resurfaces in the
+        # composable is a real divergence, whatever the opcode shape. (When the
+        # effect WAS converted/reordered its token still appears in `actual`, so
+        # _is_dropped_side_effect returns False and we fall through to the
+        # original unconverted-noise heuristic below.)
+        if tag in ("delete", "replace") and any(
+            _is_dropped_side_effect(l, actual_text) for l in exp_lines
+        ):
+            return False
+        # Check if ALL expected lines in this opcode have this. (unconverted)
         all_expected_unconverted = all("this." in l for l in exp_lines) if exp_lines else False
         if all_expected_unconverted:
             continue  # This diff is just unconverted lines — ignore
