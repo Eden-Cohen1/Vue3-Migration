@@ -2754,6 +2754,44 @@ export default {
         assert "this.$options.mixins" in cats
         assert "this.$options" not in cats
 
+    # --- CORR-1: indexed this.$options.mixins[N] access in COMPONENT bodies ---
+
+    def test_detect_options_mixins_access_in_component(self):
+        from vue3_migration.core.warning_collector import detect_options_mixins_access
+        source = """
+<script>
+import selectionMixin from '@/mixins/selectionMixin'
+export default {
+  mixins: [selectionMixin],
+  methods: {
+    selectAll(items) {
+      return this.$options.mixins[0].methods.selectAll.call(this, items)
+    }
+  }
+}
+</script>"""
+        warnings = detect_options_mixins_access(source, ["selectionMixin"])
+        assert warnings, "expected an error warning for indexed mixins access"
+        w = warnings[0]
+        assert w.category == "options-mixins-access"
+        assert w.severity == "error"
+        assert w.source_context == "component"
+
+    def test_options_mixins_index_resolves_to_mixin_name(self):
+        from vue3_migration.core.warning_collector import detect_options_mixins_access
+        source = "this.$options.mixins[1].methods.foo.call(this)"
+        warnings = detect_options_mixins_access(
+            source, ["firstMixin", "secondMixin"],
+        )
+        assert warnings
+        assert warnings[0].mixin_stem == "secondMixin"
+        assert "secondMixin" in warnings[0].message
+
+    def test_no_options_mixins_access_no_warning(self):
+        from vue3_migration.core.warning_collector import detect_options_mixins_access
+        source = "export default { methods: { foo() { return this.bar } } }"
+        assert detect_options_mixins_access(source, ["someMixin"]) == []
+
     def test_options_not_caught_by_catchall(self):
         """this.$options should not also trigger the unknown-property catch-all."""
         source = "this.$options.data()"

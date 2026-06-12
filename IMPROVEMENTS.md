@@ -20,7 +20,6 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 <!-- INDEX:START -->
 | ID | Sev | Category | Title | Status |
 |----|-----|----------|-------|--------|
-| [CORR-1](#corr-1) | 🔴 high | Correctness / Behavior | Mixin array stripped while component still uses `this.$options.mixins[N]` → runtime TypeError, no warning | open |
 | [CORR-3](#corr-3) | 🔴 high | Correctness / Behavior | Divergence detector silently ignores DELETED `this.` side-effect lines (missed `$emit`/`$forceUpdate` drops) | open |
 | [CORR-4](#corr-4) | 🟠 med | Correctness / Behavior | Patched composables inline created() body at the BOTTOM (before return), not at the top — stale-read hazard | open |
 | [RPT-2](#rpt-2) | 🟠 med | Report Accuracy | Divergence 'composable Lxx' vscode links are off by the inserted header/import line count | open |
@@ -31,42 +30,12 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 | [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_10 open: 2 high, 4 med, 4 low._
+_9 open: 1 high, 4 med, 4 low._
 <!-- INDEX:END -->
 
 ## Issues
 
 <!-- ISSUES:START -->
-
-<!-- ISSUE id=CORR-1 severity=high category=correctness status=open discovered=2026-06-08 source=review-migration-output -->
-### CORR-1 · Mixin array stripped while component still uses `this.$options.mixins[N]` → runtime TypeError, no warning
-
-**🔴 high** · Correctness / Behavior · status: `open`
-
-**Symptom**
-
-In the demo migration, `BatchActions.vue:122` keeps `this.$options.mixins[0].methods.selectAll.call(this, items)` while the tool removed `mixins: [selectionMixin, permissionMixin, loadingMixin]`. At runtime `this.$options.mixins` is `undefined`, so the select-all checkbox (`@change="selectAll(availableItems)"`, `BatchActions.vue:11`) throws `TypeError: Cannot read properties of undefined (reading '0')`. No report or warning mentions it.
-
-**Reproduce**
-
-From a clean demo repo: `python3 -m vue3_migration --root <demo> component src/components/common/BatchActions.vue` (apply). Then `grep -n '\$options.mixins' src/components/common/BatchActions.vue` (still present) and confirm the `mixins:` array is gone.
-
-**Root cause / likely source**
-
-`core/warning_collector.py` HAS a `this.$options.mixins` pattern in `_THIS_DOLLAR_PATTERNS` (~L58) but only scans it against MIXIN sources, not component bodies. `detect_direct_mixin_access` (~L1219-1274) matches only `<localName>.methods|computed|data` forms, never the indexed `this.$options.mixins[N].(...)` form used inside a component. `transform/injector.py:remove_mixin_from_array` removes the array unconditionally.
-
-**Why it matters**
-
-Ships a component that crashes on a routine click while the report says 'Apply the diff and test'. Direct violation of the 'never remove a mixin you can't replace' invariant (docs/DEVELOPMENT.md §2.2).
-
-**Fix direction**
-
-Extend `detect_direct_mixin_access` (and/or run the `this.$options.mixins` detector over component bodies) to match `this.$options.mixins[N].(methods|computed|data|...)`. When such an access survives in a component, block removal of that mixin from the array (or hard-block the component) and emit an error-level warning.
-
-**Verify when fixed**
-
-Add a fixture component that calls `this.$options.mixins[0].methods.X.call(this)`; after migration the `mixins:` array must remain (or the component is blocked) and an error warning is emitted. Cover in tests/test_warning_collector.py + an integration assertion.
-<!-- /ISSUE id=CORR-1 -->
 
 <!-- ISSUE id=CORR-3 severity=high category=correctness status=open discovered=2026-06-08 source=review-migration-output -->
 ### CORR-3 · Divergence detector silently ignores DELETED `this.` side-effect lines (missed `$emit`/`$forceUpdate` drops)

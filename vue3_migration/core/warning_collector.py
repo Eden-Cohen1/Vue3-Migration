@@ -1353,6 +1353,68 @@ def detect_direct_mixin_access(
     return warnings
 
 
+def detect_options_mixins_access(
+    component_source: str,
+    mixins_order: "list[str]",
+    component_path: "Path | None" = None,
+) -> list[MigrationWarning]:
+    """Detect ``this.$options.mixins[...]`` access inside a COMPONENT body.
+
+    Reaching into the live mixins array — e.g.
+    ``this.$options.mixins[0].methods.selectAll.call(this, items)`` — reads the
+    runtime options object directly. Once migration strips the
+    ``mixins: [...]`` array, ``this.$options.mixins`` is ``undefined`` and the
+    access throws ``TypeError: Cannot read properties of undefined`` on a
+    routine interaction (CORR-1).
+
+    ``detect_direct_mixin_access`` only matches the by-local-name form
+    (``selectionMixin.methods.X``); this catches the indexed form it misses.
+    Because removing *any* mixin also reorders the array (shifting every
+    surviving index), the caller must hard-block auto-migration for the whole
+    component, not just the indexed mixin.
+
+    Returns one error-severity warning per offending source line.
+    """
+    warnings: list[MigrationWarning] = []
+    lines = component_source.splitlines()
+    indexed_re = re.compile(r"this\s*\.\s*\$options\s*\.\s*mixins\s*\[\s*(\d+)\s*\]")
+    seen_lines: set[int] = set()
+    for m in re.finditer(r"this\s*\.\s*\$options\s*\.\s*mixins\b", component_source):
+        line_no = _line_number(component_source, m.start())
+        if line_no in seen_lines:
+            continue
+        seen_lines.add(line_no)
+        source_line = lines[line_no - 1].strip() if line_no <= len(lines) else ""
+        idx_match = indexed_re.search(source_line) or indexed_re.search(m.string[m.start():m.start() + 40])
+        target = ""
+        if idx_match:
+            idx = int(idx_match.group(1))
+            if 0 <= idx < len(mixins_order):
+                target = mixins_order[idx]
+        target_hint = f" (index resolves to mixin '{target}')" if target else ""
+        warnings.append(MigrationWarning(
+            mixin_stem=target,
+            category="options-mixins-access",
+            message=(
+                f"Component reaches into the live mixins array via "
+                f"'this.$options.mixins'{target_hint} — removing the mixins array "
+                "during migration leaves it undefined, so this access throws "
+                "'TypeError: Cannot read properties of undefined' at runtime"
+            ),
+            action_required=(
+                "Import and call the composable (or mixin) function directly "
+                "instead of indexing this.$options.mixins. Until then the mixins "
+                "array is left in place and this component is not auto-migrated."
+            ),
+            line_hint=None,
+            severity="error",
+            source_context="component",
+            source_line=line_no,
+            source_file=component_path,
+        ))
+    return warnings
+
+
 def detect_missing_cleanup(composable_source: str) -> list[str]:
     """Detect addEventListener without matching removeEventListener cleanup.
 

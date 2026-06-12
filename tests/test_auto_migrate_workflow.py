@@ -190,6 +190,71 @@ def test_blocked_missing_patched_then_mixin_removed(tmp_path):
     assert search_entry.status.value == "ready"
 
 
+def test_options_mixins_access_blocks_removal(tmp_path):
+    """CORR-1: a component that indexes this.$options.mixins[N] must keep its
+    mixins array (otherwise the access throws at runtime), and an error-level
+    warning must be emitted instead of silently shipping a broken component."""
+    proj = tmp_path / "proj"
+    (proj / "src" / "components").mkdir(parents=True)
+    (proj / "src" / "mixins").mkdir(parents=True)
+    (proj / "src" / "composables").mkdir(parents=True)
+
+    (proj / "src" / "mixins" / "selectionMixin.js").write_text(
+        "export default {\n"
+        "  data() { return { selectedItems: [] } },\n"
+        "  methods: { selectAll(items) { this.selectedItems = items } }\n"
+        "}\n"
+    )
+    # A fully-covered composable exists, so absent the bug the mixin WOULD be
+    # removed and the component migrated.
+    (proj / "src" / "composables" / "useSelection.js").write_text(
+        "import { ref } from 'vue'\n\n"
+        "export function useSelection() {\n"
+        "  const selectedItems = ref([])\n"
+        "  function selectAll(items) { selectedItems.value = items }\n"
+        "  return { selectedItems, selectAll }\n"
+        "}\n"
+    )
+    (proj / "src" / "components" / "BatchActions.vue").write_text(
+        "<template><input type=\"checkbox\" @change=\"selectAll(items)\"></template>\n"
+        "<script>\n"
+        "import selectionMixin from '@/mixins/selectionMixin'\n"
+        "export default {\n"
+        "  mixins: [selectionMixin],\n"
+        "  methods: {\n"
+        "    selectAll(items) {\n"
+        "      return this.$options.mixins[0].methods.selectAll.call(this, items)\n"
+        "    }\n"
+        "  }\n"
+        "}\n"
+        "</script>\n"
+    )
+
+    config = MigrationConfig(project_root=proj)
+    with patch("builtins.print"):
+        plan = run(proj, config)
+
+    # The entry must be flagged to block removal and carry an error warning.
+    entry = None
+    for _path, entries in plan.entries_by_component:
+        for e in entries:
+            if getattr(e, "mixin_stem", None) == "selectionMixin":
+                entry = e
+    assert entry is not None
+    assert entry.block_mixin_removal is True
+    err = [w for w in entry.warnings if w.category == "options-mixins-access"]
+    assert err and err[0].severity == "error"
+
+    # The component must NOT have its mixins array or mixin import stripped.
+    comp_change = next(
+        (c for c in plan.component_changes if "BatchActions" in str(c.file_path)), None
+    )
+    if comp_change is not None:
+        assert "mixins: [selectionMixin]" in comp_change.new_content
+        assert "import selectionMixin" in comp_change.new_content
+        assert "$options.mixins" in comp_change.new_content
+
+
 # ---------------------------------------------------------------------------
 # plan_new_composables — no composables/ directory in project
 # ---------------------------------------------------------------------------
