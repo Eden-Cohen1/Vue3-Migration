@@ -69,6 +69,28 @@ def _remove_stale_comments(source: str) -> str:
     return '\n'.join(result_lines)
 
 
+def _merge_propagated_import(content: str, import_line: str) -> str:
+    """Add a propagated mixin import to the composable's import block (CG-2).
+
+    Inserts after the LAST existing import (so it groups below the framework
+    ``vue`` import) rather than blindly prepending to the file top — which put
+    it above ``vue`` with stray blank lines swallowed from the source. The line
+    is rstrip()'d to drop any trailing whitespace the capture regex absorbed.
+    """
+    import_line = import_line.rstrip()
+    imports = list(re.finditer(r"^[ \t]*import\s+.+$", content, re.MULTILINE))
+    if imports:
+        pos = imports[-1].end()
+        return content[:pos] + "\n" + import_line + content[pos:]
+    # No existing imports: place just after a leading banner comment if present,
+    # otherwise at the very top.
+    banner = re.match(r"^//[^\n]*\n", content)
+    if banner:
+        pos = banner.end()
+        return content[:pos] + import_line + "\n" + content[pos:]
+    return import_line + "\n" + content
+
+
 def _add_vue_import(content: str, name: str) -> str:
     """Add a name to the existing ``import { ... } from 'vue'`` line.
 
@@ -751,7 +773,7 @@ def patch_composable(
                 if line.strip().startswith("import ")
             )
             if not already_present:
-                content = rewritten_line + "\n" + content
+                content = _merge_propagated_import(content, rewritten_line)
 
     # Remove stale "NOT defined" / "NOT returned" comments that contradict actual code
     content = _remove_stale_comments(content)

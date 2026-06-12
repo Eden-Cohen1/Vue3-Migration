@@ -21,11 +21,10 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 | ID | Sev | Category | Title | Status |
 |----|-----|----------|-------|--------|
 | [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
-| [CG-2](#cg-2) | 🟡 low | Codegen Quality | Propagated mixin import lands above `vue` with two stray blank lines | open |
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 | [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_4 open: 0 high, 0 med, 4 low._
+_3 open: 0 high, 0 med, 3 low._
 <!-- INDEX:END -->
 
 ## Issues
@@ -61,36 +60,6 @@ Inline single-`return` pass-through helpers before comparison (fixes canCreate �
 
 `canCreate` no longer appears as a divergence; `canEdit` (real difference) still does.
 <!-- /ISSUE id=RPT-3 -->
-
-<!-- ISSUE id=CG-2 severity=low category=codegen status=open discovered=2026-06-08 source=review-migration-output -->
-### CG-2 · Propagated mixin import lands above `vue` with two stray blank lines
-
-**🟡 low** · Codegen Quality · status: `open`
-
-**Symptom**
-
-`useChart.js:1-5` — header, `import { debounce } from '@/utils/helpers'`, two blank lines, then `import { ... } from 'vue'`. The propagated import is placed ABOVE the framework import.
-
-**Reproduce**
-
-`sed -n '1,6p' src/composables/useChart.js` after migrating a component whose mixin imports a helper.
-
-**Root cause / likely source**
-
-`core/mixin_analyzer.py` (~L347) import regex ends with `\s*;?` and the `\s*` swallows the trailing `\n\n`; `transform/composable_patcher.py` (~L749) does `content = rewritten_line + "\n" + content`, adding another newline and always prepending to the file top.
-
-**Why it matters**
-
-Ships orphaned whitespace + non-conventional import order; trips Prettier / no-multiple-empty-lines.
-
-**Fix direction**
-
-`rstrip()` the captured import line (re-add a single `\n`), and MERGE the propagated import into the existing import block instead of prepending to the file top.
-
-**Verify when fixed**
-
-Migrated composable has a single import block (vue first or sensibly grouped) and no double blank lines.
-<!-- /ISSUE id=CG-2 -->
 
 <!-- ISSUE id=CG-3 severity=low category=codegen status=open discovered=2026-06-08 source=review-migration-output -->
 ### CG-3 · Import removal / setup() injection leaves whitespace damage in components
