@@ -685,7 +685,12 @@ def patch_composable(
                     for name in missing_deps
                 ]
                 content = add_members_to_composable(content, dep_decls)
-                content = add_keys_to_return(content, missing_deps)
+                # CG-1: declare lifecycle-only scratch, but keep `_`-prefixed
+                # members (private by convention, referenced only inside the
+                # composable's own hooks) OUT of the public return.
+                returnable_deps = [m for m in missing_deps if not m.startswith("_")]
+                if returnable_deps:
+                    content = add_keys_to_return(content, returnable_deps)
                 if any("watch(" in d for d in dep_decls):
                     content = _add_vue_import(content, "watch")
                 if any("ref(" in d for d in dep_decls):

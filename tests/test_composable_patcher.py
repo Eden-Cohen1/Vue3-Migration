@@ -961,3 +961,40 @@ def test_banner_keeps_uncovered_member_warnings():
                               mixin_members=_FORM_MEMBERS)
     banner = result.splitlines()[0]
     assert "manual step" in banner, f"uncovered $refs/$emit missing from banner: {banner}"
+
+
+# ---------------------------------------------------------------------------
+# CG-1: `_`-prefixed lifecycle scratch must not be added to the return on patch
+# ---------------------------------------------------------------------------
+
+def test_patch_keeps_underscore_scratch_private():
+    from vue3_migration.transform.composable_patcher import patch_composable
+    from vue3_migration.models import MixinMembers
+    mixin = """export default {
+  data() { return { chartData: [], _debouncedResize: null } },
+  methods: { renderChart() { return this.chartData } },
+  mounted() {
+    this._debouncedResize = () => this.renderChart()
+    window.addEventListener('resize', this._debouncedResize)
+  },
+  beforeUnmount() {
+    window.removeEventListener('resize', this._debouncedResize)
+  }
+}
+"""
+    existing = (
+        "import { ref } from 'vue'\n\n"
+        "export function useChart() {\n"
+        "  const chartData = ref([])\n"
+        "  function renderChart() { return chartData.value }\n"
+        "  return { chartData, renderChart }\n}\n"
+    )
+    members = MixinMembers(data=["chartData", "_debouncedResize"], methods=["renderChart"])
+    out = patch_composable(existing, mixin, [], [], members, ["mounted", "beforeUnmount"])
+    assert "_debouncedResize" in out  # declared inside the composable
+    return_block = out.split("return {")[-1]
+    assert "_debouncedResize" not in return_block  # but kept private
+
+    # Idempotent: patching again does not duplicate the declaration.
+    out2 = patch_composable(out, mixin, [], [], members, ["mounted", "beforeUnmount"])
+    assert out2.count("const _debouncedResize") == 1

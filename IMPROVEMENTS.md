@@ -22,12 +22,11 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 |----|-----|----------|-------|--------|
 | [RPT-2](#rpt-2) | 🟠 med | Report Accuracy | Divergence 'composable Lxx' vscode links are off by the inserted header/import line count | open |
 | [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
-| [CG-1](#cg-1) | 🟠 med | Codegen Quality | Private `_`-prefixed scratch state leaked into the composable's public `return {}` | open |
 | [CG-2](#cg-2) | 🟡 low | Codegen Quality | Propagated mixin import lands above `vue` with two stray blank lines | open |
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 | [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_6 open: 0 high, 2 med, 4 low._
+_5 open: 0 high, 1 med, 4 low._
 <!-- INDEX:END -->
 
 ## Issues
@@ -93,36 +92,6 @@ Inline single-`return` pass-through helpers before comparison (fixes canCreate �
 
 `canCreate` no longer appears as a divergence; `canEdit` (real difference) still does.
 <!-- /ISSUE id=RPT-3 -->
-
-<!-- ISSUE id=CG-1 severity=med category=codegen status=open discovered=2026-06-08 source=review-migration-output -->
-### CG-1 · Private `_`-prefixed scratch state leaked into the composable's public `return {}`
-
-**🟠 med** · Codegen Quality · status: `open`
-
-**Symptom**
-
-`useChart.js` declares `const _debouncedResize = ref(null)` and returns `_debouncedResize` — mixin-internal scratch (only used inside lifecycle hooks); no component references it.
-
-**Reproduce**
-
-Migrate StatsOverview, then `grep -n '_debouncedResize' src/composables/useChart.js` shows it in the `return {}`.
-
-**Root cause / likely source**
-
-`transform/composable_patcher.py:add_keys_to_return` (~L688) adds every lifecycle dependency to the return with no underscore/usage filtering. Same unfiltered behavior in `transform/composable_generator.py` (~L419).
-
-**Why it matters**
-
-Widens the public API surface with an internal, violates the underscore-private convention, and is silent in the report.
-
-**Fix direction**
-
-Filter `_`-prefixed and/or component-unused members out of the return set in `add_keys_to_return` (and apply the generator's component-scoping to the patch path); keep them function-local consts.
-
-**Verify when fixed**
-
-After migration `_debouncedResize` is declared but NOT returned; the component still works.
-<!-- /ISSUE id=CG-1 -->
 
 <!-- ISSUE id=CG-2 severity=low category=codegen status=open discovered=2026-06-08 source=review-migration-output -->
 ### CG-2 · Propagated mixin import lands above `vue` with two stray blank lines

@@ -415,8 +415,14 @@ def generate_composable_from_mixin(
 
     # Return statement. In scoped (single-component) mode, return only the
     # directly-used members; transitive-only helpers stay private. Default
-    # (None) returns every declared member — preserves full/mixin-mode output.
-    return_list = return_members if return_members is not None else mixin_members.all_names
+    # (None) returns every declared member — preserves full/mixin-mode output,
+    # except `_`-prefixed scratch state (CG-1): the underscore convention marks
+    # it private, so it stays a function-local const rather than widening the
+    # composable's public API.
+    if return_members is not None:
+        return_list = return_members
+    else:
+        return_list = [m for m in mixin_members.all_names if not m.startswith("_")]
     return_items = ", ".join(return_list)
     body_parts.append(f"{indent}return {{ {return_items} }}")
 
