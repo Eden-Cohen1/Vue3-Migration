@@ -22,9 +22,8 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 |----|-----|----------|-------|--------|
 | [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
-| [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_3 open: 0 high, 0 med, 3 low._
+_2 open: 0 high, 0 med, 2 low._
 <!-- INDEX:END -->
 
 ## Issues
@@ -90,35 +89,5 @@ Normalize blank lines around the import block and before `export default`; emit 
 
 Migrated components have consistent spacing; add a golden/snapshot assertion.
 <!-- /ISSUE id=CG-3 -->
-
-<!-- ISSUE id=DX-1 severity=low category=dx status=open discovered=2026-06-08 source=review-migration-output -->
-### DX-1 · Inline warning banner references an ambiguous, transient, un-co-located report file
-
-**🟡 low** · DX / Ergonomics · status: `open`
-
-**Symptom**
-
-`useChart.js:1`, `usePermission.js:1`, `useSelection.js:1` all begin with `// ⚠️ N manual step(s) needed — see migration report for details`. It names no file, yet there are several timestamped, git-untracked `migration-report-*.md` at the project root, each covering different composables.
-
-**Reproduce**
-
-See the top comment of any patched composable after a migration.
-
-**Root cause / likely source**
-
-`core/warning_collector.py:inject_inline_warnings` (~L600-602) hard-codes the suffix with no filename/anchor; callers pass no path.
-
-**Why it matters**
-
-The actionable detail lives only in a transient, ambiguously-referenced file; once it's deleted/gitignored the banner is a dead pointer and the steps are unrecoverable.
-
-**Fix direction**
-
-Inline the specific step(s) in the banner (self-contained), or reference the exact report filename + anchor. The banner is regenerated idempotently, so a richer inline summary is safe.
-
-**Verify when fixed**
-
-The banner is self-explanatory without an external file, or names the exact report it refers to.
-<!-- /ISSUE id=DX-1 -->
 
 <!-- ISSUES:END -->

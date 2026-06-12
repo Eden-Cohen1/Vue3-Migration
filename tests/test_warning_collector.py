@@ -432,7 +432,11 @@ class TestInjectInlineWarnings:
             source, warnings, confidence=ConfidenceLevel.MEDIUM, warning_count=2
         )
         assert "// \u26a0\ufe0f 2 manual steps needed" in result
-        assert "see migration report" in result
+        # DX-1: banner is self-contained \u2014 names the step categories and points
+        # to the co-located inline notes rather than a transient report file.
+        assert "this.$emit" in result and "this.$router" in result
+        assert "inline" in result.splitlines()[0]
+        assert "see migration report" not in result.splitlines()[0]
 
     def test_no_header_when_confidence_not_provided(self):
         source = "export function useAuth() {\n  return {}\n}\n"

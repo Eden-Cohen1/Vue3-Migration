@@ -38,19 +38,35 @@ def count_manual_steps(warnings: "list[MigrationWarning]") -> int:
     )
 
 
-def build_banner_header(manual_steps: int, advisory_notes: int = 0) -> str:
+def build_banner_header(
+    manual_steps: int,
+    advisory_notes: int = 0,
+    step_labels: "list[str] | None" = None,
+) -> str:
     """Build the inline composable banner header line (with trailing newline).
 
     Single source of truth for the banner text so it can be (re)built both when a
     composable is first generated/patched and when the count is reconciled against
     the final report tier (RPT-1).
+
+    DX-1: the banner is self-contained — it names the specific manual-step
+    categories (``step_labels``) inline and points to the co-located ``// ❌`` /
+    ``// ⚠️`` notes in this same file, rather than to a transient, ambiguously
+    named ``migration-report-*.md`` that may be gitignored or deleted.
     """
+    detail = f" ({', '.join(step_labels)})" if step_labels else ""
     if manual_steps:
         plural = "s" if manual_steps != 1 else ""
-        return f"// ⚠️ {manual_steps} manual step{plural} needed — see migration report for details\n"
+        return (
+            f"// ⚠️ {manual_steps} manual step{plural} needed{detail} — "
+            "see the inline // ❌ and // ⚠️ notes below\n"
+        )
     if advisory_notes:
         plural = "s" if advisory_notes != 1 else ""
-        return f"// ⚠️ {advisory_notes} advisory note{plural} — see migration report for details\n"
+        return (
+            f"// ⚠️ {advisory_notes} advisory note{plural}{detail} — "
+            "see the inline notes below\n"
+        )
     return "// ✅ 0 issues — all mixin members have composable equivalents\n"
 
 
@@ -681,7 +697,21 @@ def inject_inline_warnings(
     # provisional \u2014 it's reconciled against the final report tier once all
     # warnings are known (see _reconcile_composable_banners).
     if confidence is not None:
-        source = build_banner_header(count_manual_steps(warnings), warning_count) + source
+        # DX-1: name the distinct manual-step categories inline so the banner is
+        # self-contained rather than pointing only at a transient report file.
+        step_labels: list[str] = []
+        for w in warnings:
+            if (
+                w.severity in ("error", "warning")
+                and w.category not in AUTO_REWRITTEN_CATEGORIES
+                and w.category not in step_labels
+            ):
+                step_labels.append(w.category)
+        if len(step_labels) > 5:
+            step_labels = step_labels[:5] + ["…"]
+        source = build_banner_header(
+            count_manual_steps(warnings), warning_count, step_labels,
+        ) + source
 
     if not warnings:
         return source
