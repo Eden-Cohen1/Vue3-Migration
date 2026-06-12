@@ -20,7 +20,6 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 <!-- INDEX:START -->
 | ID | Sev | Category | Title | Status |
 |----|-----|----------|-------|--------|
-| [CORR-4](#corr-4) | 🟠 med | Correctness / Behavior | Patched composables inline created() body at the BOTTOM (before return), not at the top — stale-read hazard | open |
 | [RPT-2](#rpt-2) | 🟠 med | Report Accuracy | Divergence 'composable Lxx' vscode links are off by the inserted header/import line count | open |
 | [RPT-4](#rpt-4) | 🟠 med | Report Accuracy | Partially-migrated component (mixin left in array) is never reported at the component level — it silently looks 'done' | open |
 | [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
@@ -29,42 +28,12 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 | [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_8 open: 0 high, 4 med, 4 low._
+_7 open: 0 high, 3 med, 4 low._
 <!-- INDEX:END -->
 
 ## Issues
 
 <!-- ISSUES:START -->
-
-<!-- ISSUE id=CORR-4 severity=med category=correctness status=open discovered=2026-06-08 source=review-migration-output -->
-### CORR-4 · Patched composables inline created() body at the BOTTOM (before return), not at the top — stale-read hazard
-
-**🟠 med** · Correctness / Behavior · status: `open`
-
-**Symptom**
-
-When PATCHING an existing composable, a mixin created() body is inserted just above the return instead of at the top of the function. Demo: useTheme.js:38-41 (the `const savedTheme = localStorage.getItem('selectedTheme'); if (...) currentTheme.value = savedTheme` block from themeMixin.js:82 created()) lands after every const/function declaration; same in useNotification.js:75-79 (the `// Simulate loading notification settings` block from notificationMixin.js created()). CLAUDE.md's documented contract says created() is 'Inlined at function top'. The generator path puts it at the top; the patcher path does not — so only PATCHED (pre-existing) composables are affected.
-
-**Reproduce**
-
-python3 -m vue3_migration --root /home/user/dummy_vue_migration_project mixin themeMixin (apply), then `sed -n '36,42p' src/composables/useTheme.js` — the inlined created() block appears at the bottom, just before `return {`, after themeClass/isDarkMode/setTheme/etc.
-
-**Root cause / likely source**
-
-transform/composable_patcher.py:702 calls add_members_to_composable(content, hook_lines) with hook_lines = inline_lines + wrapped_lines (L700). add_members_to_composable (~L235-243) has a single insertion point: 'just before the return statement' (regex `\n([ \t]*)\breturn\s*\{`). It does not distinguish inline-created lines (contract: top of function body) from wrapped onMounted/onBeforeUnmount lines (legitimately before return). The generator (transform/composable_generator.py:405-408) correctly puts inline_lines at the top via body_parts.extend — the patcher and generator disagree for the same construct.
-
-**Why it matters**
-
-created() semantics are 'run before anything that depends on the mutated state.' Placing the block last means a non-lazy consumer reading the value during setup sees the pre-mutation value. Currently MASKED in useTheme/useNotification only because the dependent reads are lazy computeds; the moment another inlined hook or a non-lazy expression reads currentTheme/notificationSettings during setup it gets the stale initial value. Silent (no warning), and breaks generator/patcher parity + the documented contract.
-
-**Fix direction**
-
-In composable_patcher.py:697-702 split the two streams: insert inline_lines at the TOP of the function body (right after `export function …() {`, mirroring composable_generator.py and the i18n-destructure top-insertion already at composable_patcher.py:727-731), and route only wrapped_lines (onMounted/onBeforeUnmount) through add_members_to_composable (before-return). Add an add_inline_to_top() helper or a position='top' flag. Preserve the existing idempotency guard (_inline_body_present, ~L663).
-
-**Verify when fixed**
-
-tests/test_composable_patcher.py: patch a composable whose mixin created() mutates a ref declared at the top; assert the inlined body appears BEFORE the first const/computed/function declaration and before `return {`. Negative: a mounted()->onMounted block still lands before return. Idempotency: patch twice -> inline body appears exactly once.
-<!-- /ISSUE id=CORR-4 -->
 
 <!-- ISSUE id=RPT-2 severity=med category=report status=open discovered=2026-06-08 source=review-migration-output -->
 ### RPT-2 · Divergence 'composable Lxx' vscode links are off by the inserted header/import line count
