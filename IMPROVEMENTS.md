@@ -20,48 +20,17 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 <!-- INDEX:START -->
 | ID | Sev | Category | Title | Status |
 |----|-----|----------|-------|--------|
-| [RPT-2](#rpt-2) | 🟠 med | Report Accuracy | Divergence 'composable Lxx' vscode links are off by the inserted header/import line count | open |
 | [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
 | [CG-2](#cg-2) | 🟡 low | Codegen Quality | Propagated mixin import lands above `vue` with two stray blank lines | open |
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 | [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_5 open: 0 high, 1 med, 4 low._
+_4 open: 0 high, 0 med, 4 low._
 <!-- INDEX:END -->
 
 ## Issues
 
 <!-- ISSUES:START -->
-
-<!-- ISSUE id=RPT-2 severity=med category=report status=open discovered=2026-06-08 source=review-migration-output -->
-### RPT-2 · Divergence 'composable Lxx' vscode links are off by the inserted header/import line count
-
-**🟠 med** · Report Accuracy · status: `open`
-
-**Symptom**
-
-Composable line links in divergence sections are computed pre-patch, but the header (`// ⚠️ ...`) and rewritten imports are prepended afterward. e.g. report links `prepareChartData` to 'composable L23-33' but it is at `useChart.js:27-37` (off by 4); `canEdit` 'L11' → `usePermission.js:12` (off by 1). Mixin-side links are correct.
-
-**Reproduce**
-
-Open a migration-report divergence link for a PATCHED composable; it lands a few lines above the actual member.
-
-**Root cause / likely source**
-
-`divergence_detector.py:detect_divergences` records `composable_lines` from the pre-patch read (`auto_migrate_workflow.py:176`); `warning_collector.py:inject_inline_warnings` prepends header lines later; `reporting/markdown.py:_build_divergence_section` (~L1616-1619) applies no offset.
-
-**Why it matters**
-
-The report's headline value is clickable jump-to-member; every composable link opens the wrong line, eroding trust in the report.
-
-**Fix direction**
-
-Offset `composable_lines` by the number of lines the patcher prepends (header + propagated imports), or compute links against the final on-disk file.
-
-**Verify when fixed**
-
-A patched composable's divergence link resolves to the member's actual post-patch line.
-<!-- /ISSUE id=RPT-2 -->
 
 <!-- ISSUE id=RPT-3 severity=low category=report status=open discovered=2026-06-08 source=review-migration-output -->
 ### RPT-3 · Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section

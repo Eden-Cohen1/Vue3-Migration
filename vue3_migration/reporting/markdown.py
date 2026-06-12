@@ -1364,7 +1364,8 @@ def build_action_plan(
         )
         for e in needs_review:
             comp_path = e.composable.file_path if e.composable else None
-            a(_build_divergence_section(e, comp_path, project_root))
+            final_content = composable_content_map.get(comp_path) if comp_path else None
+            a(_build_divergence_section(e, comp_path, project_root, final_content))
 
     # Drop-in fixes — per-composable numbered steps
     if dropin_fixes:
@@ -1713,10 +1714,20 @@ def _build_divergence_section(
     entry: "MixinEntry",
     composable_path: "Path | None",
     project_root: "Path | None",
+    composable_content: "str | None" = None,
 ) -> str:
-    """Build a markdown section showing divergences between mixin and composable members."""
+    """Build a markdown section showing divergences between mixin and composable members.
+
+    ``composable_content`` is the FINAL (post-patch) composable text. Divergence
+    line ranges are recorded pre-patch, but the patcher later prepends a banner
+    header and propagated imports, shifting every member down (RPT-2). When the
+    final content is available, member line links are recomputed against it so
+    they land on the actual member; otherwise the stored pre-patch range is used.
+    """
     if not entry.divergences:
         return ""
+
+    from ..core.divergence_detector import extract_composable_member_body
 
     lines: list[str] = []
     # Reuse existing _rel_link() helper for file links
@@ -1735,10 +1746,22 @@ def _build_divergence_section(
             label = f"mixin L{s}" if s == e else f"mixin L{s}-{e}"
             mixin_link_str = _vscode_link(entry.mixin_path, s, label)
         comp_link_str = ""
-        if div.composable_lines and composable_path:
-            s, e = div.composable_lines
-            label = f"composable L{s}" if s == e else f"composable L{s}-{e}"
-            comp_link_str = _vscode_link(composable_path, s, label)
+        if composable_path:
+            s = e = None
+            # RPT-2: prefer the member's real line in the final on-disk content
+            # (after the header/imports were prepended); fall back to the stored
+            # pre-patch range when the final content isn't available.
+            if composable_content:
+                extracted = extract_composable_member_body(composable_content, div.member_name)
+                if extracted:
+                    _text, start_line = extracted
+                    s = start_line
+                    e = start_line + _text.count("\n")
+            if s is None and div.composable_lines:
+                s, e = div.composable_lines
+            if s is not None:
+                label = f"composable L{s}" if s == e else f"composable L{s}-{e}"
+                comp_link_str = _vscode_link(composable_path, s, label)
 
         lines.append("<details>")
         lines.append(f"<summary><b>{div.member_name}</b> — implementation differs</summary>\n")
@@ -1936,9 +1959,10 @@ def _append_composable_steps(
         for w in other_info:
             a(f"- \u2139\ufe0f {w.message}")
 
-    # Divergence section
+    # Divergence section — pass the final post-patch content so member line
+    # links account for the prepended header/imports (RPT-2).
     if entry.divergences:
-        a(_build_divergence_section(entry, comp_path, project_root))
+        a(_build_divergence_section(entry, comp_path, project_root, comp_source or None))
 
     a("")
 

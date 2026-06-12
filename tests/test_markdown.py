@@ -1133,3 +1133,62 @@ class TestPartialMigrationSection:
         e = _make_ready_entry()
         e.local_name = 'searchMixin'
         return e
+
+
+# ---------------------------------------------------------------------------
+# RPT-2: divergence composable line links account for prepended header/imports
+# ---------------------------------------------------------------------------
+
+from vue3_migration.models import MemberDivergence as _MemberDivergence
+from vue3_migration.reporting.markdown import _build_divergence_section
+
+
+def _diverging_entry_for_rpt2() -> MixinEntry:
+    cov = ComposableCoverage(
+        file_path=Path("src/composables/usePerm.js"), fn_name="usePerm",
+        import_path="@/composables/usePerm", all_identifiers=["role", "canEdit"],
+        return_keys=["role", "canEdit"],
+    )
+    div = _MemberDivergence(
+        member_name="canEdit", mixin_kind="computed",
+        mixin_source="canEdit() { return this.role === 'admin' }",
+        composable_source="const canEdit = computed(() => role.value === 'admin')",
+        mixin_lines=(3, 3),
+        composable_lines=(5, 5),  # PRE-patch line — stale once header is prepended
+    )
+    return MixinEntry(
+        local_name="permMixin", mixin_path=Path("src/mixins/permMixin.js"),
+        mixin_stem="permMixin", members=MixinMembers(computed=["canEdit"]),
+        used_members=["canEdit"], composable=cov, status=MigrationStatus.READY,
+        divergences=[div],
+    )
+
+
+def test_divergence_link_recomputed_against_final_content():
+    entry = _diverging_entry_for_rpt2()
+    # Final (post-patch) content: header + import pushed canEdit to line 6.
+    final = (
+        "// ✅ 0 issues — all mixin members have composable equivalents\n"
+        "import { ref, computed } from 'vue'\n"
+        "\n"
+        "export function usePerm() {\n"
+        "  const role = ref('user')\n"
+        "  const canEdit = computed(() => role.value === 'admin')\n"
+        "  return { role, canEdit }\n"
+        "}\n"
+    )
+    section = _build_divergence_section(
+        entry, entry.composable.file_path, Path("."), final,
+    )
+    # Link must point at the REAL line (6), not the stale stored line (5).
+    assert "composable L6" in section
+    assert "composable L5" not in section
+
+
+def test_divergence_link_falls_back_to_stored_when_no_content():
+    entry = _diverging_entry_for_rpt2()
+    section = _build_divergence_section(
+        entry, entry.composable.file_path, Path("."), None,
+    )
+    # No final content -> use the stored pre-patch range.
+    assert "composable L5" in section
