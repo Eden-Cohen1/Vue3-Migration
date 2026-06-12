@@ -18,45 +18,11 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 ## Index
 
 <!-- INDEX:START -->
-| ID | Sev | Category | Title | Status |
-|----|-----|----------|-------|--------|
-| [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
-
-_1 open: 0 high, 0 med, 1 low._
+_(empty — add issues with the track-improvement skill)_
 <!-- INDEX:END -->
 
 ## Issues
 
 <!-- ISSUES:START -->
-
-<!-- ISSUE id=RPT-3 severity=low category=report status=open discovered=2026-06-08 source=review-migration-output -->
-### RPT-3 · Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section
-
-**🟡 low** · Report Accuracy · status: `open`
-
-**Symptom**
-
-Purely textual comparison flags behaviorally-identical code: `canCreate` — mixin `checkPermission('create')` vs composable `userPermissions.value.includes('create')`, identical because `checkPermission` is a one-line pass-through (`permissionMixin.js:43-45`). `hasError` `!!this.error` vs `error.value !== null` flagged though equivalent for the string/null error model.
-
-**Reproduce**
-
-See the canCreate/hasError entries in the divergence sections of the demo reports.
-
-**Root cause / likely source**
-
-`core/divergence_detector.py:normalize_for_comparison` does not inline trivial single-return pass-through helpers, nor normalize equivalent boolean coercions.
-
-**Why it matters**
-
-Noise sits next to genuinely dangerous flags (canEdit write-vs-update), lowering trust in the whole divergence list.
-
-**Fix direction**
-
-Inline single-`return` pass-through helpers before comparison (fixes canCreate — the clear true false positive). Optionally normalize `!!x` vs `x !== null` (lower priority; they differ on falsy-non-null values).
-
-**Verify when fixed**
-
-`canCreate` no longer appears as a divergence; `canEdit` (real difference) still does.
-<!-- /ISSUE id=RPT-3 -->
 
 <!-- ISSUES:END -->

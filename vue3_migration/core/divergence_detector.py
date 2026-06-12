@@ -230,6 +230,87 @@ def _extract_body_content(code: str, kind: str) -> str:
     return stripped
 
 
+# ---- Pass-through helper inlining (RPT-3) ----
+
+def _split_top_level_args(arg_str: str) -> list[str]:
+    """Split a call's argument string on top-level commas (ignoring nesting)."""
+    args: list[str] = []
+    depth = 0
+    cur = ""
+    in_str: str | None = None
+    for ch in arg_str:
+        if in_str:
+            cur += ch
+            if ch == in_str:
+                in_str = None
+            continue
+        if ch in ("'", '"', "`"):
+            in_str = ch
+            cur += ch
+        elif ch in "([{":
+            depth += 1
+            cur += ch
+        elif ch in ")]}":
+            depth -= 1
+            cur += ch
+        elif ch == "," and depth == 0:
+            args.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        args.append(cur.strip())
+    return args
+
+
+def _build_passthrough_helpers(mixin_source, mixin_members, ref_members, plain_members) -> dict:
+    """Map ``method_name -> (params, return_expr)`` for single-return pass-throughs.
+
+    A pass-through is a method whose entire body is one ``return <expr>``. The
+    expression is pre-rewritten to composable form (``this.x`` → ``x.value`` /
+    ``x()``) so an inlined call matches what a composable that inlined the helper
+    would contain (RPT-3).
+    """
+    from ..transform.lifecycle_converter import extract_hook_body
+    from ..transform.this_rewriter import rewrite_this_refs
+
+    helpers: dict[str, tuple[list[str], str]] = {}
+    for name in mixin_members.methods:
+        body = extract_hook_body(mixin_source, name, exclude_sections=False)
+        if not body:
+            continue
+        stripped = body.strip()
+        if "\n" in stripped:
+            continue  # multi-line — not a trivial pass-through
+        m = re.match(r"^return\s+(.+?);?\s*$", stripped)
+        if not m:
+            continue
+        expr = rewrite_this_refs(m.group(1).strip(), ref_members, plain_members)
+        # Match the method DEFINITION (params followed by `{`), not an earlier
+        # call site like `this.checkPermission('create')`.
+        sig = re.search(rf"\b{re.escape(name)}\s*\(([^)]*)\)\s*\{{", mixin_source)
+        params = [p.strip() for p in sig.group(1).split(",") if p.strip()] if sig else []
+        helpers[name] = (params, expr)
+    return helpers
+
+
+def _inline_passthrough_calls(body: str, helpers: dict) -> str:
+    """Replace ``helper(args)`` calls in ``body`` with the helper's return expr."""
+    for name, (params, expr) in helpers.items():
+        pattern = re.compile(rf"(?:this\s*\.\s*)?\b{re.escape(name)}\s*\(([^()]*)\)")
+
+        def repl(match: "re.Match") -> str:
+            raw = match.group(1).strip()
+            args = _split_top_level_args(raw) if raw else []
+            inlined = expr
+            for p, a in zip(params, args):
+                inlined = re.sub(rf"\b{re.escape(p)}\b", lambda _m, a=a: a, inlined)
+            return inlined
+
+        body = pattern.sub(repl, body)
+    return body
+
+
 # ---- Divergence detection ----
 
 def _determine_mixin_kind(name: str, mixin_members) -> str:
@@ -263,6 +344,13 @@ def detect_divergences(
 
     divergences: list[MemberDivergence] = []
 
+    # RPT-3: trivial single-return pass-through helpers, pre-rewritten to
+    # composable form, so a composable that inlined `checkPermission('create')`
+    # to `userPermissions.value.includes('create')` isn't flagged as divergent.
+    passthrough_helpers = _build_passthrough_helpers(
+        mixin_source, mixin_members, ref_members, plain_members,
+    )
+
     for name in covered_members:
         kind = _determine_mixin_kind(name, mixin_members)
         if kind == "unknown":
@@ -293,6 +381,18 @@ def detect_divergences(
         from ..transform.this_rewriter import rewrite_this_dollar_refs, rewrite_this_i18n_refs
         expected_raw, _ = rewrite_this_dollar_refs(expected_raw)
         expected_raw, _ = rewrite_this_i18n_refs(expected_raw)
+
+        # RPT-3: inline pass-through helper calls on BOTH raw declarations
+        # (excluding the member itself) so a mixin that calls a helper and a
+        # composable that inlined it normalize to the same expression. Inlining
+        # the RAW (balanced) declaration avoids the body-extractor's paren
+        # stripping. Genuine differences (a wrong arg, a different helper) still
+        # survive and are flagged.
+        if passthrough_helpers:
+            local_helpers = {k: v for k, v in passthrough_helpers.items() if k != name}
+            if local_helpers:
+                expected_raw = _inline_passthrough_calls(expected_raw, local_helpers)
+                actual_raw = _inline_passthrough_calls(actual_raw, local_helpers)
 
         # Strip declaration wrappers — compare only body content
         expected_body = _extract_body_content(expected_raw, kind)

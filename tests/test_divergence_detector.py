@@ -700,3 +700,52 @@ def test_build_divergence_section_no_divergences():
 
     result = _build_divergence_section(entry, Path("fake.js"), Path("project"))
     assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# RPT-3: pass-through helper false positives
+# ---------------------------------------------------------------------------
+
+_PASSTHROUGH_MIXIN = """export default {
+  data() { return { userPermissions: [] } },
+  computed: { canCreate() { return this.checkPermission('create') } },
+  methods: { checkPermission(perm) { return this.userPermissions.includes(perm) } }
+}
+"""
+_PASSTHROUGH_MEMBERS = _MixinMembers(
+    data=["userPermissions"], computed=["canCreate"], methods=["checkPermission"],
+)
+_PASSTHROUGH_COMP = """import { ref, computed } from 'vue'
+export function usePermission() {
+  const userPermissions = ref([])
+  const canCreate = computed(() => userPermissions.value.includes('create'))
+  function checkPermission(perm) { return userPermissions.value.includes(perm) }
+  return { userPermissions, canCreate, checkPermission }
+}
+"""
+
+
+def _passthrough_divs(comp_src):
+    return [d.member_name for d in detect_divergences(
+        _PASSTHROUGH_MIXIN, comp_src, _PASSTHROUGH_MEMBERS,
+        covered_members=["canCreate", "checkPermission"],
+        ref_members=["userPermissions"], plain_members=["checkPermission"],
+    )]
+
+
+def test_inlined_passthrough_helper_not_flagged():
+    # Composable inlined checkPermission('create') -> not a divergence (RPT-3).
+    assert "canCreate" not in _passthrough_divs(_PASSTHROUGH_COMP)
+
+
+def test_passthrough_inlining_still_flags_wrong_arg():
+    # A genuinely different arg ('write' not 'create') is still a divergence.
+    bug = _PASSTHROUGH_COMP.replace("includes('create')", "includes('write')")
+    assert "canCreate" in _passthrough_divs(bug)
+
+
+def test_passthrough_both_call_helper_not_flagged():
+    keep_call = _PASSTHROUGH_COMP.replace(
+        "userPermissions.value.includes('create')", "checkPermission('create')",
+    )
+    assert "canCreate" not in _passthrough_divs(keep_call)
