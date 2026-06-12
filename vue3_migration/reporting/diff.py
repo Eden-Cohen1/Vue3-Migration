@@ -7,7 +7,12 @@ from datetime import datetime
 from pathlib import Path
 
 from ..models import FileChange, MigrationPlan
-from .markdown import build_action_plan, build_recipes_section, build_summary_section
+from .markdown import (
+    build_action_plan,
+    build_partial_migration_section,
+    build_recipes_section,
+    build_summary_section,
+)
 from .terminal import bold, dim, green
 
 
@@ -215,6 +220,15 @@ def write_migration_report(plan: MigrationPlan, project_root: Path) -> Path:
         summary = build_summary_section(plan.entries_by_component)
         if summary:
             sections.append(summary)
+            sections.append("")
+
+        # Section 1b: Partially migrated components (RPT-4) — name any component
+        # that gained a composable but still carries a mixins array.
+        partial = build_partial_migration_section(
+            plan.entries_by_component, plan.component_changes, project_root,
+        )
+        if partial:
+            sections.append(partial)
             sections.append("")
 
         # Section 2: Action Plan

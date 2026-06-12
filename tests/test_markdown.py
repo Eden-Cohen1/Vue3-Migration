@@ -1048,3 +1048,88 @@ class TestDivergenceGatesReadiness:
         report = build_action_plan([(Path("fake/Comp.vue"), [entry])])
         assert "Quick Wins" in report
         assert "Review Behavior" not in report
+
+
+# ---------------------------------------------------------------------------
+# RPT-4: Partially migrated component section
+# ---------------------------------------------------------------------------
+
+from vue3_migration.models import FileChange as _FileChange
+from vue3_migration.reporting.markdown import build_partial_migration_section
+
+
+def _component_change(path: Path, *, original: str, new: str) -> _FileChange:
+    return _FileChange(file_path=path, original_content=original, new_content=new)
+
+
+class TestPartialMigrationSection:
+    _ORIG = (
+        "<script>\nimport filterMixin from '@/mixins/filterMixin'\n"
+        "export default { mixins: [filterMixin, searchMixin] }\n</script>\n"
+    )
+    # Post-migration: searchMixin wired via useSearch, filterMixin LEFT in array.
+    _NEW = (
+        "<script>\nimport { useSearch } from '@/composables/useSearch'\n"
+        "import filterMixin from '@/mixins/filterMixin'\n"
+        "export default {\n  setup() {\n    const { query } = useSearch()\n"
+        "    return { query }\n  },\n  mixins: [filterMixin]\n}\n</script>\n"
+    )
+
+    def _blocked_entry(self) -> MixinEntry:
+        # filterMixin blocked because useFilter doesn't return appliedFilterSummary.
+        cov = ComposableCoverage(
+            file_path=FIXTURES / 'src/composables/useFilter.js',
+            fn_name='useFilter', import_path='@/composables/useFilter',
+            all_identifiers=['appliedFilterSummary'], return_keys=[],
+        )
+        cls = MemberClassification(
+            missing=[], truly_missing=[], not_returned=['appliedFilterSummary'],
+            truly_not_returned=['appliedFilterSummary'], overridden=[],
+            overridden_not_returned=[], injectable=[],
+        )
+        return MixinEntry(
+            local_name='filterMixin', mixin_path=FIXTURES / 'src/mixins/filterMixin.js',
+            mixin_stem='filterMixin', members=MixinMembers(computed=['appliedFilterSummary']),
+            used_members=['appliedFilterSummary'], composable=cov, classification=cls,
+            status=MigrationStatus.BLOCKED_NOT_RETURNED,
+        )
+
+    def test_partial_component_is_named_and_cites_member(self):
+        comp = Path("src/components/AdvancedSearch.vue")
+        change = _component_change(comp, original=self._ORIG, new=self._NEW)
+        section = build_partial_migration_section(
+            [(comp, [self._blocked_entry()])], [change], project_root=Path("."),
+        )
+        assert "Partially migrated" in section
+        assert "AdvancedSearch.vue" in section
+        assert "filterMixin" in section
+        assert "appliedFilterSummary" in section  # the blocking member is cited
+
+    def test_fully_migrated_component_produces_no_section(self):
+        comp = Path("src/components/Simple.vue")
+        orig = ("<script>\nimport searchMixin from '@/mixins/searchMixin'\n"
+                "export default { mixins: [searchMixin] }\n</script>\n")
+        new = ("<script>\nimport { useSearch } from '@/composables/useSearch'\n"
+               "export default {\n  setup() {\n    const { query } = useSearch()\n"
+               "    return { query }\n  }\n}\n</script>\n")
+        change = _component_change(comp, original=orig, new=new)
+        section = build_partial_migration_section(
+            [(comp, [self._make_ready()])], [change], project_root=Path("."),
+        )
+        assert section == ""
+
+    def test_blocked_only_component_not_flagged_as_partial(self):
+        # No composable was wired in (no use*() gained) -> not "partial".
+        comp = Path("src/components/Blocked.vue")
+        orig = ("<script>\nimport filterMixin from '@/mixins/filterMixin'\n"
+                "export default { mixins: [filterMixin] }\n</script>\n")
+        change = _component_change(comp, original=orig, new=orig)  # unchanged
+        section = build_partial_migration_section(
+            [(comp, [self._blocked_entry()])], [change], project_root=Path("."),
+        )
+        assert section == ""
+
+    def _make_ready(self) -> MixinEntry:
+        e = _make_ready_entry()
+        e.local_name = 'searchMixin'
+        return e

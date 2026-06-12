@@ -21,14 +21,13 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 | ID | Sev | Category | Title | Status |
 |----|-----|----------|-------|--------|
 | [RPT-2](#rpt-2) | 🟠 med | Report Accuracy | Divergence 'composable Lxx' vscode links are off by the inserted header/import line count | open |
-| [RPT-4](#rpt-4) | 🟠 med | Report Accuracy | Partially-migrated component (mixin left in array) is never reported at the component level — it silently looks 'done' | open |
 | [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
 | [CG-1](#cg-1) | 🟠 med | Codegen Quality | Private `_`-prefixed scratch state leaked into the composable's public `return {}` | open |
 | [CG-2](#cg-2) | 🟡 low | Codegen Quality | Propagated mixin import lands above `vue` with two stray blank lines | open |
 | [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 | [DX-1](#dx-1) | 🟡 low | DX / Ergonomics | Inline warning banner references an ambiguous, transient, un-co-located report file | open |
 
-_7 open: 0 high, 3 med, 4 low._
+_6 open: 0 high, 2 med, 4 low._
 <!-- INDEX:END -->
 
 ## Issues
@@ -94,36 +93,6 @@ Inline single-`return` pass-through helpers before comparison (fixes canCreate �
 
 `canCreate` no longer appears as a divergence; `canEdit` (real difference) still does.
 <!-- /ISSUE id=RPT-3 -->
-
-<!-- ISSUE id=RPT-4 severity=med category=report status=open discovered=2026-06-08 source=review-migration-output -->
-### RPT-4 · Partially-migrated component (mixin left in array) is never reported at the component level — it silently looks 'done'
-
-**🟠 med** · Report Accuracy · status: `open`
-
-**Symptom**
-
-When a mixin is correctly KEPT because the component uses a member the composable doesn't return (BLOCKED_NOT_RETURNED), the component still ends up importing composables + gaining setup() yet retaining `mixins: [X]` — and nothing in the report names the component as partially migrated. Demo: AdvancedSearch.vue:134 keeps `mixins: [filterMixin]` (it uses appliedFilterSummary, filterMixin.js:19-21, template L77; useFilter didn't return it at that point) while gaining usePagination/useSearch via setup(); NotificationCenter.vue:96 keeps `mixins: [notificationMixin]` (uses formattedNotifications). The only signal is a composable-keyed warning ('Add appliedFilterSummary to the return statement of useFilter, then re-run' — migration-report-20260608-103711.md:100) that never names AdvancedSearch.vue and never says 'filterMixin was left in this component.' The report Summary/Action Plan is organized by composable, so there is no 'components only partially migrated' list.
-
-**Reproduce**
-
-python3 -m vue3_migration --root /home/user/dummy_vue_migration_project component src/components/common/AdvancedSearch.vue (with useFilter missing appliedFilterSummary in its return). After apply: `grep -n 'mixins:' src/components/common/AdvancedSearch.vue` still shows `[filterMixin]`, the component has a setup(), and no report line names the component as partially migrated.
-
-**Root cause / likely source**
-
-workflows/auto_migrate_workflow.py BLOCKED warning emitter (~L595-627) attributes the leftover to the composable and prescribes 'fix + re-run'; the report layer (reporting/markdown.py summary + action-plan builders) has no per-component 'partially migrated / N mixins left in place' section. remove_mixin_from_array (transform/injector.py:74) is correctly NOT called — the gap is purely reporting/DX. Related: there is no mixin<->setup member-collision check (cf. the data/setup collision check at reporting/markdown.py ~L463).
-
-**Why it matters**
-
-A developer can believe a component is fully migrated when it still depends on a mixin (the diff looks done). Worse, on a later re-run after the composable is fixed, the tool injects useX() into a component that STILL defines the same names via the leftover mixin — mixin-provided members and setup()-returned members collide/shadow per Vue 3 merge rules, with no warning (the existing collision check only covers data()<->setup, not mixin<->setup).
-
-**Fix direction**
-
-Add a component-level 'Partially migrated' section to the report listing each component still carrying a mixin after migration, the blocking member, and the reason; optionally drop an inline `// TODO(vue3-migration): filterMixin not migrated — useFilter missing appliedFilterSummary` marker in the component. Extend the collision check to compare leftover-mixin member names against injected composable returns.
-
-**Verify when fixed**
-
-Run the component migration above; assert the report names AdvancedSearch.vue as partially migrated and cites appliedFilterSummary. Then patch useFilter to return appliedFilterSummary and re-run; assert filterMixin is removed and no member collision is introduced. Cover in an integration test + a reporting unit test.
-<!-- /ISSUE id=RPT-4 -->
 
 <!-- ISSUE id=CG-1 severity=med category=codegen status=open discovered=2026-06-08 source=review-migration-output -->
 ### CG-1 · Private `_`-prefixed scratch state leaked into the composable's public `return {}`
