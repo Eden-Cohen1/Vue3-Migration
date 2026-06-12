@@ -21,9 +21,8 @@ Do not hand-edit the Index; run `track-improvement` (or `improvements.py reindex
 | ID | Sev | Category | Title | Status |
 |----|-----|----------|-------|--------|
 | [RPT-3](#rpt-3) | 🟡 low | Report Accuracy | Divergence false positives (pass-through helpers / equivalent booleans) erode trust in the section | open |
-| [CG-3](#cg-3) | 🟡 low | Codegen Quality | Import removal / setup() injection leaves whitespace damage in components | open |
 
-_2 open: 0 high, 0 med, 2 low._
+_1 open: 0 high, 0 med, 1 low._
 <!-- INDEX:END -->
 
 ## Issues
@@ -59,35 +58,5 @@ Inline single-`return` pass-through helpers before comparison (fixes canCreate �
 
 `canCreate` no longer appears as a divergence; `canEdit` (real difference) still does.
 <!-- /ISSUE id=RPT-3 -->
-
-<!-- ISSUE id=CG-3 severity=low category=codegen status=open discovered=2026-06-08 source=review-migration-output -->
-### CG-3 · Import removal / setup() injection leaves whitespace damage in components
-
-**🟡 low** · Codegen Quality · status: `open`
-
-**Symptom**
-
-When the mixin import was the only import: orphaned blank line right after `<script>` (`SearchBar.vue:95`) and no blank line before `export default {` (`SearchBar.vue:96-97`). `setup()` is injected with no leading blank line, so its placement varies across components (after `name` in StatsOverview, after `props` in BatchActions, after `emits` in SearchBar).
-
-**Reproduce**
-
-`sed -n '/<script>/,/export default/p' src/components/common/SearchBar.vue` after migration.
-
-**Root cause / likely source**
-
-`transform/injector.py:remove_import_line` (~L57-71) deletes the import without collapsing the orphaned blank; `add_composable_import` (~L30-54) and the no-setup branch (~L197-209) don't normalize surrounding spacing.
-
-**Why it matters**
-
-Whitespace churn enlarges diffs and makes the convention look inconsistent across a large codebase.
-
-**Fix direction**
-
-Normalize blank lines around the import block and before `export default`; emit `setup()` with a consistent leading blank line.
-
-**Verify when fixed**
-
-Migrated components have consistent spacing; add a golden/snapshot assertion.
-<!-- /ISSUE id=CG-3 -->
 
 <!-- ISSUES:END -->
