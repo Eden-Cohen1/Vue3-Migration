@@ -6,8 +6,8 @@ from ..core.composable_analyzer import extract_declared_identifiers, extract_ret
 from ..core.js_parser import extract_brace_block, extract_value_at
 from ..core.mixin_analyzer import extract_mixin_imports, filter_imports_by_usage, rewrite_import_path
 from ..core.warning_collector import (
-    collect_mixin_warnings, compute_confidence, inject_inline_warnings,
-    suppress_covered_warnings, suppress_resolved_warnings,
+    collect_mixin_warnings, compute_confidence, detect_residual_this_in_output,
+    inject_inline_warnings, suppress_covered_warnings, suppress_resolved_warnings,
 )
 from ..models import MixinMembers
 from .this_rewriter import rewrite_this_refs, rewrite_this_dollar_refs, rewrite_this_i18n_refs
@@ -795,7 +795,13 @@ def patch_composable(
         extract_return_keys(composable_content),
         mixin_content,
         lifecycle_hooks,
+        composable_source=content,
     )
+    # CORR-5/CORR-6: the patched composable is the ground truth — re-derive warnings
+    # for any `this.` still present in it (a covered member that still has this.$el,
+    # or an inlined hook reading this.<prop>) so the banner can't claim ✅ over code
+    # that crashes at runtime. Deduped against `warnings` so nothing double-counts.
+    warnings = warnings + detect_residual_this_in_output(content, warnings)
     confidence = compute_confidence(content, warnings)
     content = inject_inline_warnings(content, warnings, confidence, len(warnings))
 

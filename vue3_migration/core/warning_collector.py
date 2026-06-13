@@ -147,6 +147,13 @@ _KNOWN_DOLLAR_IDENTS: frozenset[str] = frozenset(
     | {"nextTick", "set", "delete"}  # auto-rewritten by this_rewriter.py
 )
 
+# category ("this.$el") -> (message, action_required, severity) from the patterns
+# above, so the output-verification detector can attach the same rich recipe to a
+# construct it finds surviving in the generated composable.
+_DOLLAR_PATTERN_BY_CATEGORY: dict[str, tuple[str, str, str]] = {
+    cat: (msg, action, sev) for _re, cat, msg, action, sev in _THIS_DOLLAR_PATTERNS
+}
+
 
 _RESOLVED_PATTERNS: dict[str, str] = {
     "this.$router": "useRouter",
@@ -206,6 +213,7 @@ def suppress_covered_member_warnings(
     warnings: list[MigrationWarning],
     covered_members: set[str],
     member_line_ranges: dict[str, tuple[int, int]],
+    composable_source: str | None = None,
 ) -> list[MigrationWarning]:
     """Drop warnings whose source lines fall inside a covered member's body.
 
@@ -216,6 +224,13 @@ def suppress_covered_member_warnings(
     For warnings with multiple ``source_lines``, only the lines inside
     covered ranges are removed.  The warning is dropped only when *all*
     its source lines are covered.
+
+    CORR-5: "covered" (declared+returned) is NOT the same as "clean". The patcher
+    inlines mixin bodies verbatim, so an unconvertible construct (``this.$el``,
+    ``this.$forceUpdate``) inside a covered member is still physically present —
+    and crashing — in the generated composable. When ``composable_source`` is
+    given, a warning whose construct still appears there is retained regardless of
+    covered-member suppression, so the banner/report can't drop a real manual step.
     """
     from dataclasses import replace as _replace
 
@@ -233,6 +248,10 @@ def suppress_covered_member_warnings(
 
     result: list[MigrationWarning] = []
     for w in warnings:
+        # CORR-5: body-aware — never suppress a construct still in the output.
+        if composable_source and _construct_in_source(w.category, composable_source):
+            result.append(w)
+            continue
         if w.source_lines:
             remaining = [ln for ln in w.source_lines if not _in_covered(ln)]
             if not remaining:
@@ -253,6 +272,7 @@ def suppress_covered_warnings(
     composable_returns: "list[str]",
     mixin_source: str,
     hooks: list[str] | None = None,
+    composable_source: str | None = None,
 ) -> list[MigrationWarning]:
     """Suppress warnings from mixin member bodies already covered by the composable.
 
@@ -267,6 +287,11 @@ def suppress_covered_warnings(
     composable's own declared/returned members and the mixin source, so the result
     is independent of which component is being migrated (preserves the three-modes
     invariant).
+
+    Pass ``composable_source`` (the generated/on-disk composable) to make
+    suppression body-aware: a covered member whose body still contains an
+    unconvertible ``this.*`` construct is not actually clean, so its warning is
+    kept (CORR-5).
     """
     from .mixin_analyzer import extract_member_line_ranges, extract_lifecycle_line_ranges
 
@@ -279,7 +304,9 @@ def suppress_covered_warnings(
             covered.update(lifecycle_ranges.keys())
     if not covered:
         return warnings
-    return suppress_covered_member_warnings(warnings, covered, member_ranges)
+    return suppress_covered_member_warnings(
+        warnings, covered, member_ranges, composable_source,
+    )
 
 
 def collect_mixin_warnings(
@@ -676,6 +703,122 @@ def _match_in_string(line: str, match_start: int) -> bool:
     return in_single or in_double or in_template
 
 
+# Matches a `this.<member>` reference; captures the member token ($-prefixed or bare).
+_THIS_REF_RE = re.compile(r"\bthis\.(\$?[A-Za-z_]\w*)")
+
+
+def _iter_this_refs(source: str):
+    """Yield (line_number, token) for each `this.<token>` in code (skip comments/strings)."""
+    for line_idx, line in enumerate(source.splitlines(), 1):
+        if line.lstrip().startswith("//"):
+            continue
+        for m in _THIS_REF_RE.finditer(line):
+            if _match_in_string(line, m.start()):
+                continue
+            yield line_idx, m.group(1)
+
+
+def _construct_in_source(category: str, source: str) -> bool:
+    """True if a warning's ``this.*`` construct still appears in composable code.
+
+    Used to make covered-member suppression body-aware (CORR-5): a ``this.$el``
+    warning must not be dropped while ``this.$el`` is still physically present in
+    the generated composable.
+    """
+    if not source or not category.startswith("this."):
+        return False
+    token = category[len("this."):]  # "this.$el" -> "$el"
+    return any(tok == token for _ln, tok in _iter_this_refs(source))
+
+
+def _represented_tokens(warnings: "list[MigrationWarning]") -> set[str]:
+    """The ``this.<token>`` parts already covered by an existing warning.
+
+    Lets the output detector skip constructs that already have a (richer) warning
+    so the manual-step count is never double-counted.
+    """
+    tokens: set[str] = set()
+    for w in warnings:
+        if w.category.startswith("this.$"):
+            tokens.add(w.category[len("this."):])  # "this.$el" -> "$el"
+        elif w.category == "external-dependency":
+            m = re.match(r"'(\w+)'", w.message)
+            if m:
+                tokens.add(m.group(1))
+        elif w.category == "composable-this-ref":
+            m = re.match(r"this\.(\$?\w+)", w.message)
+            if m:
+                tokens.add(m.group(1))
+    return tokens
+
+
+def detect_residual_this_in_output(
+    composable_source: str,
+    existing_warnings: "list[MigrationWarning] | None" = None,
+) -> list[MigrationWarning]:
+    """Re-derive warnings from the GENERATED composable for surviving ``this.`` refs.
+
+    The composable is the ground truth. Scanning the mixin source and suppressing
+    covered members can miss a ``this.`` that is still physically present in the
+    output:
+
+    * **CORR-5** — a covered member (declared+returned) whose body still contains an
+      unconvertible construct like ``this.$el`` / ``this.$forceUpdate`` (the patcher
+      inlines mixin bodies verbatim, so "covered" is not "clean").
+    * **CORR-6** — an inlined lifecycle/method body that reads a component-provided
+      value (``this.entityId``), which is never a mixin member, so the mixin scan
+      never produced a warning at all.
+
+    In a composable ``this`` is ``undefined``, so any surviving ``this.`` throws at
+    runtime. Flagging it keeps the banner and report from claiming ✅ over crashing
+    code (the "never ship code you can't replace" invariant).
+
+    Returns one warning per distinct residual ``this.<token>``, skipping tokens
+    already represented in ``existing_warnings``.
+    """
+    represented = _represented_tokens(existing_warnings or [])
+    seen: set[str] = set()
+    out: list[MigrationWarning] = []
+    for line_idx, token in _iter_this_refs(composable_source):
+        if token in represented or token in seen:
+            continue
+        seen.add(token)
+        category = f"this.{token}"
+        if category in _DOLLAR_PATTERN_BY_CATEGORY:
+            message, action, severity = _DOLLAR_PATTERN_BY_CATEGORY[category]
+        elif token.startswith("$"):
+            message = (
+                f"this.{token} is not available in composables "
+                "('this' is undefined here)"
+            )
+            action = "Use inject() or a dedicated composable instead of this.$*"
+            severity = "error"
+        else:
+            # CORR-6: a bare this.<ident> reads component-provided state (prop / data
+            # / injected) that the inlined body assumed on the component instance.
+            category = "composable-this-ref"
+            message = (
+                f"this.{token} refers to component-provided state not available "
+                "in a composable ('this' is undefined here)"
+            )
+            action = (
+                f"Pass '{token}' in as a composable parameter or provide it "
+                "via a ref/inject instead of reading this."
+            )
+            severity = "error"
+        out.append(MigrationWarning(
+            mixin_stem="",
+            category=category,
+            message=message,
+            action_required=action,
+            line_hint=None,
+            severity=severity,
+            source_line=line_idx,
+            source_lines=[line_idx],
+        ))
+    return out
+
+
 def inject_inline_warnings(
     source: str,
     warnings: list[MigrationWarning],
@@ -693,20 +836,28 @@ def inject_inline_warnings(
     source = _strip_old_inline_warnings(source)
 
     # Build header. Manual-step count uses the shared definition so the banner
-    # and the migration report's tier never disagree (RPT-1). This count is
-    # provisional \u2014 it's reconciled against the final report tier once all
-    # warnings are known (see _reconcile_composable_banners).
+    # and the migration report's tier never disagree (RPT-1). Callers reconcile
+    # `warnings` against the generated output via detect_residual_this_in_output()
+    # before this point, so a `this.` still present in the composable is always
+    # counted here \u2014 covered-member suppression can't hide it (CORR-5/CORR-6).
     if confidence is not None:
         # DX-1: name the distinct manual-step categories inline so the banner is
         # self-contained rather than pointing only at a transient report file.
         step_labels: list[str] = []
         for w in warnings:
-            if (
-                w.severity in ("error", "warning")
-                and w.category not in AUTO_REWRITTEN_CATEGORIES
-                and w.category not in step_labels
-            ):
-                step_labels.append(w.category)
+            if w.severity not in ("error", "warning"):
+                continue
+            if w.category in AUTO_REWRITTEN_CATEGORIES:
+                continue
+            # Show the concrete token for residual component-state refs
+            # (e.g. "this.entityId") rather than the internal category name.
+            if w.category == "composable-this-ref":
+                m = re.match(r"this\.(\$?\w+)", w.message)
+                label = f"this.{m.group(1)}" if m else "component state"
+            else:
+                label = w.category
+            if label not in step_labels:
+                step_labels.append(label)
         if len(step_labels) > 5:
             step_labels = step_labels[:5] + ["…"]
         source = build_banner_header(
@@ -751,6 +902,17 @@ def inject_inline_warnings(
                 pattern_info[pat] = (w.severity, hint)
                 # Also match all alias.x usage lines
                 alias_usage_patterns[f"{alias}."] = (w.severity, f"{alias}.x won't auto-rewrite — use direct refs")
+            continue
+        elif w.category == "composable-this-ref":
+            # CORR-6: bare this.<ident> surviving in the generated composable.
+            m = re.match(r"this\.(\$?\w+)", w.message)
+            if m:
+                tok = m.group(1)
+                pat = f"this.{tok}"
+                pattern_info[pat] = (
+                    w.severity,
+                    f"this.{tok} — component state, not available in composable; pass as param",
+                )
             continue
         elif w.category == "kind-mismatch":
             # Match the declaration line for the mismatched member

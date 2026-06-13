@@ -23,8 +23,9 @@ from ..core.mixin_analyzer import (
     find_external_this_refs,
 )
 from ..core.warning_collector import (
-    collect_mixin_warnings, detect_name_collisions, suppress_covered_warnings,
-    suppress_covered_member_warnings, suppress_resolved_warnings,
+    collect_mixin_warnings, detect_name_collisions, detect_residual_this_in_output,
+    suppress_covered_warnings, suppress_covered_member_warnings,
+    suppress_resolved_warnings,
 )
 from ..models import (
     MEMBER_KIND_LABELS, ComposableCoverage, FileChange, MigrationConfig, MigrationPlan,
@@ -157,7 +158,7 @@ def _analyze_mixin_silent(
             entry.composable.declared_identifiers,
             comp_source,
         )
-        mixin_warnings = suppress_covered_warnings(mixin_warnings, entry.composable.declared_identifiers, entry.composable.return_keys, mixin_source, entry.lifecycle_hooks)
+        mixin_warnings = suppress_covered_warnings(mixin_warnings, entry.composable.declared_identifiers, entry.composable.return_keys, mixin_source, entry.lifecycle_hooks, composable_source=comp_source)
 
         resolved_names = set(entry.composable.declared_identifiers)
         entry.external_deps = [d for d in entry.external_deps if d not in resolved_names]
@@ -1138,6 +1139,48 @@ def _remove_resolved_lifecycle_warnings(
                 ]
 
 
+def _flag_residual_this_in_composables(
+    entries: list[tuple[Path, list["MixinEntry"]]],
+    composable_changes: "list[FileChange]",
+) -> None:
+    """Surface ``this.`` refs that survived into the generated composable (CORR-5/CORR-6).
+
+    The migration report tiers off ``entry.warnings``. The inline banner is
+    reconciled against the generated composable (detect_residual_this_in_output) in
+    the patcher/generator; this does the matching reconciliation for the report so
+    the two never disagree (RPT-1). A covered member whose body still has
+    ``this.$el``, or an inlined hook reading ``this.<prop>``, becomes a manual step
+    in the report exactly as it does in the banner.
+    """
+    content_by_stem: dict[str, str] = {
+        change.file_path.stem: change.new_content
+        for change in composable_changes
+        if change.has_changes
+    }
+
+    for _comp_path, entry_list in entries:
+        for entry in entry_list:
+            # Prefer the generated change; fall back to the on-disk composable so an
+            # unchanged-but-already-patched composable is still verified.
+            comp_content = ""
+            if entry.composable:
+                comp_content = content_by_stem.get(entry.composable.file_path.stem, "")
+                if not comp_content:
+                    comp_content = read_source(entry.composable.file_path)
+            if not comp_content:
+                stem = re.sub(r"[Mm]ixin$", "", entry.mixin_stem)
+                use_name = f"use{stem[0].upper()}{stem[1:]}" if stem else ""
+                comp_content = content_by_stem.get(use_name, "")
+            if not comp_content:
+                continue
+
+            residual = detect_residual_this_in_output(comp_content, entry.warnings)
+            for w in residual:
+                w.mixin_stem = entry.mixin_stem
+                w.source_context = "composable"
+            entry.warnings.extend(residual)
+
+
 def _collect_kind_mismatch_warnings(
     entries: list[tuple[Path, list[MixinEntry]]],
 ) -> dict[Path, list[MigrationWarning]]:
@@ -1199,6 +1242,7 @@ def run(project_root: Path, config: MigrationConfig) -> MigrationPlan:
 
     composable_changes = _build_all_composable_changes(entries, project_root, config)
     _remove_resolved_lifecycle_warnings(entries, composable_changes)
+    _flag_residual_this_in_composables(entries, composable_changes)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
         component_changes=component_changes,
@@ -1287,7 +1331,7 @@ def _build_standalone_mixin_entry(
             entry.composable.declared_identifiers,
             comp_source,
         )
-        mixin_warnings = suppress_covered_warnings(mixin_warnings, entry.composable.declared_identifiers, entry.composable.return_keys, mixin_source, entry.lifecycle_hooks)
+        mixin_warnings = suppress_covered_warnings(mixin_warnings, entry.composable.declared_identifiers, entry.composable.return_keys, mixin_source, entry.lifecycle_hooks, composable_source=comp_source)
 
         resolved_names = set(entry.composable.declared_identifiers)
         entry.external_deps = [d for d in entry.external_deps if d not in resolved_names]
@@ -1370,6 +1414,7 @@ def run_scoped(
         entries, project_root, config, scope_to_used=component_path is not None,
     )
     _remove_resolved_lifecycle_warnings(entries, composable_changes)
+    _flag_residual_this_in_composables(entries, composable_changes)
     component_changes = plan_component_injections(entries, composable_changes, config)
     return MigrationPlan(
         component_changes=component_changes,

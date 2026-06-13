@@ -8,8 +8,8 @@ from ..core.mixin_analyzer import (
     extract_member_line_ranges, find_internal_private_props,
 )
 from ..core.warning_collector import (
-    collect_mixin_warnings, compute_confidence, inject_inline_warnings,
-    suppress_resolved_warnings, suppress_covered_member_warnings,
+    collect_mixin_warnings, compute_confidence, detect_residual_this_in_output,
+    inject_inline_warnings, suppress_resolved_warnings, suppress_covered_member_warnings,
 )
 from ..models import MigrationWarning, MixinMembers
 from .composable_patcher import (
@@ -558,6 +558,10 @@ def generate_composable_from_mixin(
             severity="warning",
         ))
 
+    # CORR-5/CORR-6: re-derive warnings for any `this.` still present in the
+    # generated composable (component-provided this.<prop>, or an unconvertible
+    # this.$* that survived) so the banner reflects code that crashes at runtime.
+    warnings = warnings + detect_residual_this_in_output(result, warnings)
     confidence = compute_confidence(result, warnings)
     result = inject_inline_warnings(result, warnings, confidence, len(warnings))
 

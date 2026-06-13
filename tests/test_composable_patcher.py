@@ -1038,3 +1038,86 @@ def test_propagated_import_grouped_below_vue_no_blank_damage(tmp_path):
     # No stray blank-line damage in the import block.
     assert "\n\n\n" not in out
     assert lines[vue_idx + 1].startswith("import { debounce }")
+
+
+# ---------------------------------------------------------------------------
+# CORR-5: a shared composable re-patched by a 2nd component must not flip its
+# banner to "✅ 0 issues" while its body still contains a crashing this.$el.
+# CORR-6: an inlined hook/method body that reads a component-provided this.<prop>
+# must be flagged, not shipped silently under a green banner.
+# ---------------------------------------------------------------------------
+
+THEME_MIXIN = (
+    "export default {\n"
+    "  data() { return { theme: 'light' } },\n"
+    "  methods: {\n"
+    "    applyTheme() {\n"
+    "      this.$el.style.background = this.theme\n"
+    "      this.$forceUpdate()\n"
+    "    },\n"
+    "  },\n"
+    "}\n"
+)
+
+
+def test_corr5_banner_warns_when_adding_member_with_this_el():
+    """First component to patch applyTheme in: banner must warn (not ✅)."""
+    comp = (
+        "import { ref } from 'vue'\n\n"
+        "export function useTheme() {\n"
+        "  const theme = ref('light')\n"
+        "  return { theme }\n"
+        "}\n"
+    )
+    members = MixinMembers(data=["theme"], methods=["applyTheme"])
+    out = patch_composable(comp, THEME_MIXIN, [], ["applyTheme"], members)
+    assert "this.$el" in out  # construct is inlined verbatim
+    assert out.splitlines()[0].startswith("// ⚠️")  # ⚠️ banner
+    assert not out.splitlines()[0].startswith("// ✅")     # never ✅
+
+
+def test_corr5_banner_stays_warning_when_member_already_covered():
+    """Re-patching a composable that ALREADY covers applyTheme (declared+returned)
+    must keep the ⚠️ banner — the body still has this.$el, so it is NOT clean."""
+    covered = (
+        "import { ref } from 'vue'\n\n"
+        "export function useTheme() {\n"
+        "  const theme = ref('light')\n"
+        "  function applyTheme() {\n"
+        "    this.$el.style.background = theme.value\n"
+        "    this.$forceUpdate()\n"
+        "  }\n"
+        "  return { theme, applyTheme }\n"
+        "}\n"
+    )
+    members = MixinMembers(data=["theme"], methods=["applyTheme"])
+    # missing=[]/not_returned=[]: applyTheme is already covered.
+    out = patch_composable(covered, THEME_MIXIN, [], [], members)
+    assert "this.$el" in out
+    banner = out.splitlines()[0]
+    assert banner.startswith("// ⚠️"), f"banner clobbered: {banner!r}"
+    assert not banner.startswith("// ✅")
+
+
+def test_corr6_component_prop_in_inlined_hook_is_flagged():
+    """An inlined mounted() that reads a component prop (this.entityId) must be
+    flagged with an inline annotation and a non-✅ banner, not shipped silently."""
+    mixin = (
+        "export default {\n"
+        "  methods: { loadComments(id) { return id } },\n"
+        "  mounted() { if (this.entityId) this.loadComments(this.entityId) },\n"
+        "}\n"
+    )
+    comp = (
+        "export function useComment() {\n"
+        "  function loadComments(id) { return id }\n"
+        "  return { loadComments }\n"
+        "}\n"
+    )
+    members = MixinMembers(methods=["loadComments"])
+    out = patch_composable(comp, mixin, [], [], members, lifecycle_hooks=["mounted"])
+    # The component prop survives verbatim in the generated hook ...
+    assert "this.entityId" in out
+    # ... and must be flagged: banner not ✅, and the line carries a ❌ annotation.
+    assert not out.splitlines()[0].startswith("// ✅")
+    assert any("this.entityId" in l and "❌" in l for l in out.splitlines()), out

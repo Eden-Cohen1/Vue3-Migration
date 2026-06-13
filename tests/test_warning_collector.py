@@ -3064,3 +3064,145 @@ def test_suppress_covered_warnings_drops_only_covered_members():
         warnings, ["initForm", "submitForm"], ["initForm"], mixin_source,
     )
     assert count_manual_steps(uncovered) == 2
+
+
+# ---------------------------------------------------------------------------
+# CORR-5 / CORR-6: output-verification — the generated composable is ground truth.
+# ---------------------------------------------------------------------------
+
+class TestBodyAwareCoveredSuppression:
+    """suppress_covered_warnings must NOT drop a warning whose construct is still
+    physically present in the composable body (CORR-5)."""
+
+    THEME_MIXIN = (
+        "export default {\n"
+        "  data() { return { theme: 'light' } },\n"
+        "  methods: {\n"
+        "    applyTheme() { this.$el.style.background = this.theme },\n"
+        "  },\n"
+        "}\n"
+    )
+
+    def _warnings(self):
+        from vue3_migration.core.warning_collector import collect_mixin_warnings
+        members = MixinMembers(data=["theme"], methods=["applyTheme"])
+        return collect_mixin_warnings(self.THEME_MIXIN, members, [])
+
+    def test_suppressed_without_composable_source(self):
+        """Baseline: a covered member's in-body warning is dropped when we can't
+        see the composable body."""
+        from vue3_migration.core.warning_collector import suppress_covered_warnings
+        warns = self._warnings()
+        assert any(w.category == "this.$el" for w in warns)
+        out = suppress_covered_warnings(
+            warns, ["theme", "applyTheme"], ["theme", "applyTheme"], self.THEME_MIXIN,
+        )
+        assert not any(w.category == "this.$el" for w in out)
+
+    def test_kept_when_construct_still_in_composable_body(self):
+        """Body-aware: the same covered member keeps its this.$el warning because
+        the composable body still contains this.$el."""
+        from vue3_migration.core.warning_collector import suppress_covered_warnings
+        composable = (
+            "export function useTheme() {\n"
+            "  const theme = ref('light')\n"
+            "  function applyTheme() { this.$el.style.background = theme.value }\n"
+            "  return { theme, applyTheme }\n"
+            "}\n"
+        )
+        out = suppress_covered_warnings(
+            self._warnings(), ["theme", "applyTheme"], ["theme", "applyTheme"],
+            self.THEME_MIXIN, composable_source=composable,
+        )
+        assert any(w.category == "this.$el" for w in out)
+
+    def test_suppressed_when_construct_actually_gone(self):
+        """If the composable body genuinely no longer has the construct, the
+        covered-member suppression still applies (no false manual step)."""
+        from vue3_migration.core.warning_collector import suppress_covered_warnings
+        clean = (
+            "export function useTheme() {\n"
+            "  const theme = ref('light')\n"
+            "  function applyTheme() { document.body.style.background = theme.value }\n"
+            "  return { theme, applyTheme }\n"
+            "}\n"
+        )
+        out = suppress_covered_warnings(
+            self._warnings(), ["theme", "applyTheme"], ["theme", "applyTheme"],
+            self.THEME_MIXIN, composable_source=clean,
+        )
+        assert not any(w.category == "this.$el" for w in out)
+
+
+class TestDetectResidualThisInOutput:
+    """detect_residual_this_in_output re-derives warnings from the generated
+    composable so a `this.` left in the output is never silent (CORR-5/CORR-6)."""
+
+    def test_flags_bare_component_prop(self):
+        from vue3_migration.core.warning_collector import detect_residual_this_in_output
+        comp = (
+            "export function useComment() {\n"
+            "  onMounted(() => { if (this.entityId) loadComments(this.entityId) })\n"
+            "  return {}\n"
+            "}\n"
+        )
+        warns = detect_residual_this_in_output(comp)
+        prop = [w for w in warns if w.category == "composable-this-ref"]
+        assert len(prop) == 1  # deduped despite two occurrences
+        assert "entityId" in prop[0].message
+        assert prop[0].severity == "error"
+
+    def test_flags_surviving_dollar_construct_with_recipe(self):
+        from vue3_migration.core.warning_collector import detect_residual_this_in_output
+        comp = "export function useX() { foo(); this.$el.focus(); return {} }\n"
+        warns = detect_residual_this_in_output(comp)
+        el = [w for w in warns if w.category == "this.$el"]
+        assert el and "template ref" in el[0].action_required.lower()
+
+    def test_skips_tokens_already_represented(self):
+        """No double-counting: a token already covered by an existing warning is
+        not re-emitted."""
+        from vue3_migration.core.warning_collector import detect_residual_this_in_output
+        comp = "export function useX() { this.$el.focus(); return {} }\n"
+        existing = [MigrationWarning(
+            mixin_stem="", category="this.$el", message="x", action_required="y",
+            line_hint=None, severity="error",
+        )]
+        assert detect_residual_this_in_output(comp, existing) == []
+
+    def test_clean_composable_yields_nothing(self):
+        from vue3_migration.core.warning_collector import detect_residual_this_in_output
+        comp = (
+            "export function useX() {\n"
+            "  const a = ref(1)\n"
+            "  function inc() { a.value++ }\n"
+            "  return { a, inc }\n"
+            "}\n"
+        )
+        assert detect_residual_this_in_output(comp) == []
+
+    def test_ignores_this_inside_string_or_comment(self):
+        from vue3_migration.core.warning_collector import detect_residual_this_in_output
+        comp = (
+            "export function useX() {\n"
+            "  // this.entityId is just a note\n"
+            "  const msg = 'use this.foo carefully'\n"
+            "  return {}\n"
+            "}\n"
+        )
+        assert detect_residual_this_in_output(comp) == []
+
+    def test_inline_annotation_marks_residual_line(self):
+        from vue3_migration.core.warning_collector import (
+            detect_residual_this_in_output, inject_inline_warnings,
+        )
+        comp = (
+            "export function useComment() {\n"
+            "  onMounted(() => { if (this.entityId) load() })\n"
+            "  return {}\n"
+            "}\n"
+        )
+        warns = detect_residual_this_in_output(comp)
+        out = inject_inline_warnings(comp, warns, ConfidenceLevel.LOW, len(warns))
+        assert not out.splitlines()[0].startswith("// ✅")
+        assert any("this.entityId" in l and "❌" in l for l in out.splitlines())

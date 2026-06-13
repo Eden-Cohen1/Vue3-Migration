@@ -1464,6 +1464,10 @@ def _find_warning_lines(
         pat = "= this"
     elif warning.category == "remaining-this":
         pat = "this."
+    elif warning.category == "composable-this-ref":
+        m = re.match(r"this\.(\$?\w+)", warning.message)
+        if m:
+            pat = f"this.{m.group(1)}"
     elif warning.category.startswith("mixin-option:"):
         option = warning.category.split(":")[1]
         pat = f"{option}:"
@@ -1614,6 +1618,13 @@ def _step_label(
         comp_match = re.search(r"In `(\w+)`", warning.message)
         ctx = f" in {_link_component(comp_match.group(1))}" if comp_match else ""
         return f"Skipped {member}{ctx} \u2014 already provided by an earlier composable"
+    if warning.category == "composable-this-ref":
+        m = re.match(r"this\.(\$?\w+)", warning.message)
+        member = f"`this.{m.group(1)}`" if m else "`this.<prop>`"
+        return (
+            f"Replace {member} — component-provided state, not available in a "
+            "composable; pass it as a parameter or use a ref/inject"
+        )
     # this.$ categories — already descriptive
     return f"Replace `{warning.category}`"
 

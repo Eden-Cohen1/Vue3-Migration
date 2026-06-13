@@ -176,6 +176,27 @@ has bitten us. When touching lifecycle code, re-run `test_idempotency.py` and
   reminder to delete the marker. **Lesson:** a test that is *supposed* to fail
   must say so to the runner, or it's just noise.
 
+### 4.8 Verify the generated output, not just the mixin input
+
+Warnings were collected by scanning the *mixin* and then suppressing members the
+composable "covers" (declares **and** returns). But the patcher inlines mixin
+bodies verbatim, so "covered" is not "clean": a covered method whose body still
+contains `this.$el`, or an inlined `mounted()` that reads a component prop
+(`this.entityId`), is declared+returned yet still crashes — `this` is `undefined`
+in a composable. The mixin-scan-plus-suppress path dropped those (CORR-5) or never
+produced them at all (CORR-6, since a component prop is not a mixin member), and a
+shared composable re-patched by a second component flipped its banner to
+"✅ 0 issues" over code that throws.
+
+The fix extends the §4.3 lesson: **the generated composable is the ground truth.**
+`detect_residual_this_in_output()` re-derives a warning for any `this.` still
+physically present in the output, the banner (patcher/generator) and the report
+(`_flag_residual_this_in_composables`) both reconcile against it, and
+`suppress_covered_warnings` is body-aware — it never drops a construct still in the
+composable body. **Lesson:** when you suppress a warning because something is
+"handled," verify it against the artifact you actually emit, not the input you
+hoped to transform.
+
 ---
 
 ## 5. Known limitations (deliberate, documented)
