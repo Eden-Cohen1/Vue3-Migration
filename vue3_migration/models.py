@@ -208,6 +208,12 @@ class MixinEntry:
     """External this.X references not defined in this mixin."""
     divergences: list[MemberDivergence] = field(default_factory=list)
     """Members where composable implementation diverges from mixin."""
+    block_mixin_removal: bool = False
+    """When True, the component reaches into the live mixins array
+    (``this.$options.mixins[...]``), so this mixin must NOT be removed and the
+    component must not be auto-migrated — removing the array (or any sibling
+    mixin, which reorders it) would crash the surviving access at runtime
+    (CORR-1)."""
 
     def compute_status(self) -> MigrationStatus:
         """Determine the migration status based on analysis results."""

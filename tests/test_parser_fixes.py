@@ -174,6 +174,35 @@ class TestRemoveNamedImportLine:
         result = remove_import_line(content, "auth")
         assert "import" not in result
 
+    def test_remove_sole_import_leaves_no_orphan_blank_after_script(self):
+        # CG-3: deleting the only import (followed by a blank line) must not
+        # leave an orphaned blank line right after <script>.
+        content = (
+            "<script>\n"
+            "import searchMixin from '@/mixins/searchMixin'\n"
+            "\n"
+            "export default {\n}\n"
+            "</script>\n"
+        )
+        result = remove_import_line(content, "searchMixin")
+        assert "<script>\n\n" not in result
+        assert "\n\n\n" not in result
+        assert result == "<script>\nexport default {\n}\n</script>\n"
+
+    def test_remove_import_among_others_keeps_clean_spacing(self):
+        content = (
+            "<script>\n"
+            "import { mapState } from 'vuex'\n"
+            "import searchMixin from '@/mixins/searchMixin'\n"
+            "\n"
+            "export default {}\n"
+            "</script>\n"
+        )
+        result = remove_import_line(content, "searchMixin")
+        assert "import { mapState } from 'vuex'" in result
+        assert "searchMixin" not in result
+        assert "\n\n\n" not in result
+
 
 # ── Fix 3: Bracket notation this['prop'] ──────────────────────────────
 

@@ -1137,6 +1137,101 @@ def build_summary_section(
     return "\n".join(lines)
 
 
+def _composable_calls(src: str) -> set:
+    """Names of composable functions called (e.g. `useSearch(`) in a source string."""
+    import re
+    return set(re.findall(r"\b(use[A-Z]\w*)\s*\(", src))
+
+
+def _partial_migration_reason(entry: "MixinEntry") -> str:
+    """One-line explanation of why a mixin was left in a component's array (RPT-4)."""
+    cls = entry.classification
+    fn = entry.composable.fn_name if entry.composable else None
+    st = entry.status.value
+    if st == "blocked_not_returned" and cls and cls.truly_not_returned:
+        return f"`{fn}` does not return: {', '.join(cls.truly_not_returned)}"
+    if st == "blocked_missing" and cls and cls.truly_missing:
+        return f"`{fn}` is missing: {', '.join(cls.truly_missing)}"
+    if st == "blocked_no_composable":
+        return "no composable could be matched or generated"
+    if getattr(entry, "block_mixin_removal", False):
+        return "component accesses `this.$options.mixins` directly — kept to avoid a runtime crash"
+    cats = {w.category for w in entry.warnings}
+    if "skipped-all-overridden" in cats:
+        overridden = ", ".join(
+            (cls.overridden + cls.overridden_not_returned) if cls else []
+        )
+        base = "all used members are overridden by the component"
+        return f"{base} ({overridden})" if overridden else base
+    if "skipped-lifecycle-only" in cats:
+        return "provides lifecycle hooks that were not migrated"
+    return "left in place — see the Action Plan for this mixin"
+
+
+def build_partial_migration_section(
+    entries_by_component: "list[tuple[Path, list[MixinEntry]]]",
+    component_changes: "list[FileChange] | None" = None,
+    project_root: "Path | None" = None,
+) -> str:
+    """List components that were only PARTIALLY migrated (RPT-4).
+
+    A component is partially migrated when the run wired in at least one
+    composable (added a ``use*()`` setup destructure that wasn't there before)
+    yet left a ``mixins: [...]`` array in place. The per-composable Action Plan
+    never names such a component, so a developer reading a "done"-looking diff
+    can miss that it still depends on a mixin. This section names each one, the
+    mixin(s) left behind, and why.
+    """
+    from ..core.component_analyzer import parse_mixins_array
+
+    if not component_changes:
+        return ""
+    change_by_path = {c.file_path: c for c in component_changes if c.has_changes}
+
+    rows: list[tuple[Path, list[tuple[str, str]]]] = []
+    for comp_path, entries in entries_by_component:
+        change = change_by_path.get(comp_path)
+        if not change:
+            continue
+        remaining = parse_mixins_array(change.new_content)
+        if not remaining:
+            continue
+        # Only count it as "partially migrated" if the run actually wired in a
+        # composable the file didn't call before (otherwise it's fully blocked,
+        # not partial).
+        gained = _composable_calls(change.new_content) - _composable_calls(change.original_content)
+        if not gained:
+            continue
+        by_local = {e.local_name: e for e in entries}
+        left = [
+            (local, _partial_migration_reason(by_local[local]) if local in by_local else "left in place")
+            for local in remaining
+        ]
+        rows.append((comp_path, left))
+
+    if not rows:
+        return ""
+
+    lines: list[str] = []
+    a = lines.append
+    a("## ⚠️ Partially migrated components\n")
+    a(
+        "These components were wired to a composable **but still carry a "
+        "`mixins:` array** — they are NOT fully migrated. Resolve each mixin "
+        "below, then re-run the migration to remove it.\n"
+    )
+    for comp_path, left in rows:
+        label = (
+            _rel_link(comp_path, project_root, comp_path.name)
+            if project_root else comp_path.name
+        )
+        a(f"- **{label}** still uses:")
+        for local, reason in left:
+            a(f"  - `{local}` — {reason}")
+    a("")
+    return "\n".join(lines)
+
+
 def build_action_plan(
     entries_by_component: "list[tuple[Path, list[MixinEntry]]]",
     composable_changes: "list[FileChange] | None" = None,
@@ -1269,7 +1364,8 @@ def build_action_plan(
         )
         for e in needs_review:
             comp_path = e.composable.file_path if e.composable else None
-            a(_build_divergence_section(e, comp_path, project_root))
+            final_content = composable_content_map.get(comp_path) if comp_path else None
+            a(_build_divergence_section(e, comp_path, project_root, final_content))
 
     # Drop-in fixes — per-composable numbered steps
     if dropin_fixes:
@@ -1618,10 +1714,20 @@ def _build_divergence_section(
     entry: "MixinEntry",
     composable_path: "Path | None",
     project_root: "Path | None",
+    composable_content: "str | None" = None,
 ) -> str:
-    """Build a markdown section showing divergences between mixin and composable members."""
+    """Build a markdown section showing divergences between mixin and composable members.
+
+    ``composable_content`` is the FINAL (post-patch) composable text. Divergence
+    line ranges are recorded pre-patch, but the patcher later prepends a banner
+    header and propagated imports, shifting every member down (RPT-2). When the
+    final content is available, member line links are recomputed against it so
+    they land on the actual member; otherwise the stored pre-patch range is used.
+    """
     if not entry.divergences:
         return ""
+
+    from ..core.divergence_detector import extract_composable_member_body
 
     lines: list[str] = []
     # Reuse existing _rel_link() helper for file links
@@ -1640,10 +1746,22 @@ def _build_divergence_section(
             label = f"mixin L{s}" if s == e else f"mixin L{s}-{e}"
             mixin_link_str = _vscode_link(entry.mixin_path, s, label)
         comp_link_str = ""
-        if div.composable_lines and composable_path:
-            s, e = div.composable_lines
-            label = f"composable L{s}" if s == e else f"composable L{s}-{e}"
-            comp_link_str = _vscode_link(composable_path, s, label)
+        if composable_path:
+            s = e = None
+            # RPT-2: prefer the member's real line in the final on-disk content
+            # (after the header/imports were prepended); fall back to the stored
+            # pre-patch range when the final content isn't available.
+            if composable_content:
+                extracted = extract_composable_member_body(composable_content, div.member_name)
+                if extracted:
+                    _text, start_line = extracted
+                    s = start_line
+                    e = start_line + _text.count("\n")
+            if s is None and div.composable_lines:
+                s, e = div.composable_lines
+            if s is not None:
+                label = f"composable L{s}" if s == e else f"composable L{s}-{e}"
+                comp_link_str = _vscode_link(composable_path, s, label)
 
         lines.append("<details>")
         lines.append(f"<summary><b>{div.member_name}</b> — implementation differs</summary>\n")
@@ -1841,9 +1959,10 @@ def _append_composable_steps(
         for w in other_info:
             a(f"- \u2139\ufe0f {w.message}")
 
-    # Divergence section
+    # Divergence section — pass the final post-patch content so member line
+    # links account for the prepended header/imports (RPT-2).
     if entry.divergences:
-        a(_build_divergence_section(entry, comp_path, project_root))
+        a(_build_divergence_section(entry, comp_path, project_root, comp_source or None))
 
     a("")
 

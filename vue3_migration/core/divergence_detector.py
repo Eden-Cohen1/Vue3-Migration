@@ -230,6 +230,87 @@ def _extract_body_content(code: str, kind: str) -> str:
     return stripped
 
 
+# ---- Pass-through helper inlining (RPT-3) ----
+
+def _split_top_level_args(arg_str: str) -> list[str]:
+    """Split a call's argument string on top-level commas (ignoring nesting)."""
+    args: list[str] = []
+    depth = 0
+    cur = ""
+    in_str: str | None = None
+    for ch in arg_str:
+        if in_str:
+            cur += ch
+            if ch == in_str:
+                in_str = None
+            continue
+        if ch in ("'", '"', "`"):
+            in_str = ch
+            cur += ch
+        elif ch in "([{":
+            depth += 1
+            cur += ch
+        elif ch in ")]}":
+            depth -= 1
+            cur += ch
+        elif ch == "," and depth == 0:
+            args.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        args.append(cur.strip())
+    return args
+
+
+def _build_passthrough_helpers(mixin_source, mixin_members, ref_members, plain_members) -> dict:
+    """Map ``method_name -> (params, return_expr)`` for single-return pass-throughs.
+
+    A pass-through is a method whose entire body is one ``return <expr>``. The
+    expression is pre-rewritten to composable form (``this.x`` → ``x.value`` /
+    ``x()``) so an inlined call matches what a composable that inlined the helper
+    would contain (RPT-3).
+    """
+    from ..transform.lifecycle_converter import extract_hook_body
+    from ..transform.this_rewriter import rewrite_this_refs
+
+    helpers: dict[str, tuple[list[str], str]] = {}
+    for name in mixin_members.methods:
+        body = extract_hook_body(mixin_source, name, exclude_sections=False)
+        if not body:
+            continue
+        stripped = body.strip()
+        if "\n" in stripped:
+            continue  # multi-line — not a trivial pass-through
+        m = re.match(r"^return\s+(.+?);?\s*$", stripped)
+        if not m:
+            continue
+        expr = rewrite_this_refs(m.group(1).strip(), ref_members, plain_members)
+        # Match the method DEFINITION (params followed by `{`), not an earlier
+        # call site like `this.checkPermission('create')`.
+        sig = re.search(rf"\b{re.escape(name)}\s*\(([^)]*)\)\s*\{{", mixin_source)
+        params = [p.strip() for p in sig.group(1).split(",") if p.strip()] if sig else []
+        helpers[name] = (params, expr)
+    return helpers
+
+
+def _inline_passthrough_calls(body: str, helpers: dict) -> str:
+    """Replace ``helper(args)`` calls in ``body`` with the helper's return expr."""
+    for name, (params, expr) in helpers.items():
+        pattern = re.compile(rf"(?:this\s*\.\s*)?\b{re.escape(name)}\s*\(([^()]*)\)")
+
+        def repl(match: "re.Match") -> str:
+            raw = match.group(1).strip()
+            args = _split_top_level_args(raw) if raw else []
+            inlined = expr
+            for p, a in zip(params, args):
+                inlined = re.sub(rf"\b{re.escape(p)}\b", lambda _m, a=a: a, inlined)
+            return inlined
+
+        body = pattern.sub(repl, body)
+    return body
+
+
 # ---- Divergence detection ----
 
 def _determine_mixin_kind(name: str, mixin_members) -> str:
@@ -263,6 +344,13 @@ def detect_divergences(
 
     divergences: list[MemberDivergence] = []
 
+    # RPT-3: trivial single-return pass-through helpers, pre-rewritten to
+    # composable form, so a composable that inlined `checkPermission('create')`
+    # to `userPermissions.value.includes('create')` isn't flagged as divergent.
+    passthrough_helpers = _build_passthrough_helpers(
+        mixin_source, mixin_members, ref_members, plain_members,
+    )
+
     for name in covered_members:
         kind = _determine_mixin_kind(name, mixin_members)
         if kind == "unknown":
@@ -294,6 +382,18 @@ def detect_divergences(
         expected_raw, _ = rewrite_this_dollar_refs(expected_raw)
         expected_raw, _ = rewrite_this_i18n_refs(expected_raw)
 
+        # RPT-3: inline pass-through helper calls on BOTH raw declarations
+        # (excluding the member itself) so a mixin that calls a helper and a
+        # composable that inlined it normalize to the same expression. Inlining
+        # the RAW (balanced) declaration avoids the body-extractor's paren
+        # stripping. Genuine differences (a wrong arg, a different helper) still
+        # survive and are flagged.
+        if passthrough_helpers:
+            local_helpers = {k: v for k, v in passthrough_helpers.items() if k != name}
+            if local_helpers:
+                expected_raw = _inline_passthrough_calls(expected_raw, local_helpers)
+                actual_raw = _inline_passthrough_calls(actual_raw, local_helpers)
+
         # Strip declaration wrappers — compare only body content
         expected_body = _extract_body_content(expected_raw, kind)
         actual_body = _extract_body_content(actual_raw, kind)
@@ -323,19 +423,66 @@ def detect_divergences(
     return divergences
 
 
+def _is_dropped_side_effect(line: str, actual_text: str) -> bool:
+    """True when `line` is a `this.`-side-effect call that the composable dropped.
+
+    A side effect here is a `this.` *method invocation* the generator could not
+    convert and therefore left in `expected` — most importantly Vue 2 instance
+    calls like ``this.$emit(...)`` / ``this.$forceUpdate()`` / ``this.$set(...)``,
+    but also a plain ``this.someMethod(...)`` call.
+
+    It counts as DROPPED — a genuine behavioral divergence (CORR-3) — only if the
+    effect does not reappear anywhere in the composable body. That distinguishes
+    a line that was merely *converted* (``this.$emit`` → ``emit``) or *reordered*
+    (which still contains the effect's token) from one that was deleted outright.
+    Reads and assignments are excluded: the generator rewrites those, so a
+    surviving ``this.`` read is a real external dependency already covered by the
+    unconverted-noise rule.
+    """
+    if "this." not in line:
+        return False
+    # First `this.`-access that is actually a call (has a trailing `(`).
+    m = re.search(r"this\.(\$?\w+)(?:\s*\.\s*\w+)*\s*\(", line)
+    if not m:
+        return False
+    token = m.group(1).lstrip("$")  # e.g. 'emit' from this.$emit, 'doThing' from this.doThing
+    if not token:
+        return False
+    # Effect still present in the composable (converted/reordered) → not dropped.
+    if re.search(rf"(?<!\w){re.escape(token)}(?!\w)", actual_text):
+        return False
+    return True
+
+
 def _lines_match_ignoring_unconverted(expected: list[str], actual: list[str]) -> bool:
     """Check if expected and actual match, ignoring diffs caused by unconverted this. patterns.
 
     Uses SequenceMatcher to align lines, then checks if all non-equal opcodes
     are explainable by this. references (i.e., the generator couldn't convert them).
+
+    Exception (CORR-3): a `this.`-side-effect line (e.g. ``this.$emit`` /
+    ``this.$forceUpdate``) that was DELETED with no counterpart anywhere in the
+    composable is a genuine dropped behavior, NOT ignorable unconverted noise.
+    Previously such deletions were silently swallowed, producing a false
+    negative that reported a member as clean while a side effect was lost.
     """
     import difflib
+    actual_text = "\n".join(actual)
     matcher = difflib.SequenceMatcher(None, expected, actual)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
-        # Check if ALL expected lines in this opcode have this. (unconverted)
         exp_lines = expected[i1:i2]
+        # A dropped this.-side-effect whose token never resurfaces in the
+        # composable is a real divergence, whatever the opcode shape. (When the
+        # effect WAS converted/reordered its token still appears in `actual`, so
+        # _is_dropped_side_effect returns False and we fall through to the
+        # original unconverted-noise heuristic below.)
+        if tag in ("delete", "replace") and any(
+            _is_dropped_side_effect(l, actual_text) for l in exp_lines
+        ):
+            return False
+        # Check if ALL expected lines in this opcode have this. (unconverted)
         all_expected_unconverted = all("this." in l for l in exp_lines) if exp_lines else False
         if all_expected_unconverted:
             continue  # This diff is just unconverted lines — ignore

@@ -1048,3 +1048,147 @@ class TestDivergenceGatesReadiness:
         report = build_action_plan([(Path("fake/Comp.vue"), [entry])])
         assert "Quick Wins" in report
         assert "Review Behavior" not in report
+
+
+# ---------------------------------------------------------------------------
+# RPT-4: Partially migrated component section
+# ---------------------------------------------------------------------------
+
+from vue3_migration.models import FileChange as _FileChange
+from vue3_migration.reporting.markdown import build_partial_migration_section
+
+
+def _component_change(path: Path, *, original: str, new: str) -> _FileChange:
+    return _FileChange(file_path=path, original_content=original, new_content=new)
+
+
+class TestPartialMigrationSection:
+    _ORIG = (
+        "<script>\nimport filterMixin from '@/mixins/filterMixin'\n"
+        "export default { mixins: [filterMixin, searchMixin] }\n</script>\n"
+    )
+    # Post-migration: searchMixin wired via useSearch, filterMixin LEFT in array.
+    _NEW = (
+        "<script>\nimport { useSearch } from '@/composables/useSearch'\n"
+        "import filterMixin from '@/mixins/filterMixin'\n"
+        "export default {\n  setup() {\n    const { query } = useSearch()\n"
+        "    return { query }\n  },\n  mixins: [filterMixin]\n}\n</script>\n"
+    )
+
+    def _blocked_entry(self) -> MixinEntry:
+        # filterMixin blocked because useFilter doesn't return appliedFilterSummary.
+        cov = ComposableCoverage(
+            file_path=FIXTURES / 'src/composables/useFilter.js',
+            fn_name='useFilter', import_path='@/composables/useFilter',
+            all_identifiers=['appliedFilterSummary'], return_keys=[],
+        )
+        cls = MemberClassification(
+            missing=[], truly_missing=[], not_returned=['appliedFilterSummary'],
+            truly_not_returned=['appliedFilterSummary'], overridden=[],
+            overridden_not_returned=[], injectable=[],
+        )
+        return MixinEntry(
+            local_name='filterMixin', mixin_path=FIXTURES / 'src/mixins/filterMixin.js',
+            mixin_stem='filterMixin', members=MixinMembers(computed=['appliedFilterSummary']),
+            used_members=['appliedFilterSummary'], composable=cov, classification=cls,
+            status=MigrationStatus.BLOCKED_NOT_RETURNED,
+        )
+
+    def test_partial_component_is_named_and_cites_member(self):
+        comp = Path("src/components/AdvancedSearch.vue")
+        change = _component_change(comp, original=self._ORIG, new=self._NEW)
+        section = build_partial_migration_section(
+            [(comp, [self._blocked_entry()])], [change], project_root=Path("."),
+        )
+        assert "Partially migrated" in section
+        assert "AdvancedSearch.vue" in section
+        assert "filterMixin" in section
+        assert "appliedFilterSummary" in section  # the blocking member is cited
+
+    def test_fully_migrated_component_produces_no_section(self):
+        comp = Path("src/components/Simple.vue")
+        orig = ("<script>\nimport searchMixin from '@/mixins/searchMixin'\n"
+                "export default { mixins: [searchMixin] }\n</script>\n")
+        new = ("<script>\nimport { useSearch } from '@/composables/useSearch'\n"
+               "export default {\n  setup() {\n    const { query } = useSearch()\n"
+               "    return { query }\n  }\n}\n</script>\n")
+        change = _component_change(comp, original=orig, new=new)
+        section = build_partial_migration_section(
+            [(comp, [self._make_ready()])], [change], project_root=Path("."),
+        )
+        assert section == ""
+
+    def test_blocked_only_component_not_flagged_as_partial(self):
+        # No composable was wired in (no use*() gained) -> not "partial".
+        comp = Path("src/components/Blocked.vue")
+        orig = ("<script>\nimport filterMixin from '@/mixins/filterMixin'\n"
+                "export default { mixins: [filterMixin] }\n</script>\n")
+        change = _component_change(comp, original=orig, new=orig)  # unchanged
+        section = build_partial_migration_section(
+            [(comp, [self._blocked_entry()])], [change], project_root=Path("."),
+        )
+        assert section == ""
+
+    def _make_ready(self) -> MixinEntry:
+        e = _make_ready_entry()
+        e.local_name = 'searchMixin'
+        return e
+
+
+# ---------------------------------------------------------------------------
+# RPT-2: divergence composable line links account for prepended header/imports
+# ---------------------------------------------------------------------------
+
+from vue3_migration.models import MemberDivergence as _MemberDivergence
+from vue3_migration.reporting.markdown import _build_divergence_section
+
+
+def _diverging_entry_for_rpt2() -> MixinEntry:
+    cov = ComposableCoverage(
+        file_path=Path("src/composables/usePerm.js"), fn_name="usePerm",
+        import_path="@/composables/usePerm", all_identifiers=["role", "canEdit"],
+        return_keys=["role", "canEdit"],
+    )
+    div = _MemberDivergence(
+        member_name="canEdit", mixin_kind="computed",
+        mixin_source="canEdit() { return this.role === 'admin' }",
+        composable_source="const canEdit = computed(() => role.value === 'admin')",
+        mixin_lines=(3, 3),
+        composable_lines=(5, 5),  # PRE-patch line — stale once header is prepended
+    )
+    return MixinEntry(
+        local_name="permMixin", mixin_path=Path("src/mixins/permMixin.js"),
+        mixin_stem="permMixin", members=MixinMembers(computed=["canEdit"]),
+        used_members=["canEdit"], composable=cov, status=MigrationStatus.READY,
+        divergences=[div],
+    )
+
+
+def test_divergence_link_recomputed_against_final_content():
+    entry = _diverging_entry_for_rpt2()
+    # Final (post-patch) content: header + import pushed canEdit to line 6.
+    final = (
+        "// ✅ 0 issues — all mixin members have composable equivalents\n"
+        "import { ref, computed } from 'vue'\n"
+        "\n"
+        "export function usePerm() {\n"
+        "  const role = ref('user')\n"
+        "  const canEdit = computed(() => role.value === 'admin')\n"
+        "  return { role, canEdit }\n"
+        "}\n"
+    )
+    section = _build_divergence_section(
+        entry, entry.composable.file_path, Path("."), final,
+    )
+    # Link must point at the REAL line (6), not the stale stored line (5).
+    assert "composable L6" in section
+    assert "composable L5" not in section
+
+
+def test_divergence_link_falls_back_to_stored_when_no_content():
+    entry = _diverging_entry_for_rpt2()
+    section = _build_divergence_section(
+        entry, entry.composable.file_path, Path("."), None,
+    )
+    # No final content -> use the stored pre-patch range.
+    assert "composable L5" in section

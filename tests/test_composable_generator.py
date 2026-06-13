@@ -1170,3 +1170,32 @@ export default {
         m = re.search(r"return \{([^}]*)\}", result)
         returned = {x.strip() for x in m.group(1).split(",")}
         assert returned == set(self.MEMBERS.all_names)
+
+
+# ---------------------------------------------------------------------------
+# CG-1: `_`-prefixed scratch state must not leak into the public return
+# ---------------------------------------------------------------------------
+
+def test_underscore_scratch_declared_but_not_returned():
+    mixin = """export default {
+  data() { return { chartData: [], _debouncedResize: null } },
+  methods: { renderChart() { return this.chartData } },
+  mounted() {
+    this._debouncedResize = () => this.renderChart()
+    window.addEventListener('resize', this._debouncedResize)
+  },
+  beforeUnmount() {
+    window.removeEventListener('resize', this._debouncedResize)
+  }
+}
+"""
+    members = MixinMembers(data=["chartData", "_debouncedResize"], methods=["renderChart"])
+    out = generate_composable_from_mixin(mixin, "chartMixin", members, ["mounted", "beforeUnmount"])
+    # Declared as a local const...
+    assert "const _debouncedResize = ref(null)" in out
+    # ...but NOT exposed in the public return.
+    return_block = out.split("return {")[-1]
+    assert "_debouncedResize" not in return_block
+    # Non-private members are still returned.
+    assert "chartData" in return_block
+    assert "renderChart" in return_block

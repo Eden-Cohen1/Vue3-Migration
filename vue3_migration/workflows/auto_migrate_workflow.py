@@ -209,6 +209,19 @@ def collect_all_mixin_entries(
             if entry:
                 entries.append(entry)
         if entries:
+            # CORR-1: a component that indexes `this.$options.mixins[N]` reads the
+            # live mixins array at runtime. Stripping the array (or removing any
+            # sibling mixin, which reorders it) would crash the surviving access,
+            # so hard-block auto-migration for the whole component and surface an
+            # error-level warning rather than ship a component that throws.
+            from ..core.warning_collector import detect_options_mixins_access
+            options_warnings = detect_options_mixins_access(
+                source, mixin_names, component_path=vue_file,
+            )
+            if options_warnings:
+                for e in entries:
+                    e.block_mixin_removal = True
+                entries[0].warnings.extend(options_warnings)
             result.append((vue_file, entries))
     return result
 
@@ -527,7 +540,10 @@ def plan_component_injections(
                     entry.classification = coverage.classify_members(entry.used_members, own_members, mixin_members=entry.members)
                     entry.compute_status()
 
-            if entry.status == MigrationStatus.READY:
+            # CORR-1: never let a mixin reached via this.$options.mixins[N] enter
+            # the migration path — keeping it out of ready_entries leaves both its
+            # import and its mixins-array slot untouched.
+            if entry.status == MigrationStatus.READY and not entry.block_mixin_removal:
                 ready_entries.append(entry)
 
         # Attach diagnostic warnings to blocked entries so the report

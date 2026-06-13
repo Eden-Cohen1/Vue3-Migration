@@ -54,6 +54,19 @@ def add_composable_import(content: str, fn_name: str, import_path: str) -> str:
     return import_line + content
 
 
+def _collapse_orphaned_blanks(content: str) -> str:
+    """Remove blank-line damage left behind after deleting an import (CG-3).
+
+    Deleting an import that was the only line between ``<script>`` and a blank
+    line, or that sat between blank lines, leaves an orphaned blank. Drop a
+    blank line immediately after the ``<script>`` opener and collapse any run
+    of 2+ consecutive blank lines down to a single one.
+    """
+    content = re.sub(r"(<script[^>]*>)\n[ \t]*\n", r"\1\n", content)
+    content = re.sub(r"\n[ \t]*\n(?:[ \t]*\n)+", "\n\n", content)
+    return content
+
+
 def remove_import_line(content: str, mixin_stem: str) -> str:
     """Delete the import line for a specific mixin.
 
@@ -64,11 +77,14 @@ def remove_import_line(content: str, mixin_stem: str) -> str:
     # Default import: import X from '...stem...'
     default_pat = rf"""^[ \t]*import\s+\w+\s+from\s+['"].*?{escaped}(?:\.(?:js|ts))?['"].*\n?"""
     result = re.sub(default_pat, "", content, count=1, flags=re.MULTILINE)
+    if result == content:
+        # Named import: import { X } from '...stem...'
+        named_pat = rf"""^[ \t]*import\s+\{{[^}}]+\}}\s+from\s+['"].*?{escaped}(?:\.(?:js|ts))?['"].*\n?"""
+        result = re.sub(named_pat, "", content, count=1, flags=re.MULTILINE)
     if result != content:
-        return result
-    # Named import: import { X } from '...stem...'
-    named_pat = rf"""^[ \t]*import\s+\{{[^}}]+\}}\s+from\s+['"].*?{escaped}(?:\.(?:js|ts))?['"].*\n?"""
-    return re.sub(named_pat, "", content, count=1, flags=re.MULTILINE)
+        # CG-3: a deleted import must not leave orphaned blank-line damage.
+        result = _collapse_orphaned_blanks(result)
+    return result
 
 
 def remove_mixin_from_array(content: str, local_name: str) -> str:

@@ -223,6 +223,33 @@ export function useSearch() {
     try {
       const res = await http.get('/api/search', { params: { q: query } })
       results.value = res.data.items
+      emit('search-complete', results.value.length)
+    } catch (err) {
+      error.value = err.message
+      emit('search-error', err)
+    } finally {
+      loading.value = false
+    }
+  }
+
+  return { loading, results, error, fetchResults }
+}
+"""
+
+# --- Composable: identical convertible logic but DROPS both $emit side effects ---
+COMPOSABLE_DROPPED_EMITS = """\
+import { ref } from 'vue'
+
+export function useSearch() {
+  const loading = ref(false)
+  const results = ref([])
+  const error = ref(null)
+
+  async function fetchResults(query) {
+    loading.value = true
+    try {
+      const res = await http.get('/api/search', { params: { q: query } })
+      results.value = res.data.items
     } catch (err) {
       error.value = err.message
     } finally {
@@ -253,8 +280,57 @@ def test_detect_divergences_matching_logic():
         ref_members=members.data,
         plain_members=members.methods,
     )
-    # The composable matches the convertible mixin logic. Members with
-    # unconverted this.X (external deps) are skipped entirely.
+    # The composable matches the convertible mixin logic AND keeps both $emit
+    # side effects (converted to emit()), so there is no divergence. The only
+    # remaining this.X (this.$http external dep) is ignorable unconverted noise.
+    assert divs == []
+
+
+def test_detect_divergences_dropped_emit_is_flagged():
+    """CORR-3: a composable that DROPS a this.$emit side effect must be flagged.
+
+    Regression test for the false negative where a deleted this.-side-effect line
+    was treated as ignorable 'unconverted' noise and the member reported clean.
+    """
+    members = _make_members()
+    divs = detect_divergences(
+        mixin_source=MIXIN_WITH_ERROR_HANDLING,
+        composable_source=COMPOSABLE_DROPPED_EMITS,
+        mixin_members=members,
+        covered_members=["fetchResults"],
+        ref_members=members.data,
+        plain_members=members.methods,
+    )
+    assert len(divs) == 1
+    assert divs[0].member_name == "fetchResults"
+
+
+def test_detect_divergences_converted_emit_not_flagged():
+    """A this.$emit converted to emit() (not dropped) is NOT a divergence."""
+    mixin_src = """\
+export default {
+  methods: {
+    notify() {
+      this.$emit('changed', 1)
+    }
+  }
+}"""
+    comp_src = """\
+export function useX() {
+  function notify() {
+    emit('changed', 1)
+  }
+  return { notify }
+}"""
+    members = _MixinMembers(methods=["notify"])
+    divs = detect_divergences(
+        mixin_source=mixin_src,
+        composable_source=comp_src,
+        mixin_members=members,
+        covered_members=["notify"],
+        ref_members=[],
+        plain_members=["notify"],
+    )
     assert divs == []
 
 
@@ -624,3 +700,52 @@ def test_build_divergence_section_no_divergences():
 
     result = _build_divergence_section(entry, Path("fake.js"), Path("project"))
     assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# RPT-3: pass-through helper false positives
+# ---------------------------------------------------------------------------
+
+_PASSTHROUGH_MIXIN = """export default {
+  data() { return { userPermissions: [] } },
+  computed: { canCreate() { return this.checkPermission('create') } },
+  methods: { checkPermission(perm) { return this.userPermissions.includes(perm) } }
+}
+"""
+_PASSTHROUGH_MEMBERS = _MixinMembers(
+    data=["userPermissions"], computed=["canCreate"], methods=["checkPermission"],
+)
+_PASSTHROUGH_COMP = """import { ref, computed } from 'vue'
+export function usePermission() {
+  const userPermissions = ref([])
+  const canCreate = computed(() => userPermissions.value.includes('create'))
+  function checkPermission(perm) { return userPermissions.value.includes(perm) }
+  return { userPermissions, canCreate, checkPermission }
+}
+"""
+
+
+def _passthrough_divs(comp_src):
+    return [d.member_name for d in detect_divergences(
+        _PASSTHROUGH_MIXIN, comp_src, _PASSTHROUGH_MEMBERS,
+        covered_members=["canCreate", "checkPermission"],
+        ref_members=["userPermissions"], plain_members=["checkPermission"],
+    )]
+
+
+def test_inlined_passthrough_helper_not_flagged():
+    # Composable inlined checkPermission('create') -> not a divergence (RPT-3).
+    assert "canCreate" not in _passthrough_divs(_PASSTHROUGH_COMP)
+
+
+def test_passthrough_inlining_still_flags_wrong_arg():
+    # A genuinely different arg ('write' not 'create') is still a divergence.
+    bug = _PASSTHROUGH_COMP.replace("includes('create')", "includes('write')")
+    assert "canCreate" in _passthrough_divs(bug)
+
+
+def test_passthrough_both_call_helper_not_flagged():
+    keep_call = _PASSTHROUGH_COMP.replace(
+        "userPermissions.value.includes('create')", "checkPermission('create')",
+    )
+    assert "canCreate" not in _passthrough_divs(keep_call)
